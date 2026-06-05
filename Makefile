@@ -37,3 +37,12 @@ test:    ; $(PYTEST) -q
 
 install-app:   ; bash scripts/install-app.sh
 uninstall-app: ; bash scripts/uninstall-app.sh
+
+# Put `hearth` on PATH (symlink into ~/.local/bin) so you can run it from any
+# shell without activating the venv. (~/.local/bin is on PATH on most distros.)
+install-cli:
+	mkdir -p $$HOME/.local/bin
+	ln -sf $(abspath $(HEARTH)) $$HOME/.local/bin/hearth
+	@echo "✓ linked $$HOME/.local/bin/hearth -> $(abspath $(HEARTH))  (open a new shell or 'hash -r')"
+uninstall-cli: ; rm -f $$HOME/.local/bin/hearth; @echo "✓ removed ~/.local/bin/hearth"
+.PHONY: install-cli uninstall-cli
