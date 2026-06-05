@@ -10,10 +10,28 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .. import CONTRACT_VERSION, __version__
 from .. import config as cfgmod
 from .. import hardware
 
 router = APIRouter()
+
+
+@router.get("/version")
+async def version(_: Request):
+    """Identity + contract version for consumer discovery / version-floor.
+
+    `contract` is the stable consumer API version a client pins against;
+    `version` is the engine build. `engine` is a human/grep-friendly id that
+    also appears in the Server header, letting a client tell hearth apart from
+    a bare Ollama on a nearby port.
+    """
+    return {
+        "engine": f"hearth/{__version__}",
+        "name": "hearth",
+        "version": __version__,
+        "contract": CONTRACT_VERSION,
+    }
 
 
 def _registry(request: Request) -> dict:

@@ -9,3 +9,9 @@ See finterm's plans/local-ai-engine.md for the full design.
 """
 
 __version__ = "0.1.0"
+
+# Consumer-facing API contract version. Bump the MAJOR when a consumer
+# (finterm) would need code changes; the MINOR for additive, back-compatible
+# surface. Consumers pin a floor against this (the Qt-6.8-floor analogue),
+# read from GET /admin/version.
+CONTRACT_VERSION = "0.1"

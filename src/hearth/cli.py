@@ -54,7 +54,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     app = create_app(cfg, allow_any_host=allow_any_host, api_key=api_key)
     print(f"[hearth] serving OpenAI-compatible API on http://{cfg.bind_host}:{cfg.bind_port}")
     print(f"[hearth] probe: GET /v1/models   health: GET /admin/health")
-    uvicorn.run(app, host=cfg.bind_host, port=cfg.bind_port, log_level=args.log_level)
+    # server_header=False suppresses uvicorn's own "Server: uvicorn" so our
+    # middleware's "Server: hearth/<v>" is the single, clean identity.
+    uvicorn.run(app, host=cfg.bind_host, port=cfg.bind_port,
+                log_level=args.log_level, server_header=False)
     return 0
 
 

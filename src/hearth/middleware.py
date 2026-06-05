@@ -20,7 +20,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from . import __version__
+
 _ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
+_SERVER_HEADER = f"hearth/{__version__}"
 
 
 def _host_only(value: str) -> str:
@@ -52,4 +55,8 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                     {"error": {"message": "invalid api key", "type": "unauthorized"}},
                     status_code=401,
                 )
-        return await call_next(request)
+        response = await call_next(request)
+        # Identify hearth to consumers (detection / version-floor); set on all
+        # passed-through responses so even /v1/* carries it.
+        response.headers["Server"] = _SERVER_HEADER
+        return response

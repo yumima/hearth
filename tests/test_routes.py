@@ -109,6 +109,19 @@ def test_tools_rejected_when_backend_lacks_capability():
     assert "tool" in r.json()["error"]["message"].lower()
 
 
+def test_admin_version_and_server_header():
+    client, _ = _client()
+    r = client.get("/admin/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "hearth"
+    assert body["contract"] == "0.1"
+    assert body["engine"].startswith("hearth/")
+    # Server header identifies hearth on every passed-through response.
+    assert r.headers.get("server", "").startswith("hearth/")
+    assert client.get("/v1/models").headers.get("server", "").startswith("hearth/")
+
+
 def test_unbound_role_chat_is_clear_error():
     # 'vision' isn't bound in defaults -> falls to literal routing -> backend
     # gets "vision" as a model id, which is fine here (fake accepts anything).
