@@ -37,7 +37,7 @@ cat > "$DESKTOP_FILE" <<EOF
 Type=Application
 Name=hearth
 Comment=Start the local AI engine (OpenAI-compatible, on 127.0.0.1:11435)
-Exec=$LAUNCHER "$HEARTH_BIN"
+Exec="$LAUNCHER" "$HEARTH_BIN"
 Icon=applications-science
 Terminal=false
 Categories=Development;

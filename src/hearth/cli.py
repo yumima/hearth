@@ -29,6 +29,21 @@ def _pid_path() -> Path:
     return cfgmod.config_path().parent / "hearth.pid"
 
 
+def _pid_looks_like_hearth(pid: int) -> bool:
+    """Best-effort check that `pid` is a hearth gateway before we signal it,
+    so a stale pidfile (after SIGKILL/crash) + PID reuse can't kill an
+    unrelated process. On non-Linux (no /proc) we can't introspect — trust the
+    pidfile."""
+    proc = Path(f"/proc/{pid}/cmdline")
+    if not proc.exists():
+        return True
+    try:
+        cl = proc.read_bytes().replace(b"\0", b" ").decode("utf-8", "ignore")
+    except OSError:
+        return True
+    return "hearth" in cl or "uvicorn" in cl
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -60,11 +75,32 @@ def cmd_start(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
+    # Refuse to start a second gateway on a port that's already serving — a
+    # double-start would orphan the first one (overwritten pidfile) and bind-fail.
+    try:
+        if httpx.get(f"{_admin_base(cfg)}/admin/health", timeout=1.5).status_code in (200, 503):
+            print(f"[hearth] a gateway is already serving on http://{cfg.bind_host}:{cfg.bind_port} "
+                  "— use `hearth stop` first to restart", file=sys.stderr)
+            return 0
+    except httpx.HTTPError:
+        pass  # not up — proceed to start
+
     # Write a PID file so `hearth stop` / `hearth status` can find this gateway.
+    # Only remove it on exit if it still holds OUR pid (don't clobber a pidfile
+    # a newer start may have written).
     pid_file = _pid_path()
+    my_pid = os.getpid()
     pid_file.parent.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(os.getpid()))
-    atexit.register(lambda: pid_file.unlink(missing_ok=True))
+    pid_file.write_text(str(my_pid))
+
+    def _cleanup_pid():
+        try:
+            if pid_file.exists() and pid_file.read_text().strip() == str(my_pid):
+                pid_file.unlink()
+        except OSError:
+            pass
+
+    atexit.register(_cleanup_pid)
 
     app = create_app(cfg, allow_any_host=allow_any_host, api_key=api_key)
     print(f"[hearth] serving OpenAI-compatible API on http://{cfg.bind_host}:{cfg.bind_port}")
@@ -204,6 +240,12 @@ def cmd_stop(args: argparse.Namespace) -> int:
         pid_file.unlink(missing_ok=True)
         print("invalid pidfile (removed)", file=sys.stderr)
         return 1
+    # Guard against a stale pidfile whose PID was reused by an unrelated process.
+    if not _pid_looks_like_hearth(pid):
+        pid_file.unlink(missing_ok=True)
+        print(f"stale pidfile: pid {pid} is not a hearth gateway (removed, did not signal)",
+              file=sys.stderr)
+        return 1
     try:
         os.kill(pid, signal.SIGTERM)
         print(f"stopped hearth gateway (pid {pid})")
@@ -255,6 +297,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         sys.stdout.write(f"{bold}hearth>{reset} ")
         sys.stdout.flush()
         reply = ""
+        err = None
         try:
             with httpx.stream(
                 "POST", f"{base}/v1/chat/completions",
@@ -276,17 +319,34 @@ def cmd_chat(args: argparse.Namespace) -> int:
                         obj = json.loads(payload)
                     except ValueError:
                         continue
-                    delta = obj.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                    if delta:
-                        sys.stdout.write(delta)
-                        sys.stdout.flush()
-                        reply += delta
+                    # The gateway streams backend failures as an error frame
+                    # over an already-200 response — surface it, don't swallow.
+                    if obj.get("error"):
+                        e = obj["error"]
+                        err = e.get("message", str(e)) if isinstance(e, dict) else str(e)
+                        break
+                    # `choices` can be an empty list on the final/usage chunk —
+                    # guard against IndexError (the [{}] default only applies
+                    # when the key is absent, not when the list is empty).
+                    choices = obj.get("choices") or []
+                    if choices:
+                        delta = choices[0].get("delta", {}).get("content", "")
+                        if delta:
+                            sys.stdout.write(delta)
+                            sys.stdout.flush()
+                            reply += delta
         except (httpx.HTTPError, KeyboardInterrupt) as e:
             print(f"\n{dim}[interrupted: {e}]{reset}", file=sys.stderr)
             history.pop()
             continue
         print()
-        history.append({"role": "assistant", "content": reply})
+        if err:
+            print(f"{dim}[engine error: {err}]{reset}", file=sys.stderr)
+            history.pop()  # drop the user turn that failed
+        elif reply:
+            history.append({"role": "assistant", "content": reply})
+        else:
+            history.pop()  # no content — don't pollute history with an empty turn
     return 0
 
 
