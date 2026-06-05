@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`9222a87`](https://github.com/yumima/hearth/commit/9222a87) **docs:** refresh README + auto-maintained 'Today's commits' changelog
 - [`f0106e8`](https://github.com/yumima/hearth/commit/f0106e8) make: add install-cli (symlink hearth onto ~/.local/bin PATH)
 - [`589d8b1`](https://github.com/yumima/hearth/commit/589d8b1) setup: first-run hardware-fit wizard + Qwen3 defaults
 - [`9f6428e`](https://github.com/yumima/hearth/commit/9f6428e) cli: harden chat stream parse + pidfile lifecycle; quote launcher Exec
@@ -55,10 +56,10 @@ CUDA toolkit.
 | Command | What it does |
 |---|---|
 | `hearth start` | bring up Ollama + serve the gateway (foreground) |
-| `hearth stop` | stop a gateway started with `start` |
+| `hearth stop` | stop the running gateway (found by pidfile, else by its port) |
 | `hearth status` | is the gateway up? show role bindings |
 | `hearth setup` | **first-run wizard** — probe hardware, pull a fitting model, bind roles |
-| `hearth chat` | streaming terminal chat (`--model`, `--system`; `/exit` `/reset` `/model`) |
+| `hearth chat` | streaming terminal chat (`--model`, `--system`, `--show-thinking`; `/exit` `/reset` `/model` `/think`) |
 | `hearth pull <model>` | pull a model via Ollama |
 | `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
 | `hearth roles` / `models` | show role bindings / servable models |

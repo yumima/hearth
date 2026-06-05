@@ -10,8 +10,12 @@ import argparse
 import atexit
 import json
 import os
+import re
+import shutil
 import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -42,6 +46,33 @@ def _pid_looks_like_hearth(pid: int) -> bool:
     except OSError:
         return True
     return "hearth" in cl or "uvicorn" in cl
+
+
+def _pid_on_port(port: int) -> int | None:
+    """Best-effort: PID listening on `port`, so `stop` can find a gateway that
+    wasn't started via this CLI (no pidfile) — e.g. `python -m hearth start`.
+    Tries `ss` then `lsof`; returns None if neither is available or nothing is
+    listening. Without elevated privileges this only sees same-user processes,
+    which is all we need (single-user, loopback)."""
+    if shutil.which("ss"):
+        try:
+            out = subprocess.run(["ss", "-ltnHp", f"sport = :{port}"],
+                                 capture_output=True, text=True, timeout=4.0, check=False)
+            m = re.search(r"pid=(\d+)", out.stdout)
+            if m:
+                return int(m.group(1))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if shutil.which("lsof"):
+        try:
+            out = subprocess.run(["lsof", f"-tiTCP:{port}", "-sTCP:LISTEN"],
+                                 capture_output=True, text=True, timeout=4.0, check=False)
+            for tok in out.stdout.split():
+                if tok.isdigit():
+                    return int(tok)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return None
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -304,27 +335,42 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_stop(args: argparse.Namespace) -> int:
     pid_file = _pid_path()
-    if not pid_file.exists():
-        print("no hearth pidfile — gateway not started by this CLI (or already stopped)",
-              file=sys.stderr)
-        return 1
-    try:
-        pid = int(pid_file.read_text().strip())
-    except (ValueError, OSError):
-        pid_file.unlink(missing_ok=True)
-        print("invalid pidfile (removed)", file=sys.stderr)
-        return 1
-    # Guard against a stale pidfile whose PID was reused by an unrelated process.
-    if not _pid_looks_like_hearth(pid):
-        pid_file.unlink(missing_ok=True)
-        print(f"stale pidfile: pid {pid} is not a hearth gateway (removed, did not signal)",
-              file=sys.stderr)
-        return 1
+    pid: int | None = None
+    via = "pidfile"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            pid_file.unlink(missing_ok=True)
+            print("invalid pidfile (removed)", file=sys.stderr)
+            pid = None
+        # Guard against a stale pidfile whose PID was reused by another process.
+        if pid is not None and not _pid_looks_like_hearth(pid):
+            pid_file.unlink(missing_ok=True)
+            print(f"stale pidfile: pid {pid} is not a hearth gateway (removed, did not signal)",
+                  file=sys.stderr)
+            pid = None
+    if pid is None:
+        # No (valid) pidfile — the gateway may have been started outside this
+        # CLI (e.g. `python -m hearth start`). Find it by the port it serves.
+        port = cfgmod.load().bind_port
+        found = _pid_on_port(port)
+        if found is not None and _pid_looks_like_hearth(found):
+            pid, via = found, f"port {port}"
+        else:
+            print(f"no running hearth gateway found "
+                  f"(no pidfile; nothing hearth-like listening on :{port})",
+                  file=sys.stderr)
+            return 1
     try:
         os.kill(pid, signal.SIGTERM)
-        print(f"stopped hearth gateway (pid {pid})")
+        print(f"stopped hearth gateway (pid {pid}, via {via})")
     except ProcessLookupError:
-        print("hearth gateway not running (stale pidfile)")
+        print("hearth gateway not running (stale reference)")
+    except PermissionError:
+        print(f"cannot signal pid {pid}: permission denied (owned by another user?)",
+              file=sys.stderr)
+        return 1
     pid_file.unlink(missing_ok=True)
     return 0
 
@@ -342,8 +388,10 @@ def cmd_chat(args: argparse.Namespace) -> int:
         return 1
 
     model = args.model or "primary_chat"
+    show_think = bool(getattr(args, "show_thinking", False))
     bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
-    print(f"{dim}hearth chat — model={model}  (/exit to quit, /reset to clear, /model NAME to switch){reset}")
+    print(f"{dim}hearth chat — model={model}  "
+          f"(/exit quit · /reset clear · /model NAME switch · /think toggle reasoning){reset}")
     history: list[dict] = []
     if args.system:
         history.append({"role": "system", "content": args.system})
@@ -366,12 +414,17 @@ def cmd_chat(args: argparse.Namespace) -> int:
             model = user.split(maxsplit=1)[1].strip()
             print(f"{dim}(model -> {model}){reset}")
             continue
+        if user == "/think":
+            show_think = not show_think
+            print(f"{dim}(reasoning display {'on' if show_think else 'off'}){reset}")
+            continue
 
         history.append({"role": "user", "content": user})
-        sys.stdout.write(f"{bold}hearth>{reset} ")
-        sys.stdout.flush()
         reply = ""
         err = None
+        answered = False        # have we printed any answer content yet?
+        think_start = None      # monotonic clock when the first reasoning token arrived
+        think_tokens = 0
         try:
             with httpx.stream(
                 "POST", f"{base}/v1/chat/completions",
@@ -403,17 +456,56 @@ def cmd_chat(args: argparse.Namespace) -> int:
                     # guard against IndexError (the [{}] default only applies
                     # when the key is absent, not when the list is empty).
                     choices = obj.get("choices") or []
-                    if choices:
-                        delta = choices[0].get("delta", {}).get("content", "")
-                        if delta:
-                            sys.stdout.write(delta)
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+                    content = delta.get("content") or ""
+                    # Reasoning models (Qwen3, …) stream their chain of thought
+                    # in a separate `reasoning` field with empty `content` — if
+                    # we only watched `content`, the REPL would look frozen for
+                    # the whole (often long) thinking phase. Surface it: a live
+                    # in-place indicator by default, the full text with --show-thinking.
+                    reasoning = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                    if reasoning and not answered:
+                        if think_start is None:
+                            think_start = time.monotonic()
+                            if show_think:
+                                sys.stdout.write(f"{dim}💭 thinking…\n")
+                        if show_think:
+                            sys.stdout.write(reasoning)
                             sys.stdout.flush()
-                            reply += delta
+                        else:
+                            think_tokens += 1
+                            el = time.monotonic() - think_start
+                            sys.stdout.write(
+                                f"\r{dim}💭 thinking… {think_tokens} tok · {el:.0f}s{reset}\033[K")
+                            sys.stdout.flush()
+                    if content:
+                        if not answered:
+                            # Close the thinking indicator before the answer:
+                            # full reasoning gets a blank line; the compact
+                            # one-liner is wiped (\r + clear-to-end-of-line).
+                            if think_start is not None:
+                                sys.stdout.write(f"{reset}\n\n" if show_think else "\r\033[K")
+                            sys.stdout.write(f"{bold}hearth>{reset} ")
+                            answered = True
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+                        reply += content
         except (httpx.HTTPError, KeyboardInterrupt) as e:
             print(f"\n{dim}[interrupted: {e}]{reset}", file=sys.stderr)
             history.pop()
             continue
-        print()
+        # Finalize a thinking indicator that was never replaced by an answer
+        # (empty reply, mid-stream error frame, or [DONE] with no content):
+        # terminate the answer line if we printed one, else wipe the compact
+        # one-liner / close the dim --show-thinking block so it neither lingers
+        # nor bleeds colour into the next prompt.
+        if answered:
+            print()
+        elif think_start is not None:
+            sys.stdout.write(f"{reset}\n" if show_think else "\r\033[K")
+            sys.stdout.flush()
         if err:
             print(f"{dim}[engine error: {err}]{reset}", file=sys.stderr)
             history.pop()  # drop the user turn that failed
@@ -474,6 +566,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("chat", help="interactive streaming chat with the local engine")
     s.add_argument("--model", help="role alias or model id (default: primary_chat)")
     s.add_argument("--system", help="optional system prompt")
+    s.add_argument("--show-thinking", action="store_true",
+                   help="stream the model's full reasoning (default: compact indicator)")
     s.set_defaults(func=cmd_chat)
     return p
 
