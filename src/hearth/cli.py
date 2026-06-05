@@ -91,6 +91,15 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("--unsafe-bind requires --api-key (off-loopback exposure)", file=sys.stderr)
         return 2
 
+    # If hearth is installed as a service, a bare `hearth start` at a terminal is
+    # a FOREGROUND instance — not the daemon. Nudge the user toward the service.
+    # (Skip when systemd is running us: it sets INVOCATION_ID, so the unit's own
+    # `hearth start` stays quiet.)
+    if "INVOCATION_ID" not in os.environ and _unit_path().exists():
+        print("note: a hearth service is installed — this is a FOREGROUND instance, "
+              "not the daemon.\n      For the background service:  hearth service start"
+              "      (Ctrl-C stops this one)", file=sys.stderr)
+
     # Bring up Ollama unless told not to.
     ollama = cfg.backends.get("ollama")
     if ollama and not args.no_manage:

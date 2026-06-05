@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`38ba49c`](https://github.com/yumima/hearth/commit/38ba49c) cli: 'hearth service' — run as a systemd --user background service
 - [`2193608`](https://github.com/yumima/hearth/commit/2193608) chat: deep-think on/off toggle + live thinking spinner
 - [`39b28ac`](https://github.com/yumima/hearth/commit/39b28ac) cli: show reasoning-model thinking in chat; stop-by-port fallback
 - [`9222a87`](https://github.com/yumima/hearth/commit/9222a87) **docs:** refresh README + auto-maintained 'Today's commits' changelog
