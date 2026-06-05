@@ -25,6 +25,8 @@ build:
 	python3 -m venv $(VENV)
 	$(PIP) install -q --upgrade pip
 	$(PIP) install -q -e ".[dev]"
+	@git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks \
+		&& echo "✓ pre-commit changelog hook wired (.githooks)" || true
 	@echo "✓ built. Next: 'make start' (then 'make chat' in another shell)."
 
 start:   ; $(HEARTH) start

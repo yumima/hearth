@@ -9,6 +9,17 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
+## Today's commits (2026-06-05)
+
+Latest first.
+
+- [`f0106e8`](https://github.com/yumima/hearth/commit/f0106e8) make: add install-cli (symlink hearth onto ~/.local/bin PATH)
+- [`589d8b1`](https://github.com/yumima/hearth/commit/589d8b1) setup: first-run hardware-fit wizard + Qwen3 defaults
+- [`9f6428e`](https://github.com/yumima/hearth/commit/9f6428e) cli: harden chat stream parse + pidfile lifecycle; quote launcher Exec
+- [`bf2b76d`](https://github.com/yumima/hearth/commit/bf2b76d) cli: add chat/status/stop, Makefile, clickable desktop app
+
+[See all commits →](https://github.com/yumima/hearth/commits/main)
+
 ## Why
 
 Consumers integrate once against the OpenAI contract; the engine swaps model
@@ -20,48 +31,48 @@ or write backend-specific code — you ask for a *role* (`primary_chat`,
 
 ```bash
 cd hearth
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e .
+make build            # python venv + editable install
+make install-cli      # symlink `hearth` into ~/.local/bin so it's on PATH
+                      # (open a new shell afterwards, or `hash -r`)
 
-# One command brings up the bundled Ollama + the gateway:
-hearth start
-#   -> serves http://127.0.0.1:11435  (one off from Ollama's 11434)
+hearth start          # bring up the bundled Ollama + the gateway on :11435
+                      #   (leave running; Ctrl-C stops it)
 
-# In another shell — auto-detect your hardware, pull a model that fits, bind roles:
-hearth setup          # probe → recommend (e.g. qwen3:30b-a3b on a 12GB GPU + ample RAM) → pull → bind
-
-# …or pull specific models yourself:
-hearth pull qwen3:14b          # primary_chat (fully on a 12GB GPU)
-hearth pull nomic-embed-text   # embedding
-
-hearth roles          # show role -> model bindings
-hearth hardware       # GPU / VRAM / RAM probe
+# …then in a second shell:
+hearth setup          # probe hardware → pull a model that fits → bind roles
+hearth chat           # interactive chat in the terminal (ChatGPT-style)
 ```
+
+`make build` is `python3 -m venv .venv && .venv/bin/pip install -e .` — you can
+also run `.venv/bin/hearth …` directly without `install-cli`.
 
 The bundled Ollama binary lives under `vendor/` (downloaded, not committed). It
 ships its own CUDA runtime, so on an NVIDIA box it uses the GPU with no system
 CUDA toolkit.
 
-## Manage it
+## Commands
+
+| Command | What it does |
+|---|---|
+| `hearth start` | bring up Ollama + serve the gateway (foreground) |
+| `hearth stop` | stop a gateway started with `start` |
+| `hearth status` | is the gateway up? show role bindings |
+| `hearth setup` | **first-run wizard** — probe hardware, pull a fitting model, bind roles |
+| `hearth chat` | streaming terminal chat (`--model`, `--system`; `/exit` `/reset` `/model`) |
+| `hearth pull <model>` | pull a model via Ollama |
+| `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
+| `hearth roles` / `models` | show role bindings / servable models |
+| `hearth hardware` | GPU / VRAM / RAM probe |
+
+Equivalent `make` targets exist (`make start|stop|status|chat|test`). For a
+**clickable launcher** in your app menu (Linux / freedesktop):
 
 ```bash
-hearth status         # is the gateway up? show role bindings
-hearth stop           # stop a gateway started with `hearth start`
-hearth chat           # interactive streaming chat in the terminal (ChatGPT-style)
-hearth chat --model fast_chat --system "Be terse."
+make install-app      # writes ~/.local/share/applications/hearth.desktop
+make uninstall-app
 ```
 
-Or via `make` (build / start / stop / status / chat / test). And for a
-clickable launcher in your app menu (Linux / freedesktop):
-
-```bash
-make build            # venv + editable install
-make install-app      # adds a "hearth" entry to your application menu
-make uninstall-app    # removes it
-```
-
-`make install-app` writes `~/.local/share/applications/hearth.desktop`;
-clicking it starts the engine detached (logs to `~/.hearth/hearth.log`) and
+Clicking it starts the engine detached (logs to `~/.hearth/hearth.log`) and
 shows a desktop notification. Stop it with `hearth stop`.
 
 ## API
@@ -87,16 +98,26 @@ Admin (off `/v1` so OpenAI clients never see it):
 ### Role registry
 
 `model: "primary_chat"` → role registry → concrete `(model_id, backend)`. A
-literal id (`qwen2.5:14b`) routes straight through. Config at
+literal id (`qwen3:14b`) routes straight through. Config at
 `~/.hearth/config.yaml` (written on first run); rebind with
-`hearth bind primary_chat qwen2.5:7b-instruct-q4_K_M`.
+`hearth bind primary_chat qwen3:8b` (persisted + hot-applied).
 
-| Role | Default (12 GB-VRAM box) |
-|---|---|
-| `primary_chat` | `qwen2.5:14b-instruct-q4_K_M` |
-| `fast_chat` / `coding` | `qwen2.5:7b-instruct-q4_K_M` |
-| `embedding` | `nomic-embed-text` |
-| `stt` | `faster-whisper:medium` *(M2)* |
+Built-in defaults (Qwen3); `hearth setup` overrides them per your hardware:
+
+| Role | Built-in default | `setup` on a 12 GB GPU + ≥24 GB RAM |
+|---|---|---|
+| `primary_chat` | `qwen3:14b` | `qwen3:30b-a3b` (MoE — see below) |
+| `fast_chat` / `coding` | `qwen3:8b` | `qwen3:8b` |
+| `embedding` | `nomic-embed-text` | `nomic-embed-text` |
+| `stt` | `faster-whisper:medium` *(M2)* | — |
+
+**Model fit (`hearth setup`).** The wizard probes GPU VRAM + system RAM and picks
+a Qwen3 model that fits. On a ~12 GB GPU with ample RAM it prefers the **30B MoE**
+(`qwen3:30b-a3b`): only ~3B params are active per token, so the few GB that spill
+from VRAM to RAM cost little speed while beating a dense 14B on quality. Smaller
+GPUs get dense models that fit fully on-GPU; CPU-only boxes are sized by RAM.
+Precedence: built-in default → `~/.hearth/config.yaml` (`setup`/`bind`) →
+per-request `model`.
 
 ## Security
 
@@ -114,8 +135,9 @@ python tests/smoke_live.py   # live smoke (needs the stack up + models pulled)
 
 ## Status
 
-M1 — walking skeleton (this): gateway + Ollama adapter + role registry + CLI +
-hardware probe. Roadmap (STT, tool-call repair, concurrency, lifecycle wizard,
-second backend) in the design doc §5.
+M1 (gateway + Ollama adapter + role registry + CLI + hardware probe) and the
+first-run **hardware-fit `setup` wizard** are done. Roadmap (STT via
+faster-whisper, tool-call repair, concurrency limits, a second backend) is in
+the design doc §5.
 
 License: Apache-2.0.
