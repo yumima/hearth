@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Vendored backend binaries (downloaded, not committed — ~1.3 GB)
+vendor/
+
+# Local engine state
+*.log
