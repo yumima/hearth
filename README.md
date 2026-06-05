@@ -40,6 +40,28 @@ The bundled Ollama binary lives under `vendor/` (downloaded, not committed). It
 ships its own CUDA runtime, so on an NVIDIA box it uses the GPU with no system
 CUDA toolkit.
 
+## Manage it
+
+```bash
+hearth status         # is the gateway up? show role bindings
+hearth stop           # stop a gateway started with `hearth start`
+hearth chat           # interactive streaming chat in the terminal (ChatGPT-style)
+hearth chat --model fast_chat --system "Be terse."
+```
+
+Or via `make` (build / start / stop / status / chat / test). And for a
+clickable launcher in your app menu (Linux / freedesktop):
+
+```bash
+make build            # venv + editable install
+make install-app      # adds a "hearth" entry to your application menu
+make uninstall-app    # removes it
+```
+
+`make install-app` writes `~/.local/share/applications/hearth.desktop`;
+clicking it starts the engine detached (logs to `~/.hearth/hearth.log`) and
+shows a desktop notification. Stop it with `hearth stop`.
+
 ## API
 
 OpenAI-compatible (point any `openai` client here):

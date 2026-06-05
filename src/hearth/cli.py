@@ -7,8 +7,12 @@ already running), then serves the OpenAI-compatible gateway on loopback.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
+import os
+import signal
 import sys
+from pathlib import Path
 
 import httpx
 
@@ -18,6 +22,11 @@ from . import hardware, ollama_supervisor
 
 def _admin_base(cfg: cfgmod.Config) -> str:
     return f"http://{cfg.bind_host}:{cfg.bind_port}"
+
+
+def _pid_path() -> Path:
+    """PID file for the running gateway, alongside config.yaml (~/.hearth)."""
+    return cfgmod.config_path().parent / "hearth.pid"
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -51,9 +60,15 @@ def cmd_start(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
+    # Write a PID file so `hearth stop` / `hearth status` can find this gateway.
+    pid_file = _pid_path()
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()))
+    atexit.register(lambda: pid_file.unlink(missing_ok=True))
+
     app = create_app(cfg, allow_any_host=allow_any_host, api_key=api_key)
     print(f"[hearth] serving OpenAI-compatible API on http://{cfg.bind_host}:{cfg.bind_port}")
-    print(f"[hearth] probe: GET /v1/models   health: GET /admin/health")
+    print(f"[hearth] probe: GET /v1/models   health: GET /admin/health   chat: hearth chat")
     # server_header=False suppresses uvicorn's own "Server: uvicorn" so our
     # middleware's "Server: hearth/<v>" is the single, clean identity.
     uvicorn.run(app, host=cfg.bind_host, port=cfg.bind_port,
@@ -157,6 +172,124 @@ def cmd_hardware(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    cfg = cfgmod.load()
+    base = _admin_base(cfg)
+    try:
+        ver = httpx.get(f"{base}/admin/version", timeout=3.0).json()
+        health = httpx.get(f"{base}/admin/health", timeout=3.0).json()
+    except httpx.HTTPError:
+        print(f"hearth: NOT running at {base}  (start with `hearth start`)")
+        return 1
+    print(f"hearth {ver.get('version')}  (contract {ver.get('contract')})  @ {base}")
+    print(f"status: {health.get('status')}   backends: {health.get('backends')}")
+    try:
+        roles = httpx.get(f"{base}/admin/roles", timeout=3.0).json().get("roles", {})
+        for k, v in roles.items():
+            print(f"  {k:14s} -> {v['model']}")
+    except httpx.HTTPError:
+        pass
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    pid_file = _pid_path()
+    if not pid_file.exists():
+        print("no hearth pidfile — gateway not started by this CLI (or already stopped)",
+              file=sys.stderr)
+        return 1
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        print("invalid pidfile (removed)", file=sys.stderr)
+        return 1
+    try:
+        os.kill(pid, signal.SIGTERM)
+        print(f"stopped hearth gateway (pid {pid})")
+    except ProcessLookupError:
+        print("hearth gateway not running (stale pidfile)")
+    pid_file.unlink(missing_ok=True)
+    return 0
+
+
+def cmd_chat(args: argparse.Namespace) -> int:
+    """A tiny streaming REPL against the local gateway — like ChatGPT in the
+    terminal, but fully local."""
+    cfg = cfgmod.load()
+    base = _admin_base(cfg)
+    try:
+        httpx.get(f"{base}/admin/health", timeout=3.0)
+    except httpx.HTTPError:
+        print(f"hearth gateway not reachable at {base} — run `hearth start` first",
+              file=sys.stderr)
+        return 1
+
+    model = args.model or "primary_chat"
+    bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
+    print(f"{dim}hearth chat — model={model}  (/exit to quit, /reset to clear, /model NAME to switch){reset}")
+    history: list[dict] = []
+    if args.system:
+        history.append({"role": "system", "content": args.system})
+
+    while True:
+        try:
+            user = input(f"\n{bold}you>{reset} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not user:
+            continue
+        if user in ("/exit", "/quit"):
+            break
+        if user == "/reset":
+            history = [h for h in history if h["role"] == "system"]
+            print(f"{dim}(history cleared){reset}")
+            continue
+        if user.startswith("/model "):
+            model = user.split(maxsplit=1)[1].strip()
+            print(f"{dim}(model -> {model}){reset}")
+            continue
+
+        history.append({"role": "user", "content": user})
+        sys.stdout.write(f"{bold}hearth>{reset} ")
+        sys.stdout.flush()
+        reply = ""
+        try:
+            with httpx.stream(
+                "POST", f"{base}/v1/chat/completions",
+                json={"model": model, "messages": history, "stream": True},
+                timeout=None,
+            ) as r:
+                if r.status_code != 200:
+                    print(f"\n{dim}[error {r.status_code}] {r.read().decode()[:300]}{reset}",
+                          file=sys.stderr)
+                    history.pop()
+                    continue
+                for line in r.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:]
+                    if payload.strip() == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(payload)
+                    except ValueError:
+                        continue
+                    delta = obj.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if delta:
+                        sys.stdout.write(delta)
+                        sys.stdout.flush()
+                        reply += delta
+        except (httpx.HTTPError, KeyboardInterrupt) as e:
+            print(f"\n{dim}[interrupted: {e}]{reset}", file=sys.stderr)
+            history.pop()
+            continue
+        print()
+        history.append({"role": "assistant", "content": reply})
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hearth", description="Local OpenAI-compatible AI engine")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -193,6 +326,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("hardware", help="print hardware probe")
     s.set_defaults(func=cmd_hardware)
+
+    s = sub.add_parser("status", help="show whether the gateway is up + roles")
+    s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("stop", help="stop a running gateway (started via `hearth start`)")
+    s.set_defaults(func=cmd_stop)
+
+    s = sub.add_parser("chat", help="interactive streaming chat with the local engine")
+    s.add_argument("--model", help="role alias or model id (default: primary_chat)")
+    s.add_argument("--system", help="optional system prompt")
+    s.set_defaults(func=cmd_chat)
     return p
 
 
