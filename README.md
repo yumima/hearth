@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`39b28ac`](https://github.com/yumima/hearth/commit/39b28ac) cli: show reasoning-model thinking in chat; stop-by-port fallback
 - [`9222a87`](https://github.com/yumima/hearth/commit/9222a87) **docs:** refresh README + auto-maintained 'Today's commits' changelog
 - [`f0106e8`](https://github.com/yumima/hearth/commit/f0106e8) make: add install-cli (symlink hearth onto ~/.local/bin PATH)
 - [`589d8b1`](https://github.com/yumima/hearth/commit/589d8b1) setup: first-run hardware-fit wizard + Qwen3 defaults
@@ -59,7 +60,7 @@ CUDA toolkit.
 | `hearth stop` | stop the running gateway (found by pidfile, else by its port) |
 | `hearth status` | is the gateway up? show role bindings |
 | `hearth setup` | **first-run wizard** — probe hardware, pull a fitting model, bind roles |
-| `hearth chat` | streaming terminal chat (`--model`, `--system`, `--show-thinking`; `/exit` `/reset` `/model` `/think`) |
+| `hearth chat` | streaming chat with a live thinking spinner + deep-think toggle (`/think on\|off`, default on; off = fast lane). Flags `--model` `--system` `--no-think` `--show-thinking`; in-chat `/exit` `/reset` `/model` `/show` |
 | `hearth pull <model>` | pull a model via Ollama |
 | `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
 | `hearth roles` / `models` | show role bindings / servable models |
@@ -82,7 +83,7 @@ OpenAI-compatible (point any `openai` client here):
 
 | Endpoint | Notes |
 |---|---|
-| `POST /v1/chat/completions` | streaming SSE + tool calling |
+| `POST /v1/chat/completions` | streaming SSE + tool calling; optional `think: bool` (hearth extension) toggles a reasoning model's chain-of-thought via the native API |
 | `POST /v1/embeddings` | text → vector |
 | `GET /v1/models` | concrete models **+** role aliases |
 

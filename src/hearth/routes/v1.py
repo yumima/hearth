@@ -79,12 +79,21 @@ async def chat_completions(request: Request):
     if payload.get("stream") and not backend.capabilities.streaming:
         return _err(400, f"model {concrete!r} does not support streaming")
 
+    # `think` is a hearth extension (not an OpenAI field): toggle a reasoning
+    # model's chain-of-thought. It only works over the backend's native API, so
+    # pop it from the OpenAI payload and route to the native path when present.
+    # Absent (the common case) → byte-for-byte OpenAI passthrough, unchanged.
+    think = payload.pop("think", None)
+    use_native = think is not None and hasattr(backend, "chat_stream_native")
+
     payload = {**payload, "model": concrete}
 
     if payload.get("stream"):
         async def gen():
             try:
-                async for chunk in backend.chat_stream(payload):
+                source = (backend.chat_stream_native(payload, bool(think)) if use_native
+                          else backend.chat_stream(payload))
+                async for chunk in source:
                     yield chunk
             except Exception as e:  # surface as a final SSE error frame
                 import json
@@ -94,6 +103,8 @@ async def chat_completions(request: Request):
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     try:
+        if use_native:
+            return await backend.chat_native(payload, bool(think))
         return await backend.chat(payload)
     except Exception as e:
         return _err(502, f"backend error: {e}", "backend_error")

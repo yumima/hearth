@@ -388,10 +388,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
         return 1
 
     model = args.model or "primary_chat"
-    show_think = bool(getattr(args, "show_thinking", False))
+    think_on = not bool(getattr(args, "no_think", False))    # deep-think, default on
+    show_think = bool(getattr(args, "show_thinking", False))  # show full reasoning text
     bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
-    print(f"{dim}hearth chat — model={model}  "
-          f"(/exit quit · /reset clear · /model NAME switch · /think toggle reasoning){reset}")
+    print(f"{dim}hearth chat — model={model} · deep-think {'on' if think_on else 'off'}\n"
+          f"  /exit  /reset  /model NAME  /think on|off  /show  "
+          f"(deep-think off = fast lane: fast_chat){reset}")
     history: list[dict] = []
     if args.system:
         history.append({"role": "system", "content": args.system})
@@ -414,9 +416,20 @@ def cmd_chat(args: argparse.Namespace) -> int:
             model = user.split(maxsplit=1)[1].strip()
             print(f"{dim}(model -> {model}){reset}")
             continue
-        if user == "/think":
+        if user == "/think" or user.startswith("/think "):
+            arg = user[len("/think"):].strip().lower()
+            if arg not in ("", "on", "off"):
+                print(f"{dim}(usage: /think on|off){reset}")
+                continue
+            think_on = {"on": True, "off": False, "": not think_on}[arg]
+            if think_on:
+                print(f"{dim}(deep-think ON — model {model}, reasoning enabled){reset}")
+            else:
+                print(f"{dim}(deep-think OFF — fast lane: fast_chat, no reasoning){reset}")
+            continue
+        if user == "/show":
             show_think = not show_think
-            print(f"{dim}(reasoning display {'on' if show_think else 'off'}){reset}")
+            print(f"{dim}(reasoning display: {'full text' if show_think else 'compact indicator'}){reset}")
             continue
 
         history.append({"role": "user", "content": user})
@@ -425,10 +438,27 @@ def cmd_chat(args: argparse.Namespace) -> int:
         answered = False        # have we printed any answer content yet?
         think_start = None      # monotonic clock when the first reasoning token arrived
         think_tokens = 0
+        # Deep-think on → the selected model on the default path (Qwen3 reasons
+        # by default). Off → the fast lane: fast_chat with thinking disabled. A
+        # `think` field tells the gateway to use Ollama's native API, the only
+        # surface that can actually suppress a reasoning model's thinking.
+        if think_on:
+            req = {"model": model, "messages": history, "stream": True}
+        else:
+            req = {"model": "fast_chat", "messages": history, "stream": True, "think": False}
+        spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        # Instant feedback: in deep-think mode the model usually reasons for a
+        # beat before the first token, so seed the spinner now instead of
+        # leaving a frozen prompt. (--show-thinking prints the reasoning itself;
+        # the fast lane has no thinking to announce.)
+        if think_on and not show_think:
+            think_start = time.monotonic()
+            sys.stdout.write(f"\r{dim}💭 thinking {spin[0]} 0 tok · 0s{reset}\033[K")
+            sys.stdout.flush()
         try:
             with httpx.stream(
                 "POST", f"{base}/v1/chat/completions",
-                json={"model": model, "messages": history, "stream": True},
+                json=req,
                 timeout=None,
             ) as r:
                 if r.status_code != 200:
@@ -477,8 +507,9 @@ def cmd_chat(args: argparse.Namespace) -> int:
                         else:
                             think_tokens += 1
                             el = time.monotonic() - think_start
+                            spinner = spin[think_tokens % len(spin)]
                             sys.stdout.write(
-                                f"\r{dim}💭 thinking… {think_tokens} tok · {el:.0f}s{reset}\033[K")
+                                f"\r{dim}💭 thinking {spinner} {think_tokens} tok · {el:.0f}s{reset}\033[K")
                             sys.stdout.flush()
                     if content:
                         if not answered:
@@ -566,8 +597,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("chat", help="interactive streaming chat with the local engine")
     s.add_argument("--model", help="role alias or model id (default: primary_chat)")
     s.add_argument("--system", help="optional system prompt")
+    s.add_argument("--no-think", action="store_true",
+                   help="start with deep-think off (fast lane); toggle in-chat with /think on|off")
     s.add_argument("--show-thinking", action="store_true",
-                   help="stream the model's full reasoning (default: compact indicator)")
+                   help="show the model's full reasoning text (default: compact indicator)")
     s.set_defaults(func=cmd_chat)
     return p
 

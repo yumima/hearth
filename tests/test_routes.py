@@ -47,6 +47,23 @@ class FakeBackend:
             yield f"data: {json.dumps(frame)}\n\n".encode()
         yield b"data: [DONE]\n\n"
 
+    # Native (think-aware) path — stands in for Ollama's /api/chat.
+    async def chat_native(self, payload, think):
+        self.last_payload = payload
+        self.last_think = think
+        return {
+            "id": "chatcmpl-x", "object": "chat.completion", "model": payload["model"],
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": "native"},
+                         "finish_reason": "stop"}],
+        }
+
+    async def chat_stream_native(self, payload, think):
+        self.last_payload = payload
+        self.last_think = think
+        yield b'data: {"choices":[{"delta":{"content":"nat"}}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
     async def embeddings(self, payload):
         self.last_payload = payload
         return {"object": "list", "data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}], "model": payload["model"]}
@@ -86,6 +103,38 @@ def test_chat_resolves_role_to_concrete_model():
     expected = cfgmod.default_config().roles["primary_chat"].model
     assert backend.last_payload["model"] == expected
     assert r.json()["choices"][0]["message"]["content"] == "hi"
+
+
+def test_think_field_routes_to_native_and_is_stripped():
+    client, backend = _client()
+    r = client.post("/v1/chat/completions",
+                    json={"model": "primary_chat", "think": False,
+                          "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert backend.last_think is False                 # native path was taken
+    assert r.json()["choices"][0]["message"]["content"] == "native"
+    assert "think" not in backend.last_payload         # extension stripped from backend payload
+
+
+def test_no_think_field_uses_openai_passthrough():
+    client, backend = _client()
+    backend.last_think = "untouched"
+    r = client.post("/v1/chat/completions",
+                    json={"model": "primary_chat",
+                          "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert backend.last_think == "untouched"           # native path NOT taken
+    assert r.json()["choices"][0]["message"]["content"] == "hi"
+
+
+def test_think_field_routes_to_native_streaming():
+    client, backend = _client()
+    with client.stream("POST", "/v1/chat/completions",
+                       json={"model": "fast_chat", "stream": True, "think": False,
+                             "messages": []}) as r:
+        body = b"".join(r.iter_bytes())
+    assert backend.last_think is False
+    assert b'"content":"nat"' in body and b"[DONE]" in body
 
 
 def test_chat_streaming_passthrough():
