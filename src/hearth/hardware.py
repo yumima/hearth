@@ -130,3 +130,48 @@ def as_dict() -> dict:
             break
     d["inference_target"] = best or "cpu"
     return d
+
+
+def recommend_roles() -> dict[str, str]:
+    """Pick a role→model set that fits the detected hardware (the M3 first-run
+    wizard). Qwen3 generation.
+
+    On a ~12 GB GPU with ample system RAM we prefer the **30B MoE**
+    (qwen3:30b-a3b): only ~3B params are active per token, so the few GB that
+    spill from VRAM to RAM cost little speed, and it beats a dense 14B on
+    quality. Smaller GPUs get dense models that fit fully on-GPU; CPU-only
+    boxes are sized by RAM.
+    """
+    hw = probe()
+    vram = 0
+    for g in hw.gpus:
+        if g.compute == "cuda" and g.vram_mib:
+            vram = max(vram, g.vram_mib)
+    ram = hw.ram_total_mib or 0
+
+    if vram >= 22000:
+        primary, fast = "qwen3:32b", "qwen3:14b"
+    elif vram >= 11000:
+        # 12–16 GB GPU: dense 14B fits fully; with ≥24 GB RAM the 30B MoE
+        # (3B active) gives more quality via cheap partial offload.
+        primary = "qwen3:30b-a3b" if ram >= 24000 else "qwen3:14b"
+        fast = "qwen3:8b"
+    elif vram >= 7000:
+        primary, fast = "qwen3:8b", "qwen3:4b"
+    elif vram >= 4500:
+        primary, fast = "qwen3:4b", "qwen3:1.7b"
+    elif vram > 0:
+        primary, fast = "qwen3:1.7b", "qwen3:0.6b"
+    elif ram >= 32000:  # CPU-only — size by RAM
+        primary, fast = "qwen3:8b", "qwen3:4b"
+    elif ram >= 16000:
+        primary, fast = "qwen3:4b", "qwen3:1.7b"
+    else:
+        primary, fast = "qwen3:1.7b", "qwen3:0.6b"
+
+    return {
+        "primary_chat": primary,
+        "fast_chat": fast,
+        "coding": fast,
+        "embedding": "nomic-embed-text",
+    }

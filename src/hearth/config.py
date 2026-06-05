@@ -31,12 +31,13 @@ DEFAULT_BIND_PORT = 11435  # one off from Ollama's 11434 (design doc §4.6)
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
 # Defaults tuned for a 12 GB-VRAM consumer GPU (this box: RTX 5070 Ti 12 GB,
-# CUDA compute healthy even though the dGPU is wedged for *display*). The
+# CUDA compute healthy even though the dGPU is wedged for *display*). Qwen3 is
+# the current generation; qwen3:14b (~9 GB q4) fits fully on the GPU. The
 # first-run wizard (M3) will re-pick these from the hardware probe.
 _DEFAULT_ROLES: dict[str, dict[str, str]] = {
-    "primary_chat": {"model": "qwen2.5:14b-instruct-q4_K_M", "backend": "ollama"},
-    "fast_chat": {"model": "qwen2.5:7b-instruct-q4_K_M", "backend": "ollama"},
-    "coding": {"model": "qwen2.5:7b-instruct-q4_K_M", "backend": "ollama"},
+    "primary_chat": {"model": "qwen3:14b", "backend": "ollama"},
+    "fast_chat": {"model": "qwen3:8b", "backend": "ollama"},
+    "coding": {"model": "qwen3:8b", "backend": "ollama"},
     "embedding": {"model": "nomic-embed-text", "backend": "ollama"},
     # stt/vision left unbound until M2/optional. An unbound role resolves to
     # None and the endpoint returns a clear "role not bound" error.

@@ -81,8 +81,10 @@ def test_chat_resolves_role_to_concrete_model():
     client, backend = _client()
     r = client.post("/v1/chat/completions", json={"model": "primary_chat", "messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 200
-    # The backend must have received the concrete model id, not the alias.
-    assert backend.last_payload["model"] == "qwen2.5:14b-instruct-q4_K_M"
+    # The backend must have received the concrete model id, not the alias —
+    # i.e. whatever primary_chat is bound to in the default config.
+    expected = cfgmod.default_config().roles["primary_chat"].model
+    assert backend.last_payload["model"] == expected
     assert r.json()["choices"][0]["message"]["content"] == "hi"
 
 

@@ -5,7 +5,7 @@ def test_default_config_has_roles_and_ollama_backend():
     cfg = cfgmod.default_config()
     assert "ollama" in cfg.backends
     assert cfg.backends["ollama"].type == "ollama"
-    assert cfg.roles["primary_chat"].model.startswith("qwen2.5:14b")
+    assert cfg.roles["primary_chat"].model.startswith("qwen3")
     assert cfg.bind_port == 11435
 
 

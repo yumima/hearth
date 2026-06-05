@@ -102,6 +102,19 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     atexit.register(_cleanup_pid)
 
+    # Hint to run `hearth setup` when the primary_chat model isn't pulled yet.
+    pm = cfg.roles.get("primary_chat")
+    if ollama and pm:
+        try:
+            tags = httpx.get(f"{ollama.base_url}/api/tags", timeout=2.0).json().get("models", [])
+            names = {t.get("name", "") for t in tags}
+            if pm.model not in names:
+                print(f"[hearth] primary_chat model '{pm.model}' not pulled — run "
+                      f"`hearth setup` to auto-pick + pull a model that fits your hardware "
+                      f"(or `hearth pull {pm.model}`)", file=sys.stderr)
+        except httpx.HTTPError:
+            pass
+
     app = create_app(cfg, allow_any_host=allow_any_host, api_key=api_key)
     print(f"[hearth] serving OpenAI-compatible API on http://{cfg.bind_host}:{cfg.bind_port}")
     print(f"[hearth] probe: GET /v1/models   health: GET /admin/health   chat: hearth chat")
@@ -134,44 +147,105 @@ def cmd_models(args: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_pull(args: argparse.Namespace) -> int:
-    cfg = cfgmod.load()
+def _pull_model(ollama_base_url: str, model: str) -> int:
+    """Stream an Ollama pull with a progress line. Returns 0 on success."""
+    print(f"pulling {model} ...")
+    last = ""
+    try:
+        with httpx.stream(
+            "POST", f"{ollama_base_url}/api/pull",
+            json={"model": model, "stream": True}, timeout=None,
+        ) as r:
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                status = obj.get("status", "")
+                total, completed = obj.get("total"), obj.get("completed")
+                if total and completed:
+                    msg = f"\r{status} {100.0*completed/total:5.1f}% ({completed/1e9:.2f}/{total/1e9:.2f} GB)"
+                else:
+                    msg = f"\r{status}"
+                if msg != last:
+                    sys.stdout.write(msg.ljust(70))
+                    sys.stdout.flush()
+                    last = msg
+                if obj.get("error"):
+                    print(f"\nerror: {obj['error']}", file=sys.stderr)
+                    return 1
+    except httpx.HTTPError as e:
+        print(f"\npull failed: {e}", file=sys.stderr)
+        return 1
+    print("\ndone")
+    return 0
+
+
+def _ensure_ollama(cfg: cfgmod.Config):
+    """Return the ollama backend with its daemon up, or None."""
     ollama = cfg.backends.get("ollama")
     if not ollama:
-        print("no ollama backend configured", file=sys.stderr)
-        return 1
+        return None
     if not ollama_supervisor.is_up(ollama.base_url):
-        proc = ollama_supervisor.start(ollama.base_url)
-        if proc is None and not ollama_supervisor.is_up(ollama.base_url):
-            print("could not start ollama", file=sys.stderr)
+        ollama_supervisor.start(ollama.base_url)
+        if not ollama_supervisor.is_up(ollama.base_url):
+            return None
+    return ollama
+
+
+def cmd_pull(args: argparse.Namespace) -> int:
+    cfg = cfgmod.load()
+    ollama = _ensure_ollama(cfg)
+    if not ollama:
+        print("ollama backend not available", file=sys.stderr)
+        return 1
+    return _pull_model(ollama.base_url, args.model)
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """First-run wizard: probe hardware → recommend a fitting model set →
+    pull + bind. The whole point of `git clone … && hearth setup`."""
+    cfg = cfgmod.load()
+    rec = hardware.recommend_roles()
+    hw = hardware.as_dict()
+    ram_gib = (hw.get("ram_total_mib") or 0) // 1024
+    print(f"hardware: {hw['inference_target']}  |  RAM {ram_gib} GiB")
+    print("recommended role bindings:")
+    for r, m in rec.items():
+        print(f"  {r:14s} -> {m}")
+
+    if not args.yes:
+        try:
+            ans = input("\nPull these models and bind the roles? [Y/n] ").strip().lower()
+        except EOFError:
+            ans = "y"
+        if ans in ("n", "no"):
+            print("aborted.")
+            return 0
+
+    ollama = _ensure_ollama(cfg)
+    if not ollama:
+        print("ollama backend not available — cannot pull", file=sys.stderr)
+        return 1
+    for m in sorted(set(rec.values())):
+        if _pull_model(ollama.base_url, m) != 0:
+            print(f"pull of {m} failed — not binding roles", file=sys.stderr)
             return 1
-    print(f"pulling {args.model} ...")
-    last = ""
-    with httpx.stream(
-        "POST", f"{ollama.base_url}/api/pull",
-        json={"model": args.model, "stream": True}, timeout=None,
-    ) as r:
-        for line in r.iter_lines():
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            status = obj.get("status", "")
-            total, completed = obj.get("total"), obj.get("completed")
-            if total and completed:
-                msg = f"\r{status} {100.0*completed/total:5.1f}% ({completed/1e9:.2f}/{total/1e9:.2f} GB)"
-            else:
-                msg = f"\r{status}"
-            if msg != last:
-                sys.stdout.write(msg.ljust(70))
-                sys.stdout.flush()
-                last = msg
-            if obj.get("error"):
-                print(f"\nerror: {obj['error']}", file=sys.stderr)
-                return 1
-    print("\ndone")
+
+    for role, model in rec.items():
+        cfg.roles[role] = cfgmod.RoleBinding(model=model, backend="ollama")
+    cfgmod.save(cfg)
+    # Hot-apply to a running gateway so no restart is needed.
+    base = _admin_base(cfg)
+    for role, model in rec.items():
+        try:
+            httpx.put(f"{base}/admin/roles/{role}",
+                      json={"model": model, "backend": "ollama"}, timeout=3.0)
+        except httpx.HTTPError:
+            pass
+    print("\n✓ setup complete — models pulled, roles bound. Try: hearth chat")
     return 0
 
 
@@ -386,6 +460,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("hardware", help="print hardware probe")
     s.set_defaults(func=cmd_hardware)
+
+    s = sub.add_parser("setup", help="probe hardware, pull a fitting model, bind roles")
+    s.add_argument("--yes", "-y", action="store_true", help="don't prompt; pull + bind")
+    s.set_defaults(func=cmd_setup)
 
     s = sub.add_parser("status", help="show whether the gateway is up + roles")
     s.set_defaults(func=cmd_status)

@@ -27,10 +27,12 @@ pip install -e .
 hearth start
 #   -> serves http://127.0.0.1:11435  (one off from Ollama's 11434)
 
-# In another shell — pull the default model set:
-hearth pull qwen2.5:14b-instruct-q4_K_M     # primary_chat
-hearth pull qwen2.5:7b-instruct-q4_K_M       # fast_chat / coding
-hearth pull nomic-embed-text                 # embedding
+# In another shell — auto-detect your hardware, pull a model that fits, bind roles:
+hearth setup          # probe → recommend (e.g. qwen3:30b-a3b on a 12GB GPU + ample RAM) → pull → bind
+
+# …or pull specific models yourself:
+hearth pull qwen3:14b          # primary_chat (fully on a 12GB GPU)
+hearth pull nomic-embed-text   # embedding
 
 hearth roles          # show role -> model bindings
 hearth hardware       # GPU / VRAM / RAM probe
