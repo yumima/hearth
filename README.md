@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`abec0ab`](https://github.com/yumima/hearth/commit/abec0ab) hardware: KV-cache headroom in VRAM-fit thresholds + recommend_roles tests
 - [`e4765a7`](https://github.com/yumima/hearth/commit/e4765a7) hardware: recommend the largest model that FITS IN VRAM; start tips it
 - [`392d7ac`](https://github.com/yumima/hearth/commit/392d7ac) cli: hint toward the service when 'hearth start' runs foreground
 - [`38ba49c`](https://github.com/yumima/hearth/commit/38ba49c) cli: 'hearth service' — run as a systemd --user background service
@@ -64,7 +65,7 @@ CUDA toolkit.
 | `hearth stop` | stop the running gateway (found by pidfile, else by its port) |
 | `hearth status` | is the gateway up? show role bindings |
 | `hearth setup` | **first-run wizard** — probe hardware, pull a fitting model, bind roles |
-| `hearth chat` | streaming chat with a live thinking spinner + deep-think toggle (`/think on\|off`, default on; off = fast lane). Flags `--model` `--system` `--no-think` `--show-thinking`; in-chat `/exit` `/reset` `/model` `/show` |
+| `hearth` / `hearth chat` | streaming chat — **bare `hearth` launches it** (like `claude`). Live thinking spinner + deep-think toggle. `/help` lists in-chat commands: `/model` (picker), `/think on\|off`, `/system`, `/status`, `/retry`, `/save`, `/clear`, … Flags `--model` `--system` `--no-think` `--show-thinking` |
 | `hearth pull <model>` | pull a model via Ollama |
 | `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
 | `hearth roles` / `models` | show role bindings / servable models |

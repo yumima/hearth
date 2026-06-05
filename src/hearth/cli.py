@@ -397,6 +397,35 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+_CHAT_HELP = """\
+{dim}commands:
+  /help  /?           show this help
+  /model [name]       switch model — no name shows a numbered picker
+  /models             list servable models + role aliases
+  /think on|off       deep-think (off = fast lane: fast_chat)
+  /show               toggle full reasoning vs the compact spinner
+  /system [text]      show, or set, the system prompt
+  /status             model, deep-think, gateway health, turn count
+  /retry              regenerate the last reply
+  /save [file]        save the transcript (default: hearth-chat.md)
+  /clear              clear the screen and the conversation
+  /reset              clear the conversation (keep the screen)
+  /exit  /quit        leave{reset}"""
+
+
+def _chat_models(base: str) -> tuple[list[str], list[str]]:
+    """(concrete model ids, role aliases) from the gateway's /v1/models."""
+    try:
+        r = httpx.get(f"{base}/v1/models", timeout=5.0)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+    except (httpx.HTTPError, ValueError):
+        return [], []
+    concrete = [m["id"] for m in data if m.get("id") and m.get("owned_by") != "hearth-role"]
+    roles = [m["id"] for m in data if m.get("id") and m.get("owned_by") == "hearth-role"]
+    return concrete, roles
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     """A tiny streaming REPL against the local gateway — like ChatGPT in the
     terminal, but fully local."""
@@ -413,9 +442,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     think_on = not bool(getattr(args, "no_think", False))    # deep-think, default on
     show_think = bool(getattr(args, "show_thinking", False))  # show full reasoning text
     bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
-    print(f"{dim}hearth chat — model={model} · deep-think {'on' if think_on else 'off'}\n"
-          f"  /exit  /reset  /model NAME  /think on|off  /show  "
-          f"(deep-think off = fast lane: fast_chat){reset}")
+    print(f"{dim}hearth chat — model {model} · deep-think {'on' if think_on else 'off'} · "
+          f"/help for commands · /exit to quit{reset}")
     history: list[dict] = []
     if args.system:
         history.append({"role": "system", "content": args.system})
@@ -430,13 +458,56 @@ def cmd_chat(args: argparse.Namespace) -> int:
             continue
         if user in ("/exit", "/quit"):
             break
+        if user in ("/help", "/?", "/commands"):
+            print(_CHAT_HELP.format(dim=dim, reset=reset))
+            continue
+        if user == "/clear":
+            history = [h for h in history if h["role"] == "system"]
+            sys.stdout.write("\033[H\033[2J\033[3J")  # home + clear screen + scrollback
+            sys.stdout.flush()
+            print(f"{dim}(cleared){reset}")
+            continue
         if user == "/reset":
             history = [h for h in history if h["role"] == "system"]
-            print(f"{dim}(history cleared){reset}")
+            print(f"{dim}(conversation reset){reset}")
             continue
-        if user.startswith("/model "):
-            model = user.split(maxsplit=1)[1].strip()
-            print(f"{dim}(model -> {model}){reset}")
+        if user == "/models":
+            concrete, roles = _chat_models(base)
+            if not concrete and not roles:
+                print(f"{dim}(could not reach {base}){reset}")
+            else:
+                print(f"{dim}models:  {'  '.join(concrete)}{reset}")
+                if roles:
+                    print(f"{dim}roles:   {'  '.join(roles)}{reset}")
+            continue
+        if user == "/model" or user.startswith("/model "):
+            arg = user[len("/model"):].strip()
+            if arg:
+                model = arg
+                print(f"{dim}(model → {model}){reset}")
+                continue
+            concrete, roles = _chat_models(base)
+            choices = concrete + roles
+            if not choices:
+                print(f"{dim}(could not list models at {base}){reset}")
+                continue
+            print(f"{dim}select a model:{reset}")
+            for i, m in enumerate(choices, 1):
+                tag = " (current)" if m == model else (" ·role" if m in roles else "")
+                print(f"  {dim}{i:>2}{reset} {m}{dim}{tag}{reset}")
+            try:
+                sel = input(f"{bold}model #/name>{reset} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                sel = ""
+            if not sel:
+                print(f"{dim}(unchanged){reset}")
+            elif sel.isascii() and sel.isdigit() and 1 <= int(sel) <= len(choices):
+                model = choices[int(sel) - 1]
+                print(f"{dim}(model → {model}){reset}")
+            else:
+                model = sel
+                print(f"{dim}(model → {model}){reset}")
             continue
         if user == "/think" or user.startswith("/think "):
             arg = user[len("/think"):].strip().lower()
@@ -452,6 +523,55 @@ def cmd_chat(args: argparse.Namespace) -> int:
         if user == "/show":
             show_think = not show_think
             print(f"{dim}(reasoning display: {'full text' if show_think else 'compact indicator'}){reset}")
+            continue
+        if user == "/system" or user.startswith("/system "):
+            arg = user[len("/system"):].strip()
+            if not arg:
+                cur = next((h["content"] for h in history if h["role"] == "system"), None)
+                print(f"{dim}system: {cur if cur else '(none)'}{reset}")
+            else:
+                history = [h for h in history if h["role"] != "system"]
+                history.insert(0, {"role": "system", "content": arg})
+                print(f"{dim}(system prompt set){reset}")
+            continue
+        if user == "/status":
+            n_turns = sum(1 for h in history if h["role"] == "user")
+            try:
+                up = httpx.get(f"{base}/admin/health", timeout=2.0).status_code in (200, 503)
+            except httpx.HTTPError:
+                up = False
+            has_sys = any(h["role"] == "system" for h in history)
+            print(f"{dim}model: {model} · deep-think: {'on' if think_on else 'off'} · "
+                  f"reasoning: {'full' if show_think else 'compact'}\n"
+                  f"gateway: {base} ({'up' if up else 'down'}) · turns: {n_turns} · "
+                  f"system: {'set' if has_sys else 'none'}{reset}")
+            continue
+        if user == "/save" or user.startswith("/save "):
+            path = user[len("/save"):].strip() or "hearth-chat.md"
+            try:
+                body = "\n".join(f"### {h['role']}\n\n{h['content']}\n" for h in history)
+                Path(path).write_text(body, encoding="utf-8")
+                print(f"{dim}(saved {len(history)} messages → {path}){reset}")
+            except OSError as e:
+                print(f"{dim}(save failed: {e}){reset}")
+            continue
+        if user == "/retry":
+            # Drop the last assistant reply + re-send the last user message;
+            # fall through (no `continue`) so the send block below re-runs it.
+            if history and history[-1]["role"] == "assistant":
+                history.pop()
+            last_user = None
+            for i in range(len(history) - 1, -1, -1):
+                if history[i]["role"] == "user":
+                    last_user = history[i]["content"]
+                    history = history[:i]  # removed; the send block re-appends it
+                    break
+            if last_user is None:
+                print(f"{dim}(nothing to retry){reset}")
+                continue
+            user = last_user
+        elif user.startswith("/"):
+            print(f"{dim}(unknown command {user.split()[0]!r} — /help for the list){reset}")
             continue
 
         history.append({"role": "user", "content": user})
@@ -745,7 +865,10 @@ def cmd_service(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hearth", description="Local OpenAI-compatible AI engine")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    # Bare `hearth` (no subcommand) launches the chat REPL, like bare `claude`.
+    # A subcommand's own set_defaults(func=...) overrides these.
+    p.set_defaults(func=cmd_chat, model=None, system=None, no_think=False, show_thinking=False)
+    sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("start", help="serve the gateway (brings up Ollama)")
     s.add_argument("--bind", help="host:port override (default from config)")
