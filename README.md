@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`2193608`](https://github.com/yumima/hearth/commit/2193608) chat: deep-think on/off toggle + live thinking spinner
 - [`39b28ac`](https://github.com/yumima/hearth/commit/39b28ac) cli: show reasoning-model thinking in chat; stop-by-port fallback
 - [`9222a87`](https://github.com/yumima/hearth/commit/9222a87) **docs:** refresh README + auto-maintained 'Today's commits' changelog
 - [`f0106e8`](https://github.com/yumima/hearth/commit/f0106e8) make: add install-cli (symlink hearth onto ~/.local/bin PATH)
@@ -65,6 +66,7 @@ CUDA toolkit.
 | `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
 | `hearth roles` / `models` | show role bindings / servable models |
 | `hearth hardware` | GPU / VRAM / RAM probe |
+| `hearth service …` | run as a background systemd --user service: `install` `start` `stop` `restart` `status` `logs` `autostart on\|off` |
 
 Equivalent `make` targets exist (`make start|stop|status|chat|test`). For a
 **clickable launcher** in your app menu (Linux / freedesktop):
@@ -76,6 +78,26 @@ make uninstall-app
 
 Clicking it starts the engine detached (logs to `~/.hearth/hearth.log`) and
 shows a desktop notification. Stop it with `hearth stop`.
+
+### Run as a background service
+
+For an always-available engine (CLI chat, finterm, any OpenAI-SDK client), run
+hearth as a **systemd --user service** — driven entirely through `hearth`, no
+`systemctl` needed:
+
+```bash
+hearth service install --autostart   # install the unit + start on login
+hearth service start                 # start it now (frees your terminal)
+hearth service status                # is it up?
+hearth service logs -f               # follow logs (journal)
+hearth service autostart on --boot   # also start at boot, before login (linger)
+hearth service stop | restart | uninstall
+```
+
+The unit runs `hearth start` (gateway **+** Ollama, cleanly stopped together via
+the service cgroup) and is pinned to the stable `~/.local/bin/hearth` symlink, so
+rebuilding the venv doesn't break it. After editing hearth's code,
+`hearth service restart` reloads it.
 
 ## API
 

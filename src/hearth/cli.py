@@ -547,6 +547,180 @@ def cmd_chat(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- run as a background service (systemd --user) -----------------------
+#
+# `hearth` stays the single control surface; underneath it drives a
+# systemd --user unit that runs `hearth start`. The unit points at the stable
+# ~/.local/bin/hearth symlink — not the in-tree venv — so rebuilding the venv
+# or moving the checkout doesn't break the service.
+
+_UNIT_NAME = "hearth.service"
+_UNIT_TEMPLATE = """\
+[Unit]
+Description=hearth — local OpenAI-compatible AI engine (gateway + Ollama)
+Documentation=https://github.com/yumima/hearth
+
+[Service]
+Type=simple
+ExecStart={exec} start
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _unit_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "systemd" / "user" / _UNIT_NAME
+
+
+def _sc_env() -> dict:
+    # systemctl --user needs the user bus; supply XDG_RUNTIME_DIR if a
+    # non-login shell didn't set it.
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return env
+
+
+def _systemctl(*sc_args: str) -> int:
+    sc = shutil.which("systemctl")
+    if not sc:
+        print("systemctl not found — `hearth service` needs a systemd user "
+              "session. Use `hearth start` directly, or the desktop launcher.",
+              file=sys.stderr)
+        return 127
+    return subprocess.run([sc, "--user", *sc_args], env=_sc_env()).returncode
+
+
+def _real_hearth_bin() -> str | None:
+    """The real `hearth` console-script, or None if there isn't one (e.g. when
+    invoked via `python -m hearth`). Never returns __main__.py."""
+    found = shutil.which("hearth")
+    if found:
+        return os.path.realpath(found)
+    # The console-script normally sits next to the interpreter in the venv.
+    cand = Path(sys.executable).resolve().with_name("hearth")
+    if cand.exists():
+        return str(cand)
+    argv0 = Path(sys.argv[0]).resolve()
+    if argv0.name == "hearth" and os.access(argv0, os.X_OK):
+        return str(argv0)
+    return None
+
+
+def _launcher() -> str:
+    """ExecStart command (without the trailing `start`) for the unit. Prefers
+    the stable ~/.local/bin/hearth symlink — (re)pointed at the real console-
+    script so venv rebuilds don't break the service — and falls back to
+    `<python> -m hearth` so the unit is always a valid, absolute command even
+    when no console script is on PATH (never an unexecutable __main__.py)."""
+    real = _real_hearth_bin()
+    if real:
+        link = Path.home() / ".local" / "bin" / "hearth"
+        try:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if link.exists() and not link.is_symlink():
+                return str(link)  # a real file is already installed there; trust it
+            if not link.exists() or os.path.realpath(link) != real:
+                if link.is_symlink():
+                    link.unlink()
+                link.symlink_to(real)
+            return str(link)
+        except OSError:
+            return real
+    return f"{os.path.realpath(sys.executable)} -m hearth"
+
+
+def _service_autostart(on: bool, boot: bool) -> int:
+    lg = shutil.which("loginctl")
+    user = os.environ.get("USER") or str(os.getuid())
+    if on:
+        rc = _systemctl("enable", _UNIT_NAME)
+        if rc == 0:
+            print("✓ autostart on login: ENABLED")
+            # Only enable boot-linger once login-autostart actually took.
+            if boot and lg and subprocess.run([lg, "enable-linger", user]).returncode == 0:
+                print("✓ lingering: ENABLED (starts at boot, survives logout)")
+        return rc
+    rc = _systemctl("disable", _UNIT_NAME)
+    if rc == 0:
+        print("✓ autostart on login: DISABLED")
+    # 'off' fully reverses 'on --boot': drop linger too (no-op if it was off).
+    if lg:
+        subprocess.run([lg, "disable-linger", user])
+    return rc
+
+
+def _service_install(args: argparse.Namespace) -> int:
+    if not shutil.which("systemctl"):
+        print("systemctl not found — `hearth service` needs systemd.", file=sys.stderr)
+        return 127
+    exec_bin = _launcher()
+    unit = _unit_path()
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(_UNIT_TEMPLATE.format(exec=exec_bin))
+    print(f"✓ installed {unit}")
+    print(f"    ExecStart={exec_bin} start")
+    _systemctl("daemon-reload")
+    if getattr(args, "autostart", False):
+        _service_autostart(True, getattr(args, "boot", False))
+    print("\nControl with:  hearth service start | stop | restart | status | logs")
+    print("Autostart:     hearth service autostart on [--boot]   |   off")
+    return 0
+
+
+def _service_uninstall(args: argparse.Namespace) -> int:
+    _systemctl("disable", "--now", _UNIT_NAME)
+    _unit_path().unlink(missing_ok=True)
+    _systemctl("daemon-reload")
+    print("✓ removed hearth.service (stopped if it was running)")
+    return 0
+
+
+def cmd_service(args: argparse.Namespace) -> int:
+    action = args.action
+    if action == "install":
+        return _service_install(args)
+    if action == "uninstall":
+        return _service_uninstall(args)
+    if action == "stop":
+        return _systemctl("stop", _UNIT_NAME)
+    if action in ("start", "restart"):
+        # If a foreground/manual gateway already holds the port, the unit would
+        # fork, find the port taken, exit 0, and go inactive — warn rather than
+        # silently no-op. (Skip the warning if our service is already active.)
+        try:
+            port = cfgmod.load().bind_port
+        except Exception:
+            port = 11435
+        active = _systemctl("is-active", "--quiet", _UNIT_NAME) == 0
+        if not active and _pid_on_port(port):
+            print(f"warning: something already serves :{port} (likely a foreground "
+                  f"`hearth start`). Stop it first (`hearth stop`), or the service "
+                  f"will start, find the port taken, and immediately exit.",
+                  file=sys.stderr)
+        return _systemctl(action, _UNIT_NAME)
+    if action == "status":
+        # `systemctl status` exits non-zero when inactive — don't surface that
+        # as a CLI error; the printed status is the answer.
+        _systemctl("status", "--no-pager", _UNIT_NAME)
+        return 0
+    if action == "logs":
+        jc = shutil.which("journalctl")
+        if not jc:
+            print("journalctl not found", file=sys.stderr)
+            return 127
+        tail = ["-f"] if getattr(args, "follow", False) else ["-n", "200", "--no-pager"]
+        return subprocess.run([jc, "--user", "-u", _UNIT_NAME, *tail], env=_sc_env()).returncode
+    if action == "autostart":
+        return _service_autostart(args.state == "on", getattr(args, "boot", False))
+    print(f"unknown service action {action!r}", file=sys.stderr)
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hearth", description="Local OpenAI-compatible AI engine")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -602,6 +776,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--show-thinking", action="store_true",
                    help="show the model's full reasoning text (default: compact indicator)")
     s.set_defaults(func=cmd_chat)
+
+    sp = sub.add_parser("service", help="run hearth as a background service (systemd --user)")
+    sp_sub = sp.add_subparsers(dest="action", required=True)
+    sp_i = sp_sub.add_parser("install", help="install the systemd --user unit")
+    sp_i.add_argument("--autostart", action="store_true", help="also enable start-on-login")
+    sp_i.add_argument("--boot", action="store_true",
+                      help="with --autostart: also start at boot, before login (linger)")
+    sp_sub.add_parser("uninstall", help="stop + remove the unit")
+    sp_sub.add_parser("start", help="start the service now")
+    sp_sub.add_parser("stop", help="stop the service")
+    sp_sub.add_parser("restart", help="restart (reloads edited code)")
+    sp_sub.add_parser("status", help="show service status")
+    sp_l = sp_sub.add_parser("logs", help="show service logs (journal)")
+    sp_l.add_argument("-f", "--follow", action="store_true", help="follow live")
+    sp_a = sp_sub.add_parser("autostart", help="enable/disable start-on-login")
+    sp_a.add_argument("state", choices=["on", "off"])
+    sp_a.add_argument("--boot", action="store_true",
+                      help="with 'on': also start at boot, before login (linger)")
+    sp.set_defaults(func=cmd_service)
     return p
 
 
