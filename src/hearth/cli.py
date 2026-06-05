@@ -100,6 +100,19 @@ def cmd_start(args: argparse.Namespace) -> int:
               "not the daemon.\n      For the background service:  hearth service start"
               "      (Ctrl-C stops this one)", file=sys.stderr)
 
+    # Detect + suggest the best-fit model: if the bound primary_chat differs from
+    # what fits this hardware best, say so. A model that overflows VRAM runs its
+    # spillover on the CPU and starves the GPU (slow). Best-effort; never blocks.
+    try:
+        rec = hardware.recommend_roles().get("primary_chat")
+        cur = cfg.roles.get("primary_chat")
+        if rec and cur and cur.model != rec:
+            print(f"tip: primary_chat = '{cur.model}', but '{rec}' fits your hardware "
+                  f"better (full-GPU speed).\n     apply with:  hearth bind primary_chat "
+                  f"{rec}   (or: hearth setup)", file=sys.stderr)
+    except Exception:
+        pass
+
     # Bring up Ollama unless told not to.
     ollama = cfg.backends.get("ollama")
     if ollama and not args.no_manage:

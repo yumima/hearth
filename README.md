@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`392d7ac`](https://github.com/yumima/hearth/commit/392d7ac) cli: hint toward the service when 'hearth start' runs foreground
 - [`38ba49c`](https://github.com/yumima/hearth/commit/38ba49c) cli: 'hearth service' — run as a systemd --user background service
 - [`2193608`](https://github.com/yumima/hearth/commit/2193608) chat: deep-think on/off toggle + live thinking spinner
 - [`39b28ac`](https://github.com/yumima/hearth/commit/39b28ac) cli: show reasoning-model thinking in chat; stop-by-port fallback
@@ -129,20 +130,22 @@ literal id (`qwen3:14b`) routes straight through. Config at
 
 Built-in defaults (Qwen3); `hearth setup` overrides them per your hardware:
 
-| Role | Built-in default | `setup` on a 12 GB GPU + ≥24 GB RAM |
+| Role | Built-in default | `setup` picks (largest that fits VRAM) |
 |---|---|---|
-| `primary_chat` | `qwen3:14b` | `qwen3:30b-a3b` (MoE — see below) |
+| `primary_chat` | `qwen3:14b` | 12 GB → `qwen3:14b` · 20 GB → `qwen3:30b-a3b` · 24 GB+ → `qwen3:32b` |
 | `fast_chat` / `coding` | `qwen3:8b` | `qwen3:8b` |
 | `embedding` | `nomic-embed-text` | `nomic-embed-text` |
 | `stt` | `faster-whisper:medium` *(M2)* | — |
 
 **Model fit (`hearth setup`).** The wizard probes GPU VRAM + system RAM and picks
-a Qwen3 model that fits. On a ~12 GB GPU with ample RAM it prefers the **30B MoE**
-(`qwen3:30b-a3b`): only ~3B params are active per token, so the few GB that spill
-from VRAM to RAM cost little speed while beating a dense 14B on quality. Smaller
-GPUs get dense models that fit fully on-GPU; CPU-only boxes are sized by RAM.
-Precedence: built-in default → `~/.hearth/config.yaml` (`setup`/`bind`) →
-per-request `model`.
+the **largest Qwen3 model that fits entirely in VRAM** — that's the rule that
+matters. A model that overflows VRAM (e.g. the 30B on a 12 GB GPU) runs its
+spillover layers on the CPU, leaving the GPU mostly idle waiting on them
+(measured ~12% GPU utilisation, far slower than a smaller model sitting 100%
+on-GPU); the MoE's few-active-params doesn't rescue this. So a 12 GB GPU gets
+`qwen3:14b` (fits → ~45 tok/s at 99% GPU), 20 GB gets `qwen3:30b-a3b`, 24 GB+
+gets `qwen3:32b`; CPU-only boxes are sized by RAM. Precedence: built-in default
+→ `~/.hearth/config.yaml` (`setup`/`bind`) → per-request `model`.
 
 ## Security
 

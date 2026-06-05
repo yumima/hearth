@@ -133,14 +133,17 @@ def as_dict() -> dict:
 
 
 def recommend_roles() -> dict[str, str]:
-    """Pick a role→model set that fits the detected hardware (the M3 first-run
+    """Pick a role→model set that fits the detected hardware (the first-run
     wizard). Qwen3 generation.
 
-    On a ~12 GB GPU with ample system RAM we prefer the **30B MoE**
-    (qwen3:30b-a3b): only ~3B params are active per token, so the few GB that
-    spill from VRAM to RAM cost little speed, and it beats a dense 14B on
-    quality. Smaller GPUs get dense models that fit fully on-GPU; CPU-only
-    boxes are sized by RAM.
+    The governing rule is **fit the model entirely in VRAM**. A model that
+    spills to system RAM (e.g. the 30B on a 12 GB GPU) runs its overflow layers
+    on the CPU, leaving the GPU mostly idle waiting on them — measured ~12% GPU
+    utilisation and far slower than a smaller model that sits 100% on-GPU. The
+    MoE's "few active params" doesn't rescue this: the partial-offload penalty
+    dominates. So we pick the largest model whose Q4 footprint (weights + KV
+    cache) fits in VRAM. Approx footprints: 32b ~22GB, 30b-a3b ~20GB, 14b ~10GB,
+    8b ~6GB, 4b ~4GB, 1.7b ~2GB. CPU-only boxes are sized by RAM.
     """
     hw = probe()
     vram = 0
@@ -149,13 +152,12 @@ def recommend_roles() -> dict[str, str]:
             vram = max(vram, g.vram_mib)
     ram = hw.ram_total_mib or 0
 
-    if vram >= 22000:
+    if vram >= 24000:
         primary, fast = "qwen3:32b", "qwen3:14b"
+    elif vram >= 20000:
+        primary, fast = "qwen3:30b-a3b", "qwen3:8b"   # MoE only where it fits
     elif vram >= 11000:
-        # 12–16 GB GPU: dense 14B fits fully; with ≥24 GB RAM the 30B MoE
-        # (3B active) gives more quality via cheap partial offload.
-        primary = "qwen3:30b-a3b" if ram >= 24000 else "qwen3:14b"
-        fast = "qwen3:8b"
+        primary, fast = "qwen3:14b", "qwen3:8b"        # 12–16 GB: dense 14B fits fully
     elif vram >= 7000:
         primary, fast = "qwen3:8b", "qwen3:4b"
     elif vram >= 4500:
