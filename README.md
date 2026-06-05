@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`e4765a7`](https://github.com/yumima/hearth/commit/e4765a7) hardware: recommend the largest model that FITS IN VRAM; start tips it
 - [`392d7ac`](https://github.com/yumima/hearth/commit/392d7ac) cli: hint toward the service when 'hearth start' runs foreground
 - [`38ba49c`](https://github.com/yumima/hearth/commit/38ba49c) cli: 'hearth service' — run as a systemd --user background service
 - [`2193608`](https://github.com/yumima/hearth/commit/2193608) chat: deep-think on/off toggle + live thinking spinner
@@ -132,7 +133,7 @@ Built-in defaults (Qwen3); `hearth setup` overrides them per your hardware:
 
 | Role | Built-in default | `setup` picks (largest that fits VRAM) |
 |---|---|---|
-| `primary_chat` | `qwen3:14b` | 12 GB → `qwen3:14b` · 20 GB → `qwen3:30b-a3b` · 24 GB+ → `qwen3:32b` |
+| `primary_chat` | `qwen3:14b` | 12 GB → `qwen3:14b` · 24 GB → `qwen3:30b-a3b` · 32 GB → `qwen3:32b` |
 | `fast_chat` / `coding` | `qwen3:8b` | `qwen3:8b` |
 | `embedding` | `nomic-embed-text` | `nomic-embed-text` |
 | `stt` | `faster-whisper:medium` *(M2)* | — |
@@ -143,8 +144,9 @@ matters. A model that overflows VRAM (e.g. the 30B on a 12 GB GPU) runs its
 spillover layers on the CPU, leaving the GPU mostly idle waiting on them
 (measured ~12% GPU utilisation, far slower than a smaller model sitting 100%
 on-GPU); the MoE's few-active-params doesn't rescue this. So a 12 GB GPU gets
-`qwen3:14b` (fits → ~45 tok/s at 99% GPU), 20 GB gets `qwen3:30b-a3b`, 24 GB+
-gets `qwen3:32b`; CPU-only boxes are sized by RAM. Precedence: built-in default
+`qwen3:14b` (fits → ~45 tok/s at 99% GPU), a 24 GB GPU gets `qwen3:30b-a3b`,
+32 GB+ gets `qwen3:32b` (thresholds keep ~2–3 GB headroom for the KV cache);
+CPU-only boxes are sized by RAM. Precedence: built-in default
 → `~/.hearth/config.yaml` (`setup`/`bind`) → per-request `model`.
 
 ## Security

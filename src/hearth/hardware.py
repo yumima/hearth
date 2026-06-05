@@ -143,7 +143,10 @@ def recommend_roles() -> dict[str, str]:
     MoE's "few active params" doesn't rescue this: the partial-offload penalty
     dominates. So we pick the largest model whose Q4 footprint (weights + KV
     cache) fits in VRAM. Approx footprints: 32b ~22GB, 30b-a3b ~20GB, 14b ~10GB,
-    8b ~6GB, 4b ~4GB, 1.7b ~2GB. CPU-only boxes are sized by RAM.
+    8b ~6GB, 4b ~4GB, 1.7b ~2GB. Thresholds carry ~2–3 GB of headroom over the
+    weights so the KV cache at real context lengths still sits 100% on-GPU (a
+    threshold set to the bare footprint would itself spill once context grows).
+    CPU-only boxes are sized by RAM.
     """
     hw = probe()
     vram = 0
@@ -152,10 +155,10 @@ def recommend_roles() -> dict[str, str]:
             vram = max(vram, g.vram_mib)
     ram = hw.ram_total_mib or 0
 
-    if vram >= 24000:
-        primary, fast = "qwen3:32b", "qwen3:14b"
-    elif vram >= 20000:
-        primary, fast = "qwen3:30b-a3b", "qwen3:8b"   # MoE only where it fits
+    if vram >= 26000:
+        primary, fast = "qwen3:32b", "qwen3:14b"       # ~22GB + KV headroom
+    elif vram >= 23000:
+        primary, fast = "qwen3:30b-a3b", "qwen3:8b"   # ~20GB + KV; MoE only where it fits
     elif vram >= 11000:
         primary, fast = "qwen3:14b", "qwen3:8b"        # 12–16 GB: dense 14B fits fully
     elif vram >= 7000:
