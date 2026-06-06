@@ -257,6 +257,133 @@ def cmd_pull(args: argparse.Namespace) -> int:
     return _pull_model(ollama.base_url, args.model)
 
 
+# ── local TTS voice (Piper) ──────────────────────────────────────────────────
+#
+# Speech is part of the local AI runtime, so `hearth setup`/`hearth voice`
+# provision it: install the piper CLI (into hearth's venv, symlinked onto PATH)
+# and download a voice model to ~/.local/share/finterm/piper/, which finterm's
+# read-aloud auto-discovers — no manual config.
+
+_DEFAULT_VOICE = "en_US-amy-medium"
+
+
+def _voice_dir() -> Path:
+    """Where finterm auto-discovers Piper voices."""
+    return Path.home() / ".local" / "share" / "finterm" / "piper"
+
+
+def _voice_url(voice: str, ext: str) -> str:
+    # piper voice id "en_US-amy-medium" → HF path "en/en_US/amy/medium".
+    parts = voice.split("-", 2)
+    if len(parts) != 3:
+        raise ValueError(f"voice id should look like 'en_US-amy-medium', got {voice!r}")
+    region, name, quality = parts
+    lang = region.split("_")[0]
+    return ("https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+            f"{lang}/{region}/{name}/{quality}/{voice}{ext}")
+
+
+def _download(url: str, dest: Path) -> bool:
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=180.0) as r:
+            r.raise_for_status()
+            expected = int(r.headers.get("content-length") or 0)
+            written = 0
+            with open(dest, "wb") as f:
+                for chunk in r.iter_bytes(65536):
+                    f.write(chunk)
+                    written += len(chunk)
+        if written == 0 or (expected and written < expected):
+            dest.unlink(missing_ok=True)
+            print(f"  download incomplete ({written}/{expected or '?'} bytes)", file=sys.stderr)
+            return False
+        return True
+    except (httpx.HTTPError, OSError) as e:
+        dest.unlink(missing_ok=True)
+        print(f"  download failed: {e}", file=sys.stderr)
+        return False
+
+
+_PIPER_RELEASE = (
+    "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
+)
+
+
+def _ensure_piper() -> bool:
+    """Make the `piper` CLI available on PATH. Uses piper's self-contained native
+    binary (bundles its own onnxruntime + espeak-ng-data) rather than the
+    `piper-tts` pip package — the pip path has no wheels for very new Pythons
+    (e.g. 3.14). Extracts to ~/.local/share/piper and symlinks onto ~/.local/bin."""
+    if shutil.which("piper") or shutil.which("piper-tts"):
+        return True
+    pdir = Path.home() / ".local" / "share" / "piper"
+    bin_ = pdir / "piper" / "piper"  # the release tars to a `piper/` dir
+    if not bin_.exists():
+        pdir.mkdir(parents=True, exist_ok=True)
+        tar = pdir / "piper.tar.gz"
+        print("  downloading the piper runtime (native binary)…")
+        if not _download(_PIPER_RELEASE, tar):
+            return False
+        import tarfile
+        try:
+            with tarfile.open(tar) as t:
+                t.extractall(pdir, filter="data")  # filter required on 3.14
+        except (tarfile.TarError, OSError, TypeError) as e:
+            print(f"  extracting piper failed: {e}", file=sys.stderr)
+            return False
+        tar.unlink(missing_ok=True)
+    if not bin_.exists():
+        print("  piper binary missing after extract", file=sys.stderr)
+        return False
+    bin_.chmod(0o755)
+    link = Path.home() / ".local" / "bin" / "piper"
+    try:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(bin_)
+    except OSError as e:
+        print(f"  could not symlink piper onto PATH: {e}", file=sys.stderr)
+        return False
+    print(f"  ✓ piper → {link}")
+    return True
+
+
+def _provision_voice(voice: str) -> bool:
+    """Provision a local Piper voice (CLI + model) that finterm auto-discovers.
+    Best-effort: never raises (returns False), and removes a half-downloaded
+    voice so finterm can't discover a broken one."""
+    try:
+        if not _ensure_piper():
+            return False
+        vdir = _voice_dir()
+        vdir.mkdir(parents=True, exist_ok=True)
+        for ext in (".onnx", ".onnx.json"):
+            dest = vdir / (voice + ext)
+            if dest.exists() and dest.stat().st_size > 0:
+                continue
+            print(f"  downloading {voice}{ext}…")
+            if not _download(_voice_url(voice, ext), dest):
+                for e2 in (".onnx", ".onnx.json"):  # don't leave a .onnx without its .json
+                    (vdir / (voice + e2)).unlink(missing_ok=True)
+                return False
+        print(f"  ✓ voice ready: {vdir / (voice + '.onnx')}")
+        return True
+    except Exception as e:  # voice provisioning must never crash setup
+        print(f"  voice provisioning error: {e}", file=sys.stderr)
+        return False
+
+
+def cmd_voice(args: argparse.Namespace) -> int:
+    voice = getattr(args, "voice", None) or _DEFAULT_VOICE
+    print(f"provisioning local TTS voice '{voice}'…")
+    if _provision_voice(voice):
+        print("✓ done — finterm's read-aloud (LISTEN / 🔊) auto-discovers it, no config needed.")
+        return 0
+    print("voice provisioning failed.", file=sys.stderr)
+    return 1
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """First-run wizard: probe hardware → recommend a fitting model set →
     pull + bind. The whole point of `git clone … && hearth setup`."""
@@ -298,6 +425,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
                       json={"model": model, "backend": "ollama"}, timeout=3.0)
         except httpx.HTTPError:
             pass
+
+    # Speech is part of the local AI runtime — provision a TTS voice too
+    # (best-effort; skip with --no-voice). finterm read-aloud auto-discovers it.
+    if not getattr(args, "no_voice", False):
+        print("\nprovisioning a local TTS voice (Piper) for read-aloud…")
+        _provision_voice(_DEFAULT_VOICE)
+
     print("\n✓ setup complete — models pulled, roles bound. Try: hearth chat")
     return 0
 
@@ -905,7 +1039,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("setup", help="probe hardware, pull a fitting model, bind roles")
     s.add_argument("--yes", "-y", action="store_true", help="don't prompt; pull + bind")
+    s.add_argument("--no-voice", action="store_true", help="skip provisioning a TTS voice")
     s.set_defaults(func=cmd_setup)
+
+    s = sub.add_parser("voice", help="provision a local Piper TTS voice (read-aloud)")
+    s.add_argument("--voice", default=_DEFAULT_VOICE, help="piper voice id (default en_US-amy-medium)")
+    s.set_defaults(func=cmd_voice)
 
     s = sub.add_parser("status", help="show whether the gateway is up + roles")
     s.set_defaults(func=cmd_status)

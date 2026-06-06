@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`a70ce4c`](https://github.com/yumima/hearth/commit/a70ce4c) chat: Claude-style command set + bare 'hearth' launches chat
 - [`abec0ab`](https://github.com/yumima/hearth/commit/abec0ab) hardware: KV-cache headroom in VRAM-fit thresholds + recommend_roles tests
 - [`e4765a7`](https://github.com/yumima/hearth/commit/e4765a7) hardware: recommend the largest model that FITS IN VRAM; start tips it
 - [`392d7ac`](https://github.com/yumima/hearth/commit/392d7ac) cli: hint toward the service when 'hearth start' runs foreground
