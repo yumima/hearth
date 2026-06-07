@@ -9,22 +9,10 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-06-05)
+## Today's commits (2026-06-07)
 
 Latest first.
 
-- [`a70ce4c`](https://github.com/yumima/hearth/commit/a70ce4c) chat: Claude-style command set + bare 'hearth' launches chat
-- [`abec0ab`](https://github.com/yumima/hearth/commit/abec0ab) hardware: KV-cache headroom in VRAM-fit thresholds + recommend_roles tests
-- [`e4765a7`](https://github.com/yumima/hearth/commit/e4765a7) hardware: recommend the largest model that FITS IN VRAM; start tips it
-- [`392d7ac`](https://github.com/yumima/hearth/commit/392d7ac) cli: hint toward the service when 'hearth start' runs foreground
-- [`38ba49c`](https://github.com/yumima/hearth/commit/38ba49c) cli: 'hearth service' — run as a systemd --user background service
-- [`2193608`](https://github.com/yumima/hearth/commit/2193608) chat: deep-think on/off toggle + live thinking spinner
-- [`39b28ac`](https://github.com/yumima/hearth/commit/39b28ac) cli: show reasoning-model thinking in chat; stop-by-port fallback
-- [`9222a87`](https://github.com/yumima/hearth/commit/9222a87) **docs:** refresh README + auto-maintained 'Today's commits' changelog
-- [`f0106e8`](https://github.com/yumima/hearth/commit/f0106e8) make: add install-cli (symlink hearth onto ~/.local/bin PATH)
-- [`589d8b1`](https://github.com/yumima/hearth/commit/589d8b1) setup: first-run hardware-fit wizard + Qwen3 defaults
-- [`9f6428e`](https://github.com/yumima/hearth/commit/9f6428e) cli: harden chat stream parse + pidfile lifecycle; quote launcher Exec
-- [`bf2b76d`](https://github.com/yumima/hearth/commit/bf2b76d) cli: add chat/status/stop, Makefile, clickable desktop app
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

@@ -51,6 +51,12 @@ def start(base_url: str, wait_s: float = 30.0) -> subprocess.Popen | None:
     # OLLAMA_HOST controls the daemon's bind. Mirror our configured base_url.
     host = base_url.split("://", 1)[-1]
     env = {**os.environ, "OLLAMA_HOST": host}
+    # Raise the default model context window above Ollama's 4096. Tool-heavy chat
+    # (curated MCP tool schemas + history + tool results) overruns 4096 and the
+    # model loses the tools — which broke tool-calling. 8192 keeps qwen3:14b fully
+    # in VRAM on a 12GB GPU; much larger overflows the KV-cache to CPU and slows
+    # inference. Respect an explicit operator override if one is already set.
+    env.setdefault("OLLAMA_CONTEXT_LENGTH", "8192")
     proc = subprocess.Popen(
         [binary, "serve"],
         env=env,
