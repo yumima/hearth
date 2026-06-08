@@ -8,8 +8,8 @@
 #   make models        list servable models
 #   make hardware      GPU / VRAM / RAM probe
 #   make test          run unit tests
-#   make install-app   install a clickable desktop launcher (Linux)
-#   make uninstall-app remove the desktop launcher
+#   make install-client   install the clickable Hearth chat desktop app
+#   make uninstall-client remove the desktop app launcher
 #
 # Ollama (the inference backend) is fetched into vendor/ separately — see
 # README.md. `make start` brings up whatever Ollama it finds.
@@ -19,7 +19,7 @@ PIP    := $(VENV)/bin/pip
 HEARTH := $(VENV)/bin/hearth
 PYTEST := $(VENV)/bin/python -m pytest
 
-.PHONY: build start stop status chat models hardware test install-app uninstall-app
+.PHONY: build start stop status chat models hardware test install-client uninstall-client
 
 build:
 	python3 -m venv $(VENV)
@@ -37,8 +37,8 @@ models:  ; $(HEARTH) models
 hardware:; $(HEARTH) hardware
 test:    ; $(PYTEST) -q
 
-install-app:   ; bash scripts/install-app.sh
-uninstall-app: ; bash scripts/uninstall-app.sh
+install-client:   ; $(HEARTH) install
+uninstall-client: ; $(HEARTH) uninstall
 
 # Put `hearth` on PATH (symlink into ~/.local/bin) so you can run it from any
 # shell without activating the venv. (~/.local/bin is on PATH on most distros.)

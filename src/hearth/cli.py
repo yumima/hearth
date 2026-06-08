@@ -823,29 +823,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
     return 0
 
 
-# ---- run as a background service (systemd --user) -----------------------
+# ---- control the background gateway service (systemd --user) -------------
 #
-# `hearth` stays the single control surface; underneath it drives a
-# systemd --user unit that runs `hearth start`. The unit points at the stable
-# ~/.local/bin/hearth symlink — not the in-tree venv — so rebuilding the venv
-# or moving the checkout doesn't break the service.
+# These subcommands drive a systemd --user unit that runs `hearth start`.
+# Installing the unit is intentionally NOT exposed here: the desktop app
+# (`hearth install` → an icon that runs `hearth gui`) starts the gateway on
+# demand, and `hearth start` / `hearth stop` cover manual control. So `service`
+# operates on a unit that already exists (start/stop/restart/status/logs/autostart).
 
 _UNIT_NAME = "hearth.service"
-_UNIT_TEMPLATE = """\
-[Unit]
-Description=hearth — local OpenAI-compatible AI engine (gateway + Ollama)
-Documentation=https://github.com/yumima/hearth
-
-[Service]
-Type=simple
-ExecStart={exec} start
-Restart=on-failure
-RestartSec=3
-TimeoutStopSec=30
-
-[Install]
-WantedBy=default.target
-"""
 
 
 def _unit_path() -> Path:
@@ -930,38 +916,8 @@ def _service_autostart(on: bool, boot: bool) -> int:
     return rc
 
 
-def _service_install(args: argparse.Namespace) -> int:
-    if not shutil.which("systemctl"):
-        print("systemctl not found — `hearth service` needs systemd.", file=sys.stderr)
-        return 127
-    exec_bin = _launcher()
-    unit = _unit_path()
-    unit.parent.mkdir(parents=True, exist_ok=True)
-    unit.write_text(_UNIT_TEMPLATE.format(exec=exec_bin))
-    print(f"✓ installed {unit}")
-    print(f"    ExecStart={exec_bin} start")
-    _systemctl("daemon-reload")
-    if getattr(args, "autostart", False):
-        _service_autostart(True, getattr(args, "boot", False))
-    print("\nControl with:  hearth service start | stop | restart | status | logs")
-    print("Autostart:     hearth service autostart on [--boot]   |   off")
-    return 0
-
-
-def _service_uninstall(args: argparse.Namespace) -> int:
-    _systemctl("disable", "--now", _UNIT_NAME)
-    _unit_path().unlink(missing_ok=True)
-    _systemctl("daemon-reload")
-    print("✓ removed hearth.service (stopped if it was running)")
-    return 0
-
-
 def cmd_service(args: argparse.Namespace) -> int:
     action = args.action
-    if action == "install":
-        return _service_install(args)
-    if action == "uninstall":
-        return _service_uninstall(args)
     if action == "stop":
         return _systemctl("stop", _UNIT_NAME)
     if action in ("start", "restart"):
@@ -995,6 +951,42 @@ def cmd_service(args: argparse.Namespace) -> int:
         return _service_autostart(args.state == "on", getattr(args, "boot", False))
     print(f"unknown service action {action!r}", file=sys.stderr)
     return 2
+
+
+# ---- desktop chat app (clickable window) --------------------------------
+#
+# The terminal client is bare `hearth` (or `hearth chat`). This is its GUI
+# counterpart: `hearth gui` shows the chat UI (served by the gateway at /app) in
+# a chrome-less native window, and `hearth install` registers a clickable app-
+# menu launcher whose icon runs `hearth gui`. There is no `service install` —
+# the engine starts on demand (the window auto-starts it, else `hearth start`).
+
+
+def _hearth_exec_argv() -> list[str]:
+    """argv prefix to invoke `hearth` from a launcher/subprocess (before the
+    subcommand). Prefers the stable ~/.local/bin/hearth symlink — (re)pointed at
+    the real console script, like the service does — so a venv rebuild or moved
+    checkout doesn't break the launcher. Falls back to `<python> -m hearth`.
+    Returned UNQUOTED: each per-OS launcher quotes it for its own context
+    (POSIX shell, PowerShell, or XDG Exec)."""
+    if _real_hearth_bin():
+        return [_launcher()]  # stable symlink path (and points it at the real bin)
+    return [os.path.realpath(sys.executable), "-m", "hearth"]
+
+
+def cmd_gui(args: argparse.Namespace) -> int:
+    from . import desktop
+    return desktop.open_window(hearth_exec=_hearth_exec_argv())
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    from . import desktop
+    return desktop.install(_hearth_exec_argv())
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    from . import desktop
+    return desktop.uninstall()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1061,13 +1053,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="show the model's full reasoning text (default: compact indicator)")
     s.set_defaults(func=cmd_chat)
 
-    sp = sub.add_parser("service", help="run hearth as a background service (systemd --user)")
+    sp = sub.add_parser("service", help="control the background gateway service (systemd --user)")
     sp_sub = sp.add_subparsers(dest="action", required=True)
-    sp_i = sp_sub.add_parser("install", help="install the systemd --user unit")
-    sp_i.add_argument("--autostart", action="store_true", help="also enable start-on-login")
-    sp_i.add_argument("--boot", action="store_true",
-                      help="with --autostart: also start at boot, before login (linger)")
-    sp_sub.add_parser("uninstall", help="stop + remove the unit")
     sp_sub.add_parser("start", help="start the service now")
     sp_sub.add_parser("stop", help="stop the service")
     sp_sub.add_parser("restart", help="restart (reloads edited code)")
@@ -1079,6 +1066,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp_a.add_argument("--boot", action="store_true",
                       help="with 'on': also start at boot, before login (linger)")
     sp.set_defaults(func=cmd_service)
+
+    sub.add_parser("gui", help="open the desktop chat window (what the app icon runs)") \
+       .set_defaults(func=cmd_gui)
+    sub.add_parser("install", help="install the desktop chat app (adds it to your app menu)") \
+       .set_defaults(func=cmd_install)
+    sub.add_parser("uninstall", help="remove the desktop chat app") \
+       .set_defaults(func=cmd_uninstall)
     return p
 
 

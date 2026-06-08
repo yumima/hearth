@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Hearth">
+  <rect width="256" height="256" rx="56" fill="#1a1a1c"/>
+  <path d="M128 36c27 33 46 56 46 95a46 46 0 0 1-92 0c0-13 4-24 13-34-24 17-47 47-47 84a80 80 0 0 0 160 0c0-57-43-91-80-145z" fill="#d97757"/>
+  <path d="M128 152c9-11 15-19 15-31 0-10-4-19-11-27 11 6 23 19 23 38a27 27 0 0 1-54 0c0-7 2-13 6-19 2 15 9 26 21 39z" fill="#f0a37e"/>
+</svg>

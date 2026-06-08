@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from . import backends as backends_mod
 from . import config as cfgmod
 from .middleware import SecurityMiddleware
-from .routes import admin, v1
+from .routes import admin, v1, webui
 
 
 def create_app(
@@ -63,4 +63,5 @@ def create_app(
     )
     app.include_router(v1.router, prefix="/v1")
     app.include_router(admin.router, prefix="/admin")
+    app.include_router(webui.router)  # GET /app (chat UI) + / → /app
     return app

@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hearth</title>
+<!--
+  Hearth chat UI. Served by the gateway at GET /app so it is SAME-ORIGIN with
+  the API (http://127.0.0.1:11435): streaming fetch to /v1/chat/completions
+  works without CORS, and the localhost-only Host check passes. No external/CDN
+  resources — the engine is loopback-only with zero outbound, so everything
+  (styles, the small Markdown renderer) is inline.
+-->
+<style>
+  :root {
+    --bg: #1a1a1c;
+    --bg-elev: #232327;
+    --bg-input: #2a2a2f;
+    --border: #34343a;
+    --text: #ececf1;
+    --text-dim: #9a9aa3;
+    --accent: #d97757;          /* warm hearth ember */
+    --accent-dim: #b4613f;
+    --user-bg: #2f2b29;
+    --code-bg: #15151a;
+    --ok: #57c66a;
+    --err: #e5704b;
+    --radius: 12px;
+    --maxw: 760px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial, sans-serif;
+    display: flex; flex-direction: column;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────── */
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: .2px; }
+  .brand .mark { width: 18px; height: 18px; }
+  .spacer { flex: 1 1 auto; }
+  select, .toggle, button.btn {
+    background: var(--bg-input); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+  }
+  select:hover, .toggle:hover, button.btn:hover { border-color: #4a4a52; }
+  .toggle.on { background: var(--accent); border-color: var(--accent); color: #1a1a1c; font-weight: 600; }
+  .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #666; }
+  .dot.up { background: var(--ok); } .dot.down { background: var(--err); }
+
+  /* ── Messages ───────────────────────────────────────────────────── */
+  main { flex: 1 1 auto; overflow-y: auto; }
+  #thread { max-width: var(--maxw); margin: 0 auto; padding: 24px 16px 8px; }
+  .msg { margin: 0 0 22px; }
+  .msg .role { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-dim); margin-bottom: 6px; }
+  .bubble { border-radius: var(--radius); padding: 2px 0; }
+  .msg.user .bubble { background: var(--user-bg); padding: 10px 14px; border: 1px solid var(--border); }
+  .msg.assistant .bubble { background: transparent; }
+  .msg.system .bubble { color: var(--text-dim); font-style: italic; }
+  .content > *:first-child { margin-top: 0; } .content > *:last-child { margin-bottom: 0; }
+  .content p { margin: 0 0 10px; }
+  .content h1,.content h2,.content h3 { margin: 14px 0 8px; line-height: 1.3; }
+  .content h1 { font-size: 1.4em; } .content h2 { font-size: 1.2em; } .content h3 { font-size: 1.05em; }
+  .content ul,.content ol { margin: 0 0 10px; padding-left: 22px; }
+  .content li { margin: 2px 0; }
+  .content blockquote { margin: 0 0 10px; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--text-dim); }
+  .content a { color: var(--accent); }
+  .content code.inline { background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; font-size: .9em; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+  .codewrap { position: relative; margin: 0 0 12px; }
+  .codewrap pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 0; }
+  .codewrap code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 13px; line-height: 1.5; }
+  .copy { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 3px 8px; opacity: 0; transition: opacity .12s; }
+  .codewrap:hover .copy { opacity: 1; }
+
+  /* reasoning / thinking block */
+  .think { margin: 0 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); }
+  .think summary { cursor: pointer; padding: 7px 12px; font-size: 12.5px; color: var(--text-dim); list-style: none; user-select: none; }
+  .think summary::-webkit-details-marker { display: none; }
+  .think[open] summary { border-bottom: 1px solid var(--border); }
+  .think .reason { padding: 10px 12px; white-space: pre-wrap; color: var(--text-dim); font-size: 13px; max-height: 300px; overflow-y: auto; }
+
+  .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* empty state */
+  #empty { max-width: var(--maxw); margin: 16vh auto 0; text-align: center; color: var(--text-dim); padding: 0 16px; }
+  #empty .big { font-size: 22px; color: var(--text); margin-bottom: 8px; font-weight: 650; }
+
+  /* ── Composer ───────────────────────────────────────────────────── */
+  footer { flex: 0 0 auto; padding: 10px 16px 16px; }
+  .composer { max-width: var(--maxw); margin: 0 auto; display: flex; gap: 8px; align-items: flex-end;
+    background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 8px 8px 14px; }
+  .composer:focus-within { border-color: var(--accent-dim); }
+  #input { flex: 1 1 auto; background: transparent; border: 0; color: var(--text); resize: none;
+    font: inherit; line-height: 1.5; max-height: 200px; outline: none; padding: 5px 0; }
+  #send { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 9px; border: 0; cursor: pointer;
+    background: var(--accent); color: #1a1a1c; font-size: 17px; display: grid; place-items: center; }
+  #send:disabled { opacity: .4; cursor: default; }
+  #send.stop { background: var(--err); }
+  .hint { max-width: var(--maxw); margin: 6px auto 0; font-size: 11px; color: var(--text-dim); text-align: center; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand">
+      <svg class="mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2c2.5 3 4 5 4 8a4 4 0 0 1-8 0c0-1 .3-2 1-3-2 1.5-4 4-4 7a7 7 0 0 0 14 0c0-5-4-8-7-11z" fill="#d97757"/>
+      </svg>
+      Hearth
+    </span>
+    <span class="spacer"></span>
+    <select id="model" title="Model"></select>
+    <button class="toggle on" id="think" title="Deep-think: the model reasons before answering. Off uses the fast lane.">💭 Think</button>
+    <span class="status"><span class="dot" id="dot"></span><span id="statusText">…</span></span>
+    <button class="btn" id="newchat" title="New conversation">New</button>
+  </header>
+
+  <main>
+    <div id="thread"></div>
+    <div id="empty">
+      <div class="big">Hearth</div>
+      <div>Your local AI engine. Ask anything — it runs entirely on this machine.</div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="Message Hearth…" autofocus></textarea>
+      <button id="send" title="Send">↑</button>
+    </div>
+    <div class="hint">Enter to send · Shift+Enter for a new line · runs locally via the hearth gateway</div>
+  </footer>
+
+<script>
+"use strict";
+const API = location.origin;            // same-origin: the gateway that served us
+const $ = (id) => document.getElementById(id);
+
+let history = [];        // [{role, content}]
+let model = "primary_chat";
+let deepThink = true;
+let controller = null;   // AbortController for the in-flight stream
+let streaming = false;
+
+// ── tiny Markdown renderer (no deps) ───────────────────────────────────────
+// Good enough for chat: code fences, inline code, headings, bold/italic,
+// lists, blockquotes, links. Everything is HTML-escaped first; only the
+// constructs below re-introduce markup, so model output can't inject HTML.
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function inlineMd(s) {
+  // s is already HTML-escaped. Apply inline constructs.
+  s = s.replace(/`([^`]+)`/g, (_, c) => `<code class="inline">${c}</code>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  // [text](url) BEFORE bare autolinks — otherwise the autolink's URL class
+  // swallows the ")" and clobbers the markdown link.
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // bare autolink: only at start or after whitespace/"(", so it doesn't
+  // re-match the URL inside an <a href="…"> we just created.
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  return s;
+}
+function renderMarkdown(src) {
+  const out = [];
+  // Split out fenced code blocks first so their contents are untouched.
+  const parts = src.split(/(```[\s\S]*?```)/g);
+  for (const part of parts) {
+    if (part.startsWith("```")) {
+      const m = part.match(/^```[^\n]*\n?([\s\S]*?)```$/);
+      const code = escapeHtml(m ? m[1].replace(/\n$/, "") : part.slice(3));
+      out.push(`<div class="codewrap"><button class="btn copy">copy</button><pre><code>${code}</code></pre></div>`);
+      continue;
+    }
+    // Line-based block parsing for the non-code segment.
+    const lines = part.split("\n");
+    let para = [], list = null;
+    const flushPara = () => { if (para.length) { out.push(`<p>${inlineMd(escapeHtml(para.join(" ")))}</p>`); para = []; } };
+    const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.join("")}</${list.tag}>`); list = null; } };
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, "");
+      let m;
+      if (!line.trim()) { flushPara(); flushList(); continue; }
+      if ((m = line.match(/^(#{1,3})\s+(.*)$/))) { flushPara(); flushList(); const h = m[1].length; out.push(`<h${h}>${inlineMd(escapeHtml(m[2]))}</h${h}>`); continue; }
+      if ((m = line.match(/^>\s?(.*)$/))) { flushPara(); flushList(); out.push(`<blockquote>${inlineMd(escapeHtml(m[1]))}</blockquote>`); continue; }
+      if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) { flushPara(); if (!list || list.tag !== "ul") { flushList(); list = { tag: "ul", items: [] }; } list.items.push(`<li>${inlineMd(escapeHtml(m[1]))}</li>`); continue; }
+      if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { flushPara(); if (!list || list.tag !== "ol") { flushList(); list = { tag: "ol", items: [] }; } list.items.push(`<li>${inlineMd(escapeHtml(m[1]))}</li>`); continue; }
+      flushList(); para.push(line.trim());
+    }
+    flushPara(); flushList();
+  }
+  return out.join("");
+}
+
+// ── rendering ──────────────────────────────────────────────────────────────
+function setEmpty(show) { $("empty").style.display = show ? "" : "none"; }
+
+function addBubble(role) {
+  setEmpty(false);
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  wrap.innerHTML = `<div class="role">${role === "assistant" ? "Hearth" : role}</div>`
+    + (role === "assistant" ? `<div class="bubble"><details class="think" style="display:none"><summary>💭 Thinking…</summary><div class="reason"></div></details><div class="content"></div></div>`
+                            : `<div class="bubble"><div class="content"></div></div>`);
+  $("thread").appendChild(wrap);
+  return wrap;
+}
+function setContent(wrap, text, isMd, cursor) {
+  const el = wrap.querySelector(".content");
+  el.innerHTML = isMd ? renderMarkdown(text) : escapeHtml(text);
+  el.classList.toggle("cursor", !!cursor);
+}
+function setReasoning(wrap, text) {
+  const det = wrap.querySelector(".think");
+  if (!text) { det.style.display = "none"; return; }
+  det.style.display = "";
+  det.querySelector(".reason").textContent = text;
+}
+function scrollDown() { const m = document.querySelector("main"); m.scrollTop = m.scrollHeight; }
+
+document.addEventListener("click", (e) => {
+  if (e.target.classList.contains("copy")) {
+    const code = e.target.parentElement.querySelector("code");
+    navigator.clipboard?.writeText(code.innerText).then(() => { e.target.textContent = "copied"; setTimeout(() => e.target.textContent = "copy", 1200); });
+  }
+});
+
+// ── gateway plumbing ─────────────────────────────────────────────────────────
+async function refreshStatus() {
+  try {
+    const r = await fetch(API + "/admin/health", { cache: "no-store" });
+    const up = r.status === 200 || r.status === 503;
+    $("dot").className = "dot " + (up ? "up" : "down");
+    $("statusText").textContent = up ? "connected" : "no engine";
+  } catch { $("dot").className = "dot down"; $("statusText").textContent = "offline"; }
+}
+async function loadModels() {
+  try {
+    const r = await fetch(API + "/v1/models");
+    const data = (await r.json()).data || [];
+    const roles = data.filter(m => m.owned_by === "hearth-role").map(m => m.id);
+    const concrete = data.filter(m => m.owned_by !== "hearth-role").map(m => m.id);
+    const sel = $("model"); sel.innerHTML = "";
+    const add = (id, label) => { const o = document.createElement("option"); o.value = id; o.textContent = label || id; sel.appendChild(o); };
+    roles.forEach(r => add(r, r + "  ·role"));
+    if (roles.length && concrete.length) { const o = document.createElement("option"); o.disabled = true; o.textContent = "──────"; sel.appendChild(o); }
+    concrete.forEach(c => add(c));
+    if ([...sel.options].some(o => o.value === model)) sel.value = model;
+    else if (sel.options.length) { model = sel.value = sel.options[0].value; }
+  } catch { /* leave the picker empty; status dot already shows the problem */ }
+}
+
+function setSending(on) {
+  streaming = on;
+  const btn = $("send");
+  btn.classList.toggle("stop", on);
+  btn.textContent = on ? "■" : "↑";
+  btn.title = on ? "Stop" : "Send";
+}
+
+async function send() {
+  if (streaming) { controller?.abort(); return; }     // the button doubles as Stop
+  const text = $("input").value.trim();
+  if (!text) return;
+  $("input").value = ""; autogrow();
+  history.push({ role: "user", content: text });
+  addBubble("user").querySelector(".content").textContent = text;
+  scrollDown();
+
+  const wrap = addBubble("assistant");
+  let answer = "", reasoning = "", gotContent = false, err = null;
+  setContent(wrap, "", false, true);
+  scrollDown();
+
+  // Deep-think on → selected model reasons by default. Off → the fast lane:
+  // fast_chat with thinking disabled (the gateway routes `think:false` to
+  // Ollama's native API, the only surface that can actually suppress it).
+  const req = deepThink
+    ? { model, messages: history, stream: true }
+    : { model: "fast_chat", messages: history, stream: true, think: false };
+
+  setSending(true);
+  controller = new AbortController();
+  let raf = 0;
+  const paint = () => { raf = 0; setReasoning(wrap, gotContent ? "" : reasoning); setContent(wrap, answer, true, true); if (reasoning && !gotContent) { /* keep think open while reasoning */ wrap.querySelector(".think").open = true; } scrollDown(); };
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
+
+  try {
+    const r = await fetch(API + "/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req), signal: controller.signal,
+    });
+    if (!r.ok || !r.body) { err = `HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`; }
+    else {
+      // Returns true to stop the stream ([DONE] or an error frame).
+      const handleLine = (line) => {
+        if (!line.startsWith("data:")) return false;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") return true;
+        let obj; try { obj = JSON.parse(payload); } catch { return false; }
+        if (obj.error) { err = (obj.error && obj.error.message) || String(obj.error); return true; }
+        const d = (obj.choices && obj.choices[0] && obj.choices[0].delta) || {};
+        const reason = d.reasoning || d.reasoning_content || "";
+        if (reason && !gotContent) { reasoning += reason; schedule(); }
+        if (d.content) { gotContent = true; answer += d.content; schedule(); }
+        return false;
+      };
+      const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "", stop = false;
+      while (!stop) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (handleLine(line)) { stop = true; break; }
+        }
+      }
+      // Flush the decoder + handle a final frame that arrived without a
+      // trailing newline, so the last delta isn't silently dropped.
+      buf += dec.decode();
+      if (!stop && buf.trim()) handleLine(buf.trim());
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") err = String(e.message || e);
+  }
+
+  if (raf) cancelAnimationFrame(raf);
+  // collapse the thinking block once answered
+  if (gotContent) wrap.querySelector(".think").open = false;
+  setReasoning(wrap, gotContent ? "" : reasoning);
+  if (err) {
+    // Drop the failed user turn so the next request isn't [...user, user]
+    // (which chat templates reject); show the error in place.
+    history.pop();
+    setContent(wrap, "", false, false);
+    wrap.querySelector(".content").innerHTML = `<span style="color:var(--err)">⚠ ${escapeHtml(err)}</span>`;
+    setSending(false); controller = null; return;
+  }
+  setContent(wrap, answer, true, false);
+  if (answer) {
+    history.push({ role: "assistant", content: answer });
+  } else {
+    history.pop();          // no content (e.g. aborted before first token) → drop the lone user turn
+    wrap.remove();
+  }
+  setSending(false); controller = null;
+  $("input").focus();
+}
+
+// ── composer ─────────────────────────────────────────────────────────────────
+function autogrow() { const t = $("input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }
+$("input").addEventListener("input", autogrow);
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("send").addEventListener("click", send);
+$("model").addEventListener("change", (e) => { model = e.target.value; });
+$("think").addEventListener("click", () => {
+  deepThink = !deepThink;
+  $("think").classList.toggle("on", deepThink);
+  $("think").textContent = deepThink ? "💭 Think" : "⚡ Fast";
+});
+$("newchat").addEventListener("click", () => {
+  if (streaming) controller?.abort();
+  history = []; $("thread").innerHTML = ""; setEmpty(true); $("input").focus();
+});
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+refreshStatus(); loadModels();
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>

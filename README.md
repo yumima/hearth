@@ -9,7 +9,7 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-06-07)
+## Today's commits (2026-06-08)
 
 Latest first.
 
@@ -37,6 +37,7 @@ hearth start          # bring up the bundled Ollama + the gateway on :11435
 # …then in a second shell:
 hearth setup          # probe hardware → pull a model that fits → bind roles
 hearth chat           # interactive chat in the terminal (ChatGPT-style)
+hearth install        # …or install the clickable desktop chat app (app-menu icon)
 ```
 
 `make build` is `python3 -m venv .venv && .venv/bin/pip install -e .` — you can
@@ -59,38 +60,49 @@ CUDA toolkit.
 | `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
 | `hearth roles` / `models` | show role bindings / servable models |
 | `hearth hardware` | GPU / VRAM / RAM probe |
-| `hearth service …` | run as a background systemd --user service: `install` `start` `stop` `restart` `status` `logs` `autostart on\|off` |
+| `hearth install` / `uninstall` | install / remove the **desktop chat app** — a clickable launcher (app menu / Launchpad / Start menu) for the GUI client, cross-platform via the OS's native webview |
+| `hearth gui` | open the desktop chat window now (this is what the app icon runs) |
+| `hearth service …` | control a background systemd --user gateway service: `start` `stop` `restart` `status` `logs` `autostart on\|off` |
 
-Equivalent `make` targets exist (`make start|stop|status|chat|test`). For a
-**clickable launcher** in your app menu (Linux / freedesktop):
+Equivalent `make` targets exist (`make start|stop|status|chat|test`).
+
+### Desktop chat app
+
+The clickable counterpart to the terminal client — a standalone chat window,
+like the ChatGPT / Claude desktop apps. The gateway serves the UI at `/app`
+(same-origin, so streaming + the localhost-only security model both just work),
+and the window is a chrome-less native frame via each OS's own webview
+(WebView2 / WKWebView / WebKitGTK — no bundled browser).
 
 ```bash
-make install-app      # writes ~/.local/share/applications/hearth.desktop
-make uninstall-app
+hearth install     # add it to your menu — Linux .desktop / macOS .app / Windows .lnk
+hearth gui         # open the window now (starts the engine if it isn't running)
+hearth uninstall   # remove the launcher
+# or: make install-client / make uninstall-client
 ```
 
-Clicking it starts the engine detached (logs to `~/.hearth/hearth.log`) and
-shows a desktop notification. Stop it with `hearth stop`.
+Clicking the launcher starts the engine on demand if needed, then opens the
+window. For the most native window, `pip install 'hearth[gui]'` (pywebview);
+otherwise it falls back to a Chromium/Edge `--app` window, then your browser.
+The UI is also reachable at <http://localhost:11435/app> in any browser.
 
-### Run as a background service
+### Always-on engine (optional)
 
-For an always-available engine (CLI chat, finterm, any OpenAI-SDK client), run
-hearth as a **systemd --user service** — driven entirely through `hearth`, no
-`systemctl` needed:
+`hearth gui` (the desktop app) and `hearth start` launch the engine on demand,
+which covers normal use. To keep it **always** up in the background — e.g. for
+finterm or an OpenAI-SDK client when no window is open — run `hearth start` from
+your login autostart, or a **systemd --user** unit that runs it. `hearth
+service` drives such a unit once it exists:
 
 ```bash
-hearth service install --autostart   # install the unit + start on login
-hearth service start                 # start it now (frees your terminal)
-hearth service status                # is it up?
+hearth service start | stop | restart | status
 hearth service logs -f               # follow logs (journal)
-hearth service autostart on --boot   # also start at boot, before login (linger)
-hearth service stop | restart | uninstall
+hearth service autostart on --boot   # start on login / at boot (linger)
 ```
 
-The unit runs `hearth start` (gateway **+** Ollama, cleanly stopped together via
-the service cgroup) and is pinned to the stable `~/.local/bin/hearth` symlink, so
-rebuilding the venv doesn't break it. After editing hearth's code,
-`hearth service restart` reloads it.
+(hearth no longer installs the unit itself — the desktop app + on-demand start
+replaced `service install`; create a unit with your init system if you want it
+always-on.)
 
 ## API
 
