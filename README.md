@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`bd17e7f`](https://github.com/yumima/hearth/commit/bd17e7f) client: group the desktop commands under a `hearth client` sub-menu
 - [`17943ad`](https://github.com/yumima/hearth/commit/17943ad) client: a clickable desktop chat app (gateway-served UI + native window)
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)

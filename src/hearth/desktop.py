@@ -195,11 +195,19 @@ def _svg_to_png(svg: Path, png: Path, size: int = 256) -> bool:
 # ── install / uninstall (per-OS launcher) ─────────────────────────────────────
 
 
+def _launch_argv(exec_argv: list[str]) -> list[str]:
+    """The full argv a launcher invokes to open the window: ``<hearth> client
+    open``. Single source of truth for the open-the-window subcommand — every
+    per-OS installer builds its Exec/Arguments from this, so a future rename
+    changes one place (and the test catches it)."""
+    return [*exec_argv, "client", "open"]
+
+
 def install(exec_argv: list[str]) -> int:
     """Create a clickable desktop launcher. ``exec_argv`` is the UNQUOTED argv
     prefix that invokes hearth (e.g. ``["/home/u/.local/bin/hearth"]`` or
-    ``["/usr/bin/python", "-m", "hearth"]``); the launcher runs it as
-    ``<exec_argv...> client open``. Each OS quotes it for its own launcher format."""
+    ``["/usr/bin/python", "-m", "hearth"]``); the launcher runs ``_launch_argv``
+    of it. Each OS quotes that for its own launcher format."""
     if sys.platform.startswith("linux"):
         return _install_linux(exec_argv)
     if sys.platform == "darwin":
@@ -232,7 +240,7 @@ Version=1.0
 Name=Hearth Chat
 GenericName=Local AI Chat
 Comment=Chat with your local AI engine — runs entirely on this machine
-Exec={exec} client open
+Exec={exec}
 Icon={icon}
 Terminal=false
 Categories=Utility;Network;
@@ -298,7 +306,7 @@ def _install_linux(exec_argv: list[str]) -> int:
         except OSError:
             pass
 
-    exec_field = _desktop_exec(exec_argv)
+    exec_field = _desktop_exec(_launch_argv(exec_argv))
     desktop = apps / _DESKTOP_NAME
     desktop.write_text(_DESKTOP_TEMPLATE.format(exec=exec_field, icon=icon_ref))
     desktop.chmod(0o644)
@@ -308,7 +316,7 @@ def _install_linux(exec_argv: list[str]) -> int:
         subprocess.run(["update-desktop-database", str(apps)], check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"✓ installed {desktop}")
-    print(f"    Exec={exec_field} client open")
+    print(f"    Exec={exec_field}")
     print("Look for 'Hearth Chat' in your application menu (or run: hearth client open).")
     return 0
 
@@ -365,7 +373,7 @@ def _install_macos(exec_argv: list[str]) -> int:
     resd.mkdir(parents=True, exist_ok=True)
 
     launcher = macos / "hearth-chat"
-    cmd = " ".join(shlex.quote(a) for a in [*exec_argv, "client", "open"])
+    cmd = " ".join(shlex.quote(a) for a in _launch_argv(exec_argv))
     launcher.write_text(f"#!/bin/sh\nexec {cmd}\n")
     launcher.chmod(0o755)
     (app / "Contents" / "Info.plist").write_text(_PLIST)
@@ -431,7 +439,7 @@ def _install_windows(exec_argv: list[str]) -> int:
         return "'" + str(s).replace("'", "''") + "'"
 
     target = exec_argv[0]
-    arguments = " ".join([*exec_argv[1:], "client", "open"])
+    arguments = " ".join(_launch_argv(exec_argv)[1:])
     # WScript.Shell creates a proper shortcut without pywin32.
     ps = (
         "$ws = New-Object -ComObject WScript.Shell; "
