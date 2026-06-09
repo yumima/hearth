@@ -827,7 +827,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
 #
 # These subcommands drive a systemd --user unit that runs `hearth start`.
 # Installing the unit is intentionally NOT exposed here: the desktop app
-# (`hearth install` → an icon that runs `hearth gui`) starts the gateway on
+# (`hearth client install` → an icon that runs `hearth client open`) starts the gateway on
 # demand, and `hearth start` / `hearth stop` cover manual control. So `service`
 # operates on a unit that already exists (start/stop/restart/status/logs/autostart).
 
@@ -955,11 +955,12 @@ def cmd_service(args: argparse.Namespace) -> int:
 
 # ---- desktop chat app (clickable window) --------------------------------
 #
-# The terminal client is bare `hearth` (or `hearth chat`). This is its GUI
-# counterpart: `hearth gui` shows the chat UI (served by the gateway at /app) in
-# a chrome-less native window, and `hearth install` registers a clickable app-
-# menu launcher whose icon runs `hearth gui`. There is no `service install` —
-# the engine starts on demand (the window auto-starts it, else `hearth start`).
+# The terminal client is bare `hearth` (or `hearth chat`). `hearth client` is its
+# GUI counterpart — bare `hearth client` shows the chat UI (served by the gateway
+# at /app) in a chrome-less native window; `hearth client install` registers a
+# clickable app-menu launcher whose icon runs `hearth client open`. There is no
+# `service install` — the engine starts on demand (the window auto-starts it,
+# else `hearth start`).
 
 
 def _hearth_exec_argv() -> list[str]:
@@ -974,19 +975,19 @@ def _hearth_exec_argv() -> list[str]:
     return [os.path.realpath(sys.executable), "-m", "hearth"]
 
 
-def cmd_gui(args: argparse.Namespace) -> int:
+def cmd_client(args: argparse.Namespace) -> int:
     from . import desktop
-    return desktop.open_window(hearth_exec=_hearth_exec_argv())
 
-
-def cmd_install(args: argparse.Namespace) -> int:
-    from . import desktop
-    return desktop.install(_hearth_exec_argv())
-
-
-def cmd_uninstall(args: argparse.Namespace) -> int:
-    from . import desktop
-    return desktop.uninstall()
+    # Bare `hearth client` opens the window; sub-actions manage the launcher.
+    action = getattr(args, "action", None) or "open"
+    if action == "open":
+        return desktop.open_window(hearth_exec=_hearth_exec_argv())
+    if action == "install":
+        return desktop.install(_hearth_exec_argv())
+    if action == "uninstall":
+        return desktop.uninstall()
+    print(f"unknown client action {action!r}", file=sys.stderr)
+    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1067,12 +1068,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="with 'on': also start at boot, before login (linger)")
     sp.set_defaults(func=cmd_service)
 
-    sub.add_parser("gui", help="open the desktop chat window (what the app icon runs)") \
-       .set_defaults(func=cmd_gui)
-    sub.add_parser("install", help="install the desktop chat app (adds it to your app menu)") \
-       .set_defaults(func=cmd_install)
-    sub.add_parser("uninstall", help="remove the desktop chat app") \
-       .set_defaults(func=cmd_uninstall)
+    cp = sub.add_parser("client", help="desktop chat app — open the window, or install/uninstall the launcher")
+    cp_sub = cp.add_subparsers(dest="action")
+    cp_sub.add_parser("open", help="open the desktop chat window (starts the engine if needed)")
+    cp_sub.add_parser("install", help="install the desktop app (adds it to your app menu)")
+    cp_sub.add_parser("uninstall", help="remove the desktop app")
+    cp.set_defaults(func=cmd_client, action=None)  # bare `hearth client` → open
     return p
 
 

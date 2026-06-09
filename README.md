@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`17943ad`](https://github.com/yumima/hearth/commit/17943ad) client: a clickable desktop chat app (gateway-served UI + native window)
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
@@ -37,7 +38,7 @@ hearth start          # bring up the bundled Ollama + the gateway on :11435
 # …then in a second shell:
 hearth setup          # probe hardware → pull a model that fits → bind roles
 hearth chat           # interactive chat in the terminal (ChatGPT-style)
-hearth install        # …or install the clickable desktop chat app (app-menu icon)
+hearth client install # …or install the clickable desktop chat app (app-menu icon)
 ```
 
 `make build` is `python3 -m venv .venv && .venv/bin/pip install -e .` — you can
@@ -60,8 +61,7 @@ CUDA toolkit.
 | `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
 | `hearth roles` / `models` | show role bindings / servable models |
 | `hearth hardware` | GPU / VRAM / RAM probe |
-| `hearth install` / `uninstall` | install / remove the **desktop chat app** — a clickable launcher (app menu / Launchpad / Start menu) for the GUI client, cross-platform via the OS's native webview |
-| `hearth gui` | open the desktop chat window now (this is what the app icon runs) |
+| `hearth client …` | **desktop chat app** — bare `hearth client` opens the window; `hearth client install` / `uninstall` manage the clickable launcher (app menu / Launchpad / Start menu), cross-platform via the OS's native webview |
 | `hearth service …` | control a background systemd --user gateway service: `start` `stop` `restart` `status` `logs` `autostart on\|off` |
 
 Equivalent `make` targets exist (`make start|stop|status|chat|test`).
@@ -75,9 +75,9 @@ and the window is a chrome-less native frame via each OS's own webview
 (WebView2 / WKWebView / WebKitGTK — no bundled browser).
 
 ```bash
-hearth install     # add it to your menu — Linux .desktop / macOS .app / Windows .lnk
-hearth gui         # open the window now (starts the engine if it isn't running)
-hearth uninstall   # remove the launcher
+hearth client install     # add it to your menu — Linux .desktop / macOS .app / Windows .lnk
+hearth client             # open the window now (starts the engine if it isn't running)
+hearth client uninstall   # remove the launcher
 # or: make install-client / make uninstall-client
 ```
 
@@ -88,7 +88,7 @@ The UI is also reachable at <http://localhost:11435/app> in any browser.
 
 ### Always-on engine (optional)
 
-`hearth gui` (the desktop app) and `hearth start` launch the engine on demand,
+`hearth client` (the desktop app) and `hearth start` launch the engine on demand,
 which covers normal use. To keep it **always** up in the background — e.g. for
 finterm or an OpenAI-SDK client when no window is open — run `hearth start` from
 your login autostart, or a **systemd --user** unit that runs it. `hearth

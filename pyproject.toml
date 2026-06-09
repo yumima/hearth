@@ -15,10 +15,10 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = [
-    # Desktop chat window (`hearth gui`). pywebview wraps each OS's NATIVE
+    # Desktop chat window (`hearth client`). pywebview wraps each OS's NATIVE
     # webview — WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux —
     # so there's no bundled browser; the chat UI is served by the gateway at
-    # /app and shown in a chrome-less window. Optional: without it, `hearth gui`
+    # /app and shown in a chrome-less window. Optional: without it, `hearth client`
     # falls back to a Chromium/Edge --app window or the default browser.
     "pywebview>=5.0",
 ]

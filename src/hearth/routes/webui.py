@@ -5,7 +5,7 @@ Serving it from the gateway itself means it is SAME-ORIGIN with the API
 (``http://127.0.0.1:11435``): the browser/webview's streaming ``fetch`` to
 ``/v1/chat/completions`` works with no CORS, and the localhost-only Host check
 in SecurityMiddleware passes. There is no second web server and nothing to
-configure — ``hearth start`` already serves it, and ``hearth gui`` opens a
+configure — ``hearth start`` already serves it, and ``hearth client`` opens a
 desktop window pointed at it.
 """
 

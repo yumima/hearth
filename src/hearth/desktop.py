@@ -199,14 +199,14 @@ def install(exec_argv: list[str]) -> int:
     """Create a clickable desktop launcher. ``exec_argv`` is the UNQUOTED argv
     prefix that invokes hearth (e.g. ``["/home/u/.local/bin/hearth"]`` or
     ``["/usr/bin/python", "-m", "hearth"]``); the launcher runs it as
-    ``<exec_argv...> gui``. Each OS quotes it for its own launcher format."""
+    ``<exec_argv...> client open``. Each OS quotes it for its own launcher format."""
     if sys.platform.startswith("linux"):
         return _install_linux(exec_argv)
     if sys.platform == "darwin":
         return _install_macos(exec_argv)
     if os.name == "nt":
         return _install_windows(exec_argv)
-    print(f"desktop install not supported on {sys.platform!r}; run `hearth gui` directly.",
+    print(f"desktop install not supported on {sys.platform!r}; run `hearth client open` directly.",
           file=sys.stderr)
     return 1
 
@@ -232,7 +232,7 @@ Version=1.0
 Name=Hearth Chat
 GenericName=Local AI Chat
 Comment=Chat with your local AI engine — runs entirely on this machine
-Exec={exec} gui
+Exec={exec} client open
 Icon={icon}
 Terminal=false
 Categories=Utility;Network;
@@ -308,8 +308,8 @@ def _install_linux(exec_argv: list[str]) -> int:
         subprocess.run(["update-desktop-database", str(apps)], check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"✓ installed {desktop}")
-    print(f"    Exec={exec_field} gui")
-    print("Look for 'Hearth Chat' in your application menu (or run: hearth gui).")
+    print(f"    Exec={exec_field} client open")
+    print("Look for 'Hearth Chat' in your application menu (or run: hearth client open).")
     return 0
 
 
@@ -365,7 +365,7 @@ def _install_macos(exec_argv: list[str]) -> int:
     resd.mkdir(parents=True, exist_ok=True)
 
     launcher = macos / "hearth-chat"
-    cmd = " ".join(shlex.quote(a) for a in [*exec_argv, "gui"])
+    cmd = " ".join(shlex.quote(a) for a in [*exec_argv, "client", "open"])
     launcher.write_text(f"#!/bin/sh\nexec {cmd}\n")
     launcher.chmod(0o755)
     (app / "Contents" / "Info.plist").write_text(_PLIST)
@@ -393,7 +393,7 @@ def _install_macos(exec_argv: list[str]) -> int:
             shutil.rmtree(iconset, ignore_errors=True)
 
     print(f"✓ installed {app}")
-    print("Find 'Hearth' in Launchpad / ~/Applications (or run: hearth gui).")
+    print("Find 'Hearth' in Launchpad / ~/Applications (or run: hearth client open).")
     return 0
 
 
@@ -431,7 +431,7 @@ def _install_windows(exec_argv: list[str]) -> int:
         return "'" + str(s).replace("'", "''") + "'"
 
     target = exec_argv[0]
-    arguments = " ".join([*exec_argv[1:], "gui"])
+    arguments = " ".join([*exec_argv[1:], "client", "open"])
     # WScript.Shell creates a proper shortcut without pywin32.
     ps = (
         "$ws = New-Object -ComObject WScript.Shell; "
@@ -449,7 +449,7 @@ def _install_windows(exec_argv: list[str]) -> int:
         print(f"could not create Start-Menu shortcut: {e}", file=sys.stderr)
         return 1
     print(f"✓ installed {lnk}")
-    print("Find 'Hearth Chat' in the Start menu (or run: hearth gui).")
+    print("Find 'Hearth Chat' in the Start menu (or run: hearth client open).")
     return 0
 
 

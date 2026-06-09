@@ -37,8 +37,8 @@ models:  ; $(HEARTH) models
 hardware:; $(HEARTH) hardware
 test:    ; $(PYTEST) -q
 
-install-client:   ; $(HEARTH) install
-uninstall-client: ; $(HEARTH) uninstall
+install-client:   ; $(HEARTH) client install
+uninstall-client: ; $(HEARTH) client uninstall
 
 # Put `hearth` on PATH (symlink into ~/.local/bin) so you can run it from any
 # shell without activating the venv. (~/.local/bin is on PATH on most distros.)
