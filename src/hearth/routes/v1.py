@@ -8,8 +8,14 @@ chunk format stays byte-for-byte OpenAI.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ..config import ROLE_NAMES, Config
 
@@ -130,3 +136,131 @@ async def embeddings(request: Request):
         return await backend.embeddings({**payload, "model": concrete})
     except Exception as e:
         return _err(502, f"backend error: {e}", "backend_error")
+
+
+# ── Text-to-speech (Piper) ────────────────────────────────────────────────────
+# Not an Ollama capability — Piper is a standalone local engine. Exposed in the
+# OpenAI /v1/audio/speech shape so any client (incl. mantel) works unmodified.
+# Voices are provisioned by `hearth voice <id>` into ~/.local/share/finterm/piper.
+
+
+def _piper_bin() -> str | None:
+    return shutil.which("piper") or shutil.which("piper-tts")
+
+
+def _voice_dir() -> Path:
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "finterm" / "piper"
+
+
+def _find_voice(voice: str | None) -> Path | None:
+    """Resolve a Piper voice id (e.g. 'en_US-amy-medium') to its .onnx, or the
+    first provisioned voice when none is requested."""
+    d = _voice_dir()
+    if voice:
+        name = os.path.basename(voice)  # basename only — never escape the voice dir
+        if name:
+            p = d / (name if name.endswith(".onnx") else f"{name}.onnx")
+            if p.exists():
+                return p
+    onnx = sorted(d.glob("*.onnx"))
+    return onnx[0] if onnx else None
+
+
+@router.post("/audio/speech")
+async def audio_speech(request: Request):
+    """Synthesize speech with Piper (OpenAI /v1/audio/speech shape) → WAV bytes."""
+    payload = await request.json()
+    text = (payload.get("input") or "").strip()
+    if not text:
+        return _err(400, "missing 'input'")
+    text = text[:8000]  # bound synthesis time/memory for direct callers
+    piper = _piper_bin()
+    if piper is None:
+        return _err(503, "piper not installed — run `hearth voice <id>` to provision TTS",
+                    "backend_unavailable")
+    voice = _find_voice(payload.get("voice"))
+    if voice is None:
+        return _err(503, "no Piper voice provisioned — run `hearth voice en_US-amy-medium`",
+                    "backend_unavailable")
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    out_path = tmp.name
+    tmp.close()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            piper, "--model", str(voice), "--output_file", out_path,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate(text.encode("utf-8"))
+        if proc.returncode != 0 or not os.path.getsize(out_path):
+            return _err(502, f"piper failed: {err.decode('utf-8', 'ignore')[:200]}", "backend_error")
+        data = Path(out_path).read_bytes()
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+    return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+# ── Speech-to-text (faster-whisper) ───────────────────────────────────────────
+# Standalone local engine (not Ollama). OpenAI /v1/audio/transcriptions shape.
+# The model (default "base") is loaded once and cached; it downloads on first use.
+
+_whisper_cache: dict = {}
+# Allowlisted faster-whisper sizes. A non-size string is treated by faster-whisper
+# as a HuggingFace repo id (outbound fetch) or a local path, so reject anything else.
+_WHISPER_SIZES = {
+    "tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium",
+    "medium.en", "large-v1", "large-v2", "large-v3", "large", "distil-large-v3",
+}
+
+
+def _get_whisper(size: str):
+    model = _whisper_cache.get(size)
+    if model is None:
+        from faster_whisper import WhisperModel  # heavy import — defer to first use
+        model = WhisperModel(size, device="cpu", compute_type="int8")
+        _whisper_cache[size] = model
+    return model
+
+
+@router.post("/audio/transcriptions")
+async def audio_transcriptions(request: Request):
+    """Transcribe audio with faster-whisper (OpenAI /v1/audio/transcriptions shape)."""
+    try:
+        form = await request.form()
+    except Exception:
+        return _err(400, "expected multipart/form-data with a 'file' field")
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return _err(400, "missing audio 'file'")
+    size = (form.get("model") or "").strip()
+    if size in ("", "whisper-1", "whisper"):  # OpenAI clients send 'whisper-1'
+        size = os.environ.get("HEARTH_WHISPER_MODEL", "base")
+    if size not in _WHISPER_SIZES:  # reject arbitrary HF ids / local paths
+        return _err(400, f"unknown whisper model {size!r}")
+    suffix = Path(getattr(upload, "filename", "") or "audio.wav").suffix or ".wav"
+    data = await upload.read()
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    tmp.write(data)
+    tmp.close()
+
+    def _run() -> str:
+        model = _get_whisper(size)  # may download the model on first call
+        segments, _info = model.transcribe(tmp.name, beam_size=5)
+        return "".join(seg.text for seg in segments).strip()
+
+    try:
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, _run)
+    except Exception as e:
+        return _err(502, f"transcription failed: {e}", "backend_error")
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    return JSONResponse({"text": text})
