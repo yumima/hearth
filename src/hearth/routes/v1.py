@@ -246,6 +246,9 @@ async def audio_transcriptions(request: Request):
         size = os.environ.get("HEARTH_WHISPER_MODEL", "base")
     if size not in _WHISPER_SIZES:  # reject arbitrary HF ids / local paths
         return _err(400, f"unknown whisper model {size!r}")
+    # Optional ISO language hint (e.g. 'it', 'fr', 'zh') — sharply improves accuracy
+    # for a learner speaking a non-English language; None = whisper auto-detect.
+    language = (form.get("language") or "").strip() or None
     suffix = Path(getattr(upload, "filename", "") or "audio.wav").suffix or ".wav"
     data = await upload.read()
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
@@ -254,7 +257,7 @@ async def audio_transcriptions(request: Request):
 
     def _run() -> str:
         model = _get_whisper(size)  # may download the model on first call
-        segments, _info = model.transcribe(tmp.name, beam_size=5)
+        segments, _info = model.transcribe(tmp.name, beam_size=5, language=language)
         return "".join(seg.text for seg in segments).strip()
 
     try:
