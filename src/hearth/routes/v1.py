@@ -343,7 +343,6 @@ async def images_generations(request: Request):
     comfy_err = None
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            await _free_ollama_vram(client)  # make room for SDXL on a shared GPU
             try:
                 r = await client.post(f"{_COMFY_URL}/prompt", json={"prompt": wf})
                 if r.status_code != 200:
@@ -351,6 +350,10 @@ async def images_generations(request: Request):
                 pid = r.json().get("prompt_id")
                 if not pid:
                     return _err(502, "comfyui returned no prompt_id", "backend_error")
+                # ComfyUI accepted the job → now free the chat model's VRAM for SDXL.
+                # (Deferred to here so a failed/unreachable ComfyUI doesn't needlessly
+                # evict the chat model.)
+                await _free_ollama_vram(client)
                 for _ in range(600):  # poll up to ~300s
                     await asyncio.sleep(0.5)
                     hist = (await client.get(f"{_COMFY_URL}/history/{pid}")).json().get(pid)
@@ -363,8 +366,11 @@ async def images_generations(request: Request):
                         v = await client.get(f"{_COMFY_URL}/view", params={
                             "filename": im.get("filename", ""), "subfolder": im.get("subfolder", ""),
                             "type": im.get("type", "output")})
-                        img_bytes = v.content
-                        break
+                        if v.status_code == 200 and v.content:
+                            img_bytes = v.content
+                            break
+                        # /view not ready/failed — keep polling (bounded by the loop)
+                        continue
                     status = hist.get("status", {})
                     if status.get("status_str") == "error":  # fail fast, don't poll 300s
                         comfy_err = "; ".join(str(m) for m in status.get("messages", []))[:200] \
