@@ -257,7 +257,11 @@ async def audio_transcriptions(request: Request):
 
     def _run() -> str:
         model = _get_whisper(size)  # may download the model on first call
-        segments, _info = model.transcribe(tmp.name, beam_size=5, language=language)
+        # vad_filter strips non-speech (whisper hallucinates repeated phantom text
+        # on silence/noise); condition_on_previous_text=False stops repeat loops.
+        segments, _info = model.transcribe(
+            tmp.name, beam_size=5, language=language,
+            vad_filter=True, condition_on_previous_text=False)
         return "".join(seg.text for seg in segments).strip()
 
     try:

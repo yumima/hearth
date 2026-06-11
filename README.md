@@ -9,12 +9,10 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-06-10)
+## Today's commits (2026-06-11)
 
 Latest first.
 
-- [`feae720`](https://github.com/yumima/hearth/commit/feae720) **feat:** image generation — /v1/images/generations (ComfyUI/SDXL)
-- [`df10aff`](https://github.com/yumima/hearth/commit/df10aff) **feat:** voice I/O — /v1/audio/speech (Piper TTS) + /v1/audio/transcriptions (faster-whisper STT)
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
