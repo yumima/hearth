@@ -9,11 +9,15 @@ chunk format stays byte-for-byte OpenAI.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+import random
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -264,3 +268,114 @@ async def audio_transcriptions(request: Request):
         except OSError:
             pass
     return JSONResponse({"text": text})
+
+
+# ── Image generation (ComfyUI / SDXL) ─────────────────────────────────────────
+# Standalone local engine. OpenAI /v1/images/generations shape (returns b64_json).
+# Drives a running ComfyUI (HTTP API on :8188) with a minimal SDXL txt2img graph.
+
+_COMFY_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
+_SDXL_CKPT = os.environ.get("HEARTH_SDXL_CKPT", "sd_xl_base_1.0.safetensors")
+_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
+
+
+async def _free_ollama_vram(client: httpx.AsyncClient) -> None:
+    """Best-effort: unload Ollama's resident models so the image model has VRAM.
+    On a 12 GB card SDXL can't coexist with a 14B chat model; the next chat
+    request transparently reloads it (a few seconds). Never fail image-gen on this."""
+    try:
+        ps = (await client.get(f"{_OLLAMA_URL}/api/ps", timeout=5.0)).json()
+    except Exception:
+        return
+    for m in ps.get("models", []):
+        name = m.get("name") or m.get("model")
+        if not name:
+            continue
+        try:
+            await client.post(f"{_OLLAMA_URL}/api/generate",
+                              json={"model": name, "keep_alive": 0}, timeout=10.0)
+        except Exception:
+            pass
+
+
+def _sdxl_workflow(prompt: str, negative: str, w: int, h: int,
+                   steps: int, cfg: float, seed: int) -> dict:
+    return {
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _SDXL_CKPT}},
+        "5": {"class_type": "EmptyLatentImage", "inputs": {"width": w, "height": h, "batch_size": 1}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["4", 1]}},
+        "3": {"class_type": "KSampler", "inputs": {
+            "seed": seed, "steps": steps, "cfg": cfg, "sampler_name": "euler",
+            "scheduler": "normal", "denoise": 1.0,
+            "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "mantel", "images": ["8", 0]}},
+    }
+
+
+@router.post("/images/generations")
+async def images_generations(request: Request):
+    """Generate an image with ComfyUI/SDXL (OpenAI /v1/images/generations shape)."""
+    payload = await request.json()
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        return _err(400, "missing 'prompt'")
+    prompt = prompt[:2000]
+    try:
+        w, h = (int(x) for x in str(payload.get("size") or "1024x1024").lower().split("x"))
+    except Exception:
+        w, h = 1024, 1024
+    w = max(256, min(1536, w)); h = max(256, min(1536, h))
+    steps = max(1, min(60, int(payload.get("steps") or 25)))
+    cfg = float(payload.get("cfg") or 7.0)
+    seed = int(payload.get("seed") or 0) or random.randint(1, 2**31 - 1)
+    wf = _sdxl_workflow(prompt, payload.get("negative_prompt") or "", w, h, steps, cfg, seed)
+
+    img_bytes = None
+    comfy_err = None
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            await _free_ollama_vram(client)  # make room for SDXL on a shared GPU
+            try:
+                r = await client.post(f"{_COMFY_URL}/prompt", json={"prompt": wf})
+                if r.status_code != 200:
+                    return _err(502, f"comfyui /prompt {r.status_code}: {r.text[:200]}", "backend_error")
+                pid = r.json().get("prompt_id")
+                if not pid:
+                    return _err(502, "comfyui returned no prompt_id", "backend_error")
+                for _ in range(600):  # poll up to ~300s
+                    await asyncio.sleep(0.5)
+                    hist = (await client.get(f"{_COMFY_URL}/history/{pid}")).json().get(pid)
+                    if not hist:
+                        continue
+                    images = [im for node in hist.get("outputs", {}).values()
+                              for im in node.get("images", [])]
+                    if images:
+                        im = images[0]
+                        v = await client.get(f"{_COMFY_URL}/view", params={
+                            "filename": im.get("filename", ""), "subfolder": im.get("subfolder", ""),
+                            "type": im.get("type", "output")})
+                        img_bytes = v.content
+                        break
+                    status = hist.get("status", {})
+                    if status.get("status_str") == "error":  # fail fast, don't poll 300s
+                        comfy_err = "; ".join(str(m) for m in status.get("messages", []))[:200] \
+                                    or "ComfyUI execution error"
+                        break
+                    if status.get("completed"):
+                        break
+            finally:
+                # Always release ComfyUI's VRAM (even on a mid-poll error) so the
+                # chat model can reload (shared 12 GB GPU).
+                try:
+                    await client.post(f"{_COMFY_URL}/free",
+                                      json={"unload_models": True, "free_memory": True}, timeout=10.0)
+                except Exception:
+                    pass
+    except httpx.HTTPError as e:
+        return _err(503, f"comfyui unreachable at {_COMFY_URL}: {e}", "backend_unavailable")
+    if not img_bytes:
+        return _err(502, f"image generation failed: {comfy_err or 'no output (timeout)'}", "backend_error")
+    return JSONResponse({"created": int(time.time()),
+                         "data": [{"b64_json": base64.b64encode(img_bytes).decode()}]})

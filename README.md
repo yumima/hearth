@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`df10aff`](https://github.com/yumima/hearth/commit/df10aff) **feat:** voice I/O — /v1/audio/speech (Piper TTS) + /v1/audio/transcriptions (faster-whisper STT)
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
