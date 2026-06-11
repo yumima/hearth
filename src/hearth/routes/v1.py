@@ -158,8 +158,9 @@ def _voice_dir() -> Path:
 
 
 def _find_voice(voice: str | None) -> Path | None:
-    """Resolve a Piper voice id (e.g. 'en_US-amy-medium') to its .onnx, or the
-    first provisioned voice when none is requested."""
+    """Resolve a Piper voice id (e.g. 'en_US-amy-medium') to its .onnx. With no
+    voice requested, default to English — NOT whatever sorts first alphabetically
+    (that was 'de_DE-…', so default read-aloud came out German)."""
     d = _voice_dir()
     if voice:
         name = os.path.basename(voice)  # basename only — never escape the voice dir
@@ -167,6 +168,13 @@ def _find_voice(voice: str | None) -> Path | None:
             p = d / (name if name.endswith(".onnx") else f"{name}.onnx")
             if p.exists():
                 return p
+    default = os.environ.get("HEARTH_TTS_VOICE", "en_US-amy-medium")
+    p = d / f"{default}.onnx"
+    if p.exists():
+        return p
+    en = sorted(d.glob("en_*.onnx"))   # any English voice next
+    if en:
+        return en[0]
     onnx = sorted(d.glob("*.onnx"))
     return onnx[0] if onnx else None
 

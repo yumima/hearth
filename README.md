@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`3055c72`](https://github.com/yumima/hearth/commit/3055c72) **fix(images):** defer VRAM eviction until ComfyUI accepts; verify /view is 200
 - [`cd7809c`](https://github.com/yumima/hearth/commit/cd7809c) **fix(stt):** VAD-filter transcription to stop whisper hallucinating on silence
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
