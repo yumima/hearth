@@ -9,12 +9,10 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-06-11)
+## Today's commits (2026-06-13)
 
 Latest first.
 
-- [`3055c72`](https://github.com/yumima/hearth/commit/3055c72) **fix(images):** defer VRAM eviction until ComfyUI accepts; verify /view is 200
-- [`cd7809c`](https://github.com/yumima/hearth/commit/cd7809c) **fix(stt):** VAD-filter transcription to stop whisper hallucinating on silence
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

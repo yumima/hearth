@@ -57,6 +57,10 @@ def start(base_url: str, wait_s: float = 30.0) -> subprocess.Popen | None:
     # in VRAM on a 12GB GPU; much larger overflows the KV-cache to CPU and slows
     # inference. Respect an explicit operator override if one is already set.
     env.setdefault("OLLAMA_CONTEXT_LENGTH", "8192")
+    # Keep the chat model resident longer than Ollama's 5-minute default so a brief
+    # pause between messages doesn't trigger a ~15-20s cold reload. (Image-gen still
+    # evicts explicitly via keep_alive:0, then re-warms — see routes/v1.py.)
+    env.setdefault("OLLAMA_KEEP_ALIVE", os.environ.get("HEARTH_KEEP_ALIVE", "30m"))
     proc = subprocess.Popen(
         [binary, "serve"],
         env=env,

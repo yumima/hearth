@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from ..config import ROLE_NAMES, Config
 
@@ -234,7 +235,18 @@ def _get_whisper(size: str):
     model = _whisper_cache.get(size)
     if model is None:
         from faster_whisper import WhisperModel  # heavy import — defer to first use
-        model = WhisperModel(size, device="cpu", compute_type="int8")
+        # Default to CPU (reliable). GPU is opt-in via HEARTH_WHISPER_DEVICE=cuda —
+        # it needs ctranslate2's CUDA-12 libs (libcublas.so.12 / cuDNN), which
+        # aren't present on a CUDA-13 box; without them CUDA *constructs* fine but
+        # fails at transcribe. CPU int8 is a few seconds for a short clip — fine
+        # for voice. Construct-time CUDA errors fall back to CPU here; a transcribe
+        # failure drops the model from cache (see audio_transcriptions).
+        device = os.environ.get("HEARTH_WHISPER_DEVICE", "cpu")
+        try:
+            model = WhisperModel(size, device=device,
+                                 compute_type="float16" if device == "cuda" else "int8")
+        except Exception:
+            model = WhisperModel(size, device="cpu", compute_type="int8")
         _whisper_cache[size] = model
     return model
 
@@ -276,6 +288,7 @@ async def audio_transcriptions(request: Request):
         loop = asyncio.get_running_loop()
         text = await loop.run_in_executor(None, _run)
     except Exception as e:
+        _whisper_cache.pop(size, None)  # don't keep a broken model cached
         return _err(502, f"transcription failed: {e}", "backend_error")
     finally:
         try:
@@ -311,6 +324,21 @@ async def _free_ollama_vram(client: httpx.AsyncClient) -> None:
                               json={"model": name, "keep_alive": 0}, timeout=10.0)
         except Exception:
             pass
+
+
+async def _warm_chat(cfg) -> None:
+    """Background: reload the chat model into the VRAM just freed by image-gen, so
+    the user's next message isn't a ~15-20s cold start. Best-effort."""
+    try:
+        concrete, _backend = cfg.resolve("primary_chat")
+    except Exception:
+        return
+    keep = os.environ.get("HEARTH_KEEP_ALIVE", "30m")
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as c:
+            await c.post(f"{_OLLAMA_URL}/api/generate", json={"model": concrete, "keep_alive": keep})
+    except Exception:
+        pass
 
 
 def _sdxl_workflow(prompt: str, negative: str, w: int, h: int,
@@ -398,5 +426,12 @@ async def images_generations(request: Request):
         return _err(503, f"comfyui unreachable at {_COMFY_URL}: {e}", "backend_unavailable")
     if not img_bytes:
         return _err(502, f"image generation failed: {comfy_err or 'no output (timeout)'}", "backend_error")
-    return JSONResponse({"created": int(time.time()),
-                         "data": [{"b64_json": base64.b64encode(img_bytes).decode()}]})
+    # Reload the chat model into the freed VRAM *after* the response is sent, so the
+    # next message isn't a ~15-20s cold start. Use a BackgroundTask, not a bare
+    # asyncio.create_task(): the event loop holds only a weak reference to a
+    # fire-and-forget task, so it can be GC'd mid-await before it finishes (which is
+    # exactly why the first attempt never reloaded). The response retains this one.
+    return JSONResponse(
+        {"created": int(time.time()),
+         "data": [{"b64_json": base64.b64encode(img_bytes).decode()}]},
+        background=BackgroundTask(_warm_chat, _cfg(request)))
