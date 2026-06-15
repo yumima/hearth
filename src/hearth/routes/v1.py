@@ -22,6 +22,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from .. import comfy_supervisor
 from ..config import ROLE_NAMES, Config
 
 router = APIRouter()
@@ -375,8 +376,16 @@ async def images_generations(request: Request):
     seed = int(payload.get("seed") or 0) or random.randint(1, 2**31 - 1)
     wf = _sdxl_workflow(prompt, payload.get("negative_prompt") or "", w, h, steps, cfg, seed)
 
+    # Start ComfyUI on demand (it idles at ~6 GB RAM; hearth stops it after a quiet
+    # period — see comfy_supervisor). First image after idle pays a cold start.
+    if not await comfy_supervisor.ensure_up():
+        return _err(503, f"ComfyUI is not running at {_COMFY_URL} and hearth couldn't "
+                         f"start it (set HEARTH_COMFY_DIR to your ComfyUI checkout)",
+                    "backend_unavailable")
+
     img_bytes = None
     comfy_err = None
+    comfy_supervisor.begin()  # suppress idle-stop while generating
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             try:
@@ -424,6 +433,8 @@ async def images_generations(request: Request):
                     pass
     except httpx.HTTPError as e:
         return _err(503, f"comfyui unreachable at {_COMFY_URL}: {e}", "backend_unavailable")
+    finally:
+        comfy_supervisor.end()  # generation done — let the idle timer run again
     if not img_bytes:
         return _err(502, f"image generation failed: {comfy_err or 'no output (timeout)'}", "backend_error")
     # Reload the chat model into the freed VRAM *after* the response is sent, so the

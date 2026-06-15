@@ -9,7 +9,7 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-06-13)
+## Today's commits (2026-06-15)
 
 Latest first.
 
