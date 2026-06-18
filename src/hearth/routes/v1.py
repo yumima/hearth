@@ -212,9 +212,17 @@ async def audio_speech(request: Request):
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     out_path = tmp.name
     tmp.close()
+    # Prosody knobs — Piper's bare defaults sound clipped/robotic. Slightly
+    # longer phonemes + a touch more width-noise + a real inter-sentence pause
+    # give a calmer, more human cadence. Tunable via env without a rebuild.
+    length_scale = os.environ.get("HEARTH_TTS_LENGTH_SCALE", "1.08")
+    noise_w      = os.environ.get("HEARTH_TTS_NOISE_W", "0.9")
+    sentence_sil = os.environ.get("HEARTH_TTS_SENTENCE_SILENCE", "0.35")
     try:
         proc = await asyncio.create_subprocess_exec(
             piper, "--model", str(voice), "--output_file", out_path,
+            "--length_scale", length_scale, "--noise_w", noise_w,
+            "--sentence_silence", sentence_sil,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
