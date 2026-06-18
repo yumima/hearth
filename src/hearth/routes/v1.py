@@ -151,7 +151,19 @@ async def embeddings(request: Request):
 
 
 def _piper_bin() -> str | None:
-    return shutil.which("piper") or shutil.which("piper-tts")
+    # Prefer PATH (covers user installs and the `piper-tts` pip package).
+    found = shutil.which("piper") or shutil.which("piper-tts")
+    if found:
+        return found
+    # Fall back to the canonical `hearth voice` install location. This is what
+    # lets TTS work under systemd --user, whose bare PATH omits ~/.local/bin
+    # (where `hearth voice` symlinks piper) — without it, a service install can
+    # provision a voice yet still 503 with "piper not installed". Mirrors the
+    # extract target in cli.py:_ensure_piper().
+    cand = Path.home() / ".local" / "share" / "piper" / "piper" / "piper"
+    if cand.exists() and os.access(cand, os.X_OK):
+        return str(cand)
+    return None
 
 
 def _voice_dir() -> Path:
