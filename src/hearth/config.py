@@ -54,8 +54,19 @@ def config_path() -> Path:
 @dataclass
 class Backend:
     name: str
-    type: str  # "ollama" | "llamacpp" | "vllm" | "whisper" | ...
+    type: str  # "ollama" | "openai" | "llamacpp" | "vllm" | "whisper" | ...
     base_url: str
+    api_key: str = ""       # literal key for an "openai" backend (avoid if possible)
+    api_key_env: str = ""   # OR the name of an env var holding it (preferred — keeps
+                            # the secret out of config.yaml)
+
+    def resolve_api_key(self) -> str:
+        """The effective API key: a literal one wins, else the named env var."""
+        if self.api_key:
+            return self.api_key
+        if self.api_key_env:
+            return os.environ.get(self.api_key_env, "")
+        return ""
 
 
 @dataclass
@@ -117,7 +128,9 @@ class Config:
         return {
             "bind": {"host": self.bind_host, "port": self.bind_port},
             "backends": {
-                name: {"type": b.type, "base_url": b.base_url}
+                name: {"type": b.type, "base_url": b.base_url,
+                       **({"api_key": b.api_key} if b.api_key else {}),
+                       **({"api_key_env": b.api_key_env} if b.api_key_env else {})}
                 for name, b in self.backends.items()
             },
             "roles": {
@@ -146,7 +159,8 @@ def load(create: bool = True) -> Config:
     raw = yaml.safe_load(p.read_text()) or {}
     bind = raw.get("bind", {})
     backends = {
-        name: Backend(name, b.get("type", "ollama"), b["base_url"])
+        name: Backend(name, b.get("type", "ollama"), b["base_url"],
+                      b.get("api_key", ""), b.get("api_key_env", ""))
         for name, b in (raw.get("backends") or {}).items()
     }
     if not backends:

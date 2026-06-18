@@ -464,6 +464,50 @@ def cmd_roles(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backend(args: argparse.Namespace) -> int:
+    """Manage model backends: a local Ollama engine, or a remote
+    OpenAI-compatible API (cloud GLM/OpenAI/Groq/… or a self-hosted vLLM)."""
+    cfg = cfgmod.load()
+    action = getattr(args, "action", None)
+
+    if action in (None, "list"):
+        if not cfg.backends:
+            print("(no backends configured)")
+        for name, b in cfg.backends.items():
+            key = "literal" if b.api_key else (f"env:{b.api_key_env}" if b.api_key_env else "—")
+            print(f"{name:12s} type={b.type:7s} base_url={b.base_url}  api_key={key}")
+        return 0
+
+    if action == "add":
+        if args.type == "openai" and not (args.api_key or args.api_key_env):
+            print("an openai backend needs --api-key or --api-key-env", file=sys.stderr)
+            return 2
+        cfg.backends[args.name] = cfgmod.Backend(
+            args.name, args.type, args.base_url, args.api_key or "", args.api_key_env or "")
+        cfgmod.save(cfg)
+        print(f"added backend {args.name!r} ({args.type}) -> {args.base_url}")
+        print(f"next: restart the gateway to load it  →  hearth service restart")
+        print(f"      then bind a role               →  hearth bind primary_chat <model> --backend {args.name}")
+        return 0
+
+    if action == "rm":
+        b = cfg.backends.get(args.name)
+        if b is None:
+            print(f"no such backend {args.name!r}", file=sys.stderr)
+            return 2
+        if b.type == "ollama":
+            print("refusing to remove the local ollama backend", file=sys.stderr)
+            return 2
+        bound = [rn for rn, rb in cfg.roles.items() if rb.backend == args.name]
+        if bound:
+            print(f"note: rebind these roles after removal: {', '.join(bound)}", file=sys.stderr)
+        del cfg.backends[args.name]
+        cfgmod.save(cfg)
+        print(f"removed backend {args.name!r}; restart the gateway to apply.")
+        return 0
+    return 0
+
+
 def cmd_hardware(args: argparse.Namespace) -> int:
     print(json.dumps(hardware.as_dict(), indent=2))
     return 0
@@ -1026,6 +1070,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("roles", help="show role bindings")
     s.set_defaults(func=cmd_roles)
+
+    # Backends: local ollama (default) or a remote OpenAI-compatible API.
+    sb = sub.add_parser("backend", help="manage model backends (local or remote/cloud)")
+    sb.set_defaults(func=cmd_backend, action=None)
+    sb_sub = sb.add_subparsers(dest="action")
+    sb_sub.add_parser("list", help="list configured backends")
+    sb_a = sb_sub.add_parser("add", help="add a backend (e.g. a cloud OpenAI-compatible API)")
+    sb_a.add_argument("name")
+    sb_a.add_argument("--type", default="openai", choices=["ollama", "openai"])
+    sb_a.add_argument("--base-url", required=True, dest="base_url",
+                      help="versioned root, e.g. https://open.bigmodel.cn/api/paas/v4")
+    sb_a.add_argument("--api-key", dest="api_key", help="literal API key (prefer --api-key-env)")
+    sb_a.add_argument("--api-key-env", dest="api_key_env",
+                      help="name of an env var holding the API key (keeps it out of config)")
+    sb_r = sb_sub.add_parser("rm", help="remove a backend")
+    sb_r.add_argument("name")
 
     s = sub.add_parser("hardware", help="print hardware probe")
     s.set_defaults(func=cmd_hardware)

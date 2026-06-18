@@ -41,7 +41,7 @@ def create_app(
         # app.state is populated even when the lifespan never runs — e.g. a
         # TestClient used without its `with` block.
         registry = {
-            name: backends_mod.build(name, b.type, b.base_url)
+            name: backends_mod.build(name, b.type, b.base_url, b.resolve_api_key())
             for name, b in cfg.backends.items()
         }
         owned = True
