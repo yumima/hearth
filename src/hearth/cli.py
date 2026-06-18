@@ -508,6 +508,85 @@ def cmd_backend(args: argparse.Namespace) -> int:
     return 0
 
 
+_CODE_HELP = """\
+{dim}commands:
+  /add <file>     pin a file into the conversation context
+  /model [name]   show/switch the model or role (default: coding)
+  /auto           toggle auto-approve for file writes + shell (off by default)
+  /clear          forget the conversation (keep the project context)
+  /help  /exit
+just type a request — the agent reads/writes files and runs shell to do it.{reset}"""
+
+
+def cmd_code(args: argparse.Namespace) -> int:
+    """Coding agent REPL: the model edits files + runs shell in a project dir."""
+    cfg = cfgmod.load()
+    base = _admin_base(cfg)
+    try:
+        httpx.get(f"{base}/admin/health", timeout=3.0)
+    except httpx.HTTPError:
+        print(f"hearth gateway not reachable at {base} — run `hearth start` first", file=sys.stderr)
+        return 1
+
+    from .code_agent import CodeAgent
+    root = Path(args.path or ".").resolve()
+    if not root.is_dir():
+        print(f"not a directory: {root}", file=sys.stderr)
+        return 2
+    model = args.model or "coding"
+    agent = CodeAgent(str(root), base, model, auto=bool(args.yolo))
+
+    bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
+    print(f"{dim}hearth code — {root} · model {model}"
+          f"{' · AUTO-APPROVE' if agent.auto else ''} · /help · /exit{reset}")
+    while True:
+        try:
+            user = input(f"\n{bold}code>{reset} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not user:
+            continue
+        if user in ("/exit", "/quit"):
+            break
+        if user in ("/help", "/?"):
+            print(_CODE_HELP.format(dim=dim, reset=reset))
+            continue
+        if user == "/clear":
+            agent.messages = agent.messages[:1]
+            print(f"{dim}(context cleared){reset}")
+            continue
+        if user == "/auto":
+            agent.auto = not agent.auto
+            print(f"{dim}(auto-approve {'ON' if agent.auto else 'OFF'}){reset}")
+            continue
+        if user == "/model" or user.startswith("/model "):
+            arg = user[len("/model"):].strip()
+            if arg:
+                agent.model = arg
+                print(f"{dim}(model → {arg}){reset}")
+            else:
+                concrete, roles = _chat_models(base)
+                print(f"{dim}models: {'  '.join(concrete)}\nroles:  {'  '.join(roles)} "
+                      f"(current: {agent.model}){reset}")
+            continue
+        if user == "/add" or user.startswith("/add "):
+            arg = user[len("/add"):].strip()
+            try:
+                p = agent._safe(arg)
+                agent.messages.append({"role": "user",
+                    "content": f"For reference, here is {arg}:\n\n{p.read_text(errors='replace')[:60000]}"})
+                print(f"{dim}(added {arg} to context){reset}")
+            except (OSError, ValueError) as e:
+                print(f"{dim}(add failed: {e}){reset}")
+            continue
+        if user.startswith("/"):
+            print(f"{dim}(unknown command {user.split()[0]!r} — /help){reset}")
+            continue
+        agent.ask(user)
+    return 0
+
+
 def cmd_hardware(args: argparse.Namespace) -> int:
     print(json.dumps(hardware.as_dict(), indent=2))
     return 0
@@ -1113,6 +1192,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--show-thinking", action="store_true",
                    help="show the model's full reasoning text (default: compact indicator)")
     s.set_defaults(func=cmd_chat)
+
+    s = sub.add_parser("code", help="coding agent for a project — reads/writes files, runs shell")
+    s.add_argument("path", nargs="?", default=".", help="project directory (default: current dir)")
+    s.add_argument("--model", help="role alias or model id (default: coding)")
+    s.add_argument("--yolo", action="store_true",
+                   help="auto-approve file writes + shell commands (no per-action prompt)")
+    s.set_defaults(func=cmd_code)
 
     sp = sub.add_parser("service", help="control the background gateway service (systemd --user)")
     sp_sub = sp.add_subparsers(dest="action", required=True)

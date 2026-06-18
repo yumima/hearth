@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`8c4f3af`](https://github.com/yumima/hearth/commit/8c4f3af) backends: add OpenAI-compatible remote backend (cloud models behind the local API)
 - [`3b12a93`](https://github.com/yumima/hearth/commit/3b12a93) TTS: warmer Piper prosody (length/width-noise/sentence-pause), env-tunable
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
