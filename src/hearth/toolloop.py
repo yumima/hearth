@@ -19,6 +19,7 @@ The two rules that keep this safe to bolt onto a passthrough gateway:
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import time
 from contextlib import aclosing
@@ -119,19 +120,37 @@ def _label(name: str, args: dict) -> str:
     return f"Running {name}"
 
 
-def _progress(cid: str, created: int, model: str, mode: str,
-              name: str, args: dict) -> bytes | None:
-    """A frame announcing an engine tool call, so a UI can show activity.
+def _summarize(name: str, result: str) -> str:
+    """One short line describing what a tool returned, for the UI card."""
+    if result.startswith("web_search failed") or result.startswith("web_fetch error"):
+        return result.splitlines()[0][:160]
+    if name == "web_search":
+        # Results are numbered "1. title"; counting them beats echoing the blob.
+        n = sum(1 for ln in result.splitlines() if re.match(r"^\d+\. ", ln))
+        return f"{n} result{'s' if n != 1 else ''}"
+    if name == "web_fetch":
+        first = result.splitlines()[0] if result else ""
+        return f"{first[:120]} · {len(result)} chars"
+    return f"{len(result)} chars"
 
-    Also carries a non-standard ``hearth_tool`` object: clients that want to
-    render search activity properly (mantel) read that, while everything else
-    just sees the text in the channel the operator picked.
+
+def _progress(cid: str, created: int, model: str, mode: str, phase: str,
+              call_id: str, name: str, args: dict, summary: str = "") -> bytes | None:
+    """A frame announcing an engine tool call starting or finishing.
+
+    The structured ``hearth_tool`` object is what a UI renders as a tool card
+    (mantel matches call→result on ``id``); the text line in content/reasoning
+    is the fallback for clients that only know the OpenAI fields. Emitting a
+    result phase as well as a call is what lets a UI show "running…" resolve to
+    a real outcome instead of leaving a spinner that never completes.
     """
     if mode == "off":
         return None
-    text = f"🔎 {_label(name, args)}…\n"
-    delta = {"hearth_tool": {"name": name, "arguments": args}}
-    delta["content" if mode == "content" else "reasoning"] = text
+    delta: dict = {"hearth_tool": {"phase": phase, "id": call_id, "name": name,
+                                   **({"arguments": args} if phase == "call"
+                                      else {"ok": True, "content": summary})}}
+    if phase == "call":
+        delta["content" if mode == "content" else "reasoning"] = f"🔎 {_label(name, args)}…\n"
     return _frame(cid, created, model, delta)
 
 
@@ -210,10 +229,14 @@ async def stream_with_tools(
         for c in calls:
             name = c["function"]["name"]
             args = _parse_args(c["function"]["arguments"])
-            frame = _progress(cid, created, model, progress, name, args)
+            frame = _progress(cid, created, model, progress, "call", c["id"], name, args)
             if frame:
                 yield frame
             result = await dispatch(name, args)
+            frame = _progress(cid, created, model, progress, "result", c["id"], name, args,
+                              _summarize(name, result))
+            if frame:
+                yield frame
             messages.append({"role": "tool", "tool_call_id": c["id"],
                              "name": name, "content": result})
 
