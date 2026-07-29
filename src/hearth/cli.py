@@ -389,12 +389,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
     pull + bind. The whole point of `git clone … && hearth setup`."""
     cfg = cfgmod.load()
     rec = hardware.recommend_roles()
+    ctxs = hardware.recommend_contexts(rec)
     hw = hardware.as_dict()
     ram_gib = (hw.get("ram_total_mib") or 0) // 1024
     print(f"hardware: {hw['inference_target']}  |  RAM {ram_gib} GiB")
     print("recommended role bindings:")
     for r, m in rec.items():
-        print(f"  {r:14s} -> {m}")
+        ctx = ctxs.get(r)
+        print(f"  {r:14s} -> {m}" + (f"  (context {ctx})" if ctx else ""))
 
     if not args.yes:
         try:
@@ -415,7 +417,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
             return 1
 
     for role, model in rec.items():
-        cfg.roles[role] = cfgmod.RoleBinding(model=model, backend="ollama")
+        cfg.roles[role] = cfgmod.RoleBinding(model=model, backend="ollama",
+                                             context=ctxs.get(role, 0))
     cfgmod.save(cfg)
     # Hot-apply to a running gateway so no restart is needed.
     base = _admin_base(cfg)
@@ -556,7 +559,8 @@ _CODE_HELP = """\
   /auto           toggle auto-approve for file writes + shell (off by default)
   /clear          forget the conversation (keep the project context)
   /help  /exit
-just type a request — the agent reads/writes files and runs shell to do it.{reset}"""
+just type a request — the agent greps, reads, edits, runs shell and searches
+the web to do it. non-interactive:  hearth code . -p "fix the failing test"{reset}"""
 
 
 def cmd_code(args: argparse.Namespace) -> int:
@@ -575,7 +579,20 @@ def cmd_code(args: argparse.Namespace) -> int:
         print(f"not a directory: {root}", file=sys.stderr)
         return 2
     model = args.model or "coding"
-    agent = CodeAgent(str(root), base, model, auto=bool(args.yolo))
+    prompt = getattr(args, "prompt", None)
+    # Non-interactive mode: one task, then exit. This is what makes the agent
+    # scriptable — usable from a Makefile, a git hook, or another agent — and
+    # it implies auto-approve because there is nobody at the terminal to ask.
+    if prompt:
+        agent = CodeAgent(str(root), base, model, auto=True,
+                          max_rounds=args.max_rounds, quiet=bool(args.quiet))
+        out = agent.ask(prompt)
+        if args.quiet and out:
+            print(out)
+        return 0
+
+    agent = CodeAgent(str(root), base, model, auto=bool(args.yolo),
+                      max_rounds=args.max_rounds)
 
     bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
     print(f"{dim}hearth code — {root} · model {model}"
@@ -1243,9 +1260,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="treat the argument as a URL and print the page text")
     s.set_defaults(func=cmd_search)
 
-    s = sub.add_parser("code", help="coding agent for a project — reads/writes files, runs shell")
+    s = sub.add_parser("code", help="coding agent for a project — greps, edits files, runs shell")
     s.add_argument("path", nargs="?", default=".", help="project directory (default: current dir)")
+    s.add_argument("-p", "--prompt",
+                   help="run this one task non-interactively and exit (implies --yolo)")
+    s.add_argument("-q", "--quiet", action="store_true",
+                   help="with -p: print only the final answer, no tool trace")
     s.add_argument("--model", help="role alias or model id (default: coding)")
+    s.add_argument("--max-rounds", type=int, default=60,
+                   help="tool rounds before the agent stops and asks (default 60)")
     s.add_argument("--yolo", action="store_true",
                    help="auto-approve file writes + shell commands (no per-action prompt)")
     s.set_defaults(func=cmd_code)

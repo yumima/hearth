@@ -180,3 +180,59 @@ def recommend_roles() -> dict[str, str]:
         "coding": fast,
         "embedding": "nomic-embed-text",
     }
+
+
+# (approx q4_K_M weight footprint in MiB, KV cache KiB per token at q8_0).
+# The KV figure is 2 (K+V) x layers x kv_heads x head_dim bytes, read off each
+# model's own metadata — Qwen3 uses grouped-query attention with 8 kv heads
+# (4 on the MoE) and a 128-wide head, so the cost per token varies by depth.
+_FOOTPRINT: dict[str, tuple[int, int]] = {
+    "qwen3:0.6b":    (500, 56),
+    "qwen3:1.7b":   (1400, 56),
+    "qwen3:4b":     (2500, 72),
+    "qwen3:8b":     (4988, 72),
+    "qwen3:14b":    (8850, 80),
+    "qwen3:32b":   (19500, 128),
+    "qwen3:30b-a3b": (17700, 48),
+}
+# Contexts worth choosing between. Qwen3 tops out at 40960.
+_CONTEXT_STEPS = (40960, 32768, 24576, 16384, 12288, 8192, 4096)
+# Held back from the KV budget for CUDA context, compute buffers and whatever
+# else shares the card. Under-reserving here is what turns a "it fits" estimate
+# into layers silently running on the CPU.
+_VRAM_OVERHEAD_MIB = 700
+_VRAM_USABLE = 0.92
+
+
+def recommend_contexts(models: dict[str, str], vram_mib: int = 0) -> dict[str, int]:
+    """Largest context per role that keeps the model 100% on the GPU.
+
+    Ollama will happily load a model that doesn't fit and run the overflow on
+    the CPU — measured here as a ~9% throughput loss at the first spill, worse
+    as it grows. Since the KV cache scales linearly with context, the context
+    is the knob that decides whether a model that *nearly* fits actually does.
+
+    Assumes the q8_0 KV cache hearth starts Ollama with (see
+    ollama_supervisor), which halves these numbers versus f16. Roles whose
+    model we have no footprint for get 0 — the daemon default.
+    """
+    if not vram_mib:
+        hw = probe()
+        for g in hw.gpus:
+            if g.compute == "cuda" and g.vram_mib:
+                vram_mib = max(vram_mib, g.vram_mib)
+    out: dict[str, int] = {}
+    for role, model in models.items():
+        fp = _FOOTPRINT.get(model)
+        if not fp or not vram_mib or role == "embedding":
+            continue
+        weights, kv_kib = fp
+        budget_mib = int(vram_mib * _VRAM_USABLE) - weights - _VRAM_OVERHEAD_MIB
+        if budget_mib <= 0:
+            continue
+        affordable = int(budget_mib * 1024 / kv_kib)
+        for step in _CONTEXT_STEPS:
+            if step <= affordable:
+                out[role] = step
+                break
+    return out

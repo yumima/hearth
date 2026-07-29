@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`06faa3e`](https://github.com/yumima/hearth/commit/06faa3e) Give the engine live web access (web_search / web_fetch)
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
