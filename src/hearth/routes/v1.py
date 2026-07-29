@@ -15,6 +15,7 @@ import random
 import shutil
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -22,10 +23,35 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from .. import comfy_supervisor
+from .. import comfy_supervisor, ollama_supervisor, toolloop, webtools
 from ..config import ROLE_NAMES, Config
 
 router = APIRouter()
+
+# Rough English/code average; good enough to keep a tool result from evicting
+# the conversation, which is all this estimate is used for.
+_CHARS_PER_TOKEN = 4
+# Share of the context window a single fetched page may occupy.
+_TOOL_RESULT_SHARE = 0.4
+
+
+def _with_preamble(messages: list, note: str) -> list:
+    """Fold the engine's tool note into the conversation's system prompt.
+
+    Appended to the caller's own system message rather than prepended as a
+    second one: consumers like finterm spend real effort on their system
+    prompt, and a competing system turn ahead of it measurably weakens how
+    well small models follow it.
+    """
+    out = list(messages)
+    for i, m in enumerate(out):
+        if m.get("role") == "system":
+            content = m.get("content")
+            if isinstance(content, str):
+                out[i] = {**m, "content": content.rstrip() + "\n\n" + note}
+                return out
+            break
+    return [{"role": "system", "content": note}] + out
 
 
 def _err(status: int, message: str, etype: str = "invalid_request_error"):
@@ -96,15 +122,57 @@ async def chat_completions(request: Request):
     # pop it from the OpenAI payload and route to the native path when present.
     # Absent (the common case) → byte-for-byte OpenAI passthrough, unchanged.
     think = payload.pop("think", None)
-    use_native = think is not None and hasattr(backend, "chat_stream_native")
+    # `web_search` is likewise a hearth extension: an explicit per-request
+    # override of the configured default (True forces the tools on for this
+    # call, False keeps them out of an otherwise-automatic setup).
+    want_search = payload.pop("web_search", None)
+
+    # A configured per-role context window also needs the native path — see
+    # OllamaBackend._to_native. Both extensions land on the same route.
+    ctx = cfg.context_for(model)
+    use_native = (think is not None or bool(ctx)) and hasattr(backend, "chat_stream_native")
 
     payload = {**payload, "model": concrete}
+    if use_native and ctx:
+        payload["num_ctx"] = ctx
+
+    scfg = cfg.search
+    search_on = bool(
+        scfg.enabled
+        and backend.capabilities.tools
+        and payload.get("tool_choice") != "none"
+        and (scfg.auto if want_search is None else want_search)
+    )
+    if search_on:
+        payload["tools"] = list(payload.get("tools") or []) + webtools.tool_specs(scfg)
+        payload["messages"] = _with_preamble(payload.get("messages") or [],
+                                             webtools.system_preamble(scfg))
+        # Size a fetched page against the context that actually exists. Ollama
+        # answers an over-long request by silently discarding the oldest
+        # messages — the system prompt and the user's question — so a 20k-char
+        # page against an 8k window doesn't fail loudly, it just makes the model
+        # look like it ignored the task. Reserve most of the window for the
+        # conversation and let one tool result have the rest.
+        ctx_tokens = ctx or ollama_supervisor.DEFAULT_CONTEXT_LENGTH
+        budget = max(2000, int(ctx_tokens * _CHARS_PER_TOKEN * _TOOL_RESULT_SHARE))
+        if scfg.fetch_max_chars > budget:
+            scfg = replace(scfg, fetch_max_chars=budget)
+
+    async def _dispatch(name: str, args: dict) -> str:
+        return await webtools.dispatch(name, args, scfg)
 
     if payload.get("stream"):
+        def stream_fn(body: dict):
+            return (backend.chat_stream_native(body, bool(think)) if use_native
+                    else backend.chat_stream(body))
+
         async def gen():
             try:
-                source = (backend.chat_stream_native(payload, bool(think)) if use_native
-                          else backend.chat_stream(payload))
+                source = (
+                    toolloop.stream_with_tools(
+                        stream_fn, payload, webtools.TOOL_NAMES, _dispatch,
+                        scfg.max_tool_rounds, scfg.progress)
+                    if search_on else stream_fn(payload))
                 async for chunk in source:
                     yield chunk
             except Exception as e:  # surface as a final SSE error frame
@@ -114,10 +182,16 @@ async def chat_completions(request: Request):
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    try:
+    async def chat_fn(body: dict) -> dict:
         if use_native:
-            return await backend.chat_native(payload, bool(think))
-        return await backend.chat(payload)
+            return await backend.chat_native(body, bool(think))
+        return await backend.chat(body)
+
+    try:
+        if search_on:
+            return await toolloop.chat_with_tools(
+                chat_fn, payload, webtools.TOOL_NAMES, _dispatch, scfg.max_tool_rounds)
+        return await chat_fn(payload)
     except Exception as e:
         return _err(502, f"backend error: {e}", "backend_error")
 

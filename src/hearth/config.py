@@ -73,6 +73,51 @@ class Backend:
 class RoleBinding:
     model: str
     backend: str
+    # Context window (tokens) for this role. Ollama otherwise applies its
+    # daemon-wide default and silently drops the OLDEST messages when a
+    # conversation overruns it — which eats the system prompt and the user's
+    # original task, and looks exactly like the model ignoring instructions.
+    # Sent per-request as num_ctx so each role pays only the KV cache it needs.
+    # 0/None → leave it to the daemon.
+    context: int = 0
+
+
+@dataclass
+class SearchConfig:
+    """Live web access (see websearch.py).
+
+    Off by default for nothing — the engine is loopback-only, but *search* is
+    the one feature that makes outbound requests, so it stays explicit and
+    auditable in config.yaml rather than being an invisible behaviour.
+    """
+    enabled: bool = True
+    # Inject web_search/web_fetch into every tool-capable chat request, the way
+    # a hosted provider ships server-side tools. False → the tools exist but a
+    # client must opt in per request with {"web_search": true}.
+    auto: bool = True
+    provider: str = "auto"  # auto | brave | searxng | brave_html | wikipedia
+    # Key stays in an env var by default so it is never written to config.yaml
+    # (which is a file users paste into issues) and never committed.
+    brave_api_key: str = ""
+    brave_api_key_env: str = "BRAVE_SEARCH_API_KEY"
+    searxng_url: str = ""           # e.g. http://127.0.0.1:8888
+    max_results: int = 5
+    fetch_max_chars: int = 20000
+    # Let web_fetch reach loopback/private addresses so the agent can diagnose
+    # the services running on this box. Cloud metadata (169.254/16) stays
+    # blocked regardless — see websearch.host_is_blocked.
+    allow_localhost: bool = False
+    max_tool_rounds: int = 6
+    # Emit a "searching…" frame per tool call so a UI can show activity.
+    # reasoning → folded into the thinking pane; content → inline in the answer.
+    progress: str = "reasoning"     # reasoning | content | off
+
+    def resolve_brave_key(self) -> str:
+        if self.brave_api_key:
+            return self.brave_api_key
+        if self.brave_api_key_env:
+            return os.environ.get(self.brave_api_key_env, "")
+        return ""
 
 
 @dataclass
@@ -81,6 +126,7 @@ class Config:
     bind_port: int = DEFAULT_BIND_PORT
     backends: dict[str, Backend] = field(default_factory=dict)
     roles: dict[str, RoleBinding] = field(default_factory=dict)
+    search: SearchConfig = field(default_factory=SearchConfig)
     path: Path | None = None
 
     # ---- role resolution -------------------------------------------------
@@ -115,6 +161,15 @@ class Config:
                 return b
         return next(iter(self.backends.values()))
 
+    def context_for(self, model: str) -> int:
+        """Configured context window for a role alias (0 = daemon default).
+
+        Kept off ``resolve()`` so its two-value contract stays intact for the
+        callers that only care about routing.
+        """
+        binding = self.roles.get(model)
+        return int(binding.context or 0) if binding else 0
+
     def backend_for_role(self, role: str) -> tuple[str, Backend] | None:
         binding = self.roles.get(role)
         if binding is None:
@@ -134,8 +189,23 @@ class Config:
                 for name, b in self.backends.items()
             },
             "roles": {
-                name: {"model": r.model, "backend": r.backend}
+                name: {"model": r.model, "backend": r.backend,
+                       **({"context": r.context} if r.context else {})}
                 for name, r in self.roles.items()
+            },
+            "search": {
+                "enabled": self.search.enabled,
+                "auto": self.search.auto,
+                "provider": self.search.provider,
+                **({"brave_api_key": self.search.brave_api_key}
+                   if self.search.brave_api_key else {}),
+                "brave_api_key_env": self.search.brave_api_key_env,
+                "searxng_url": self.search.searxng_url,
+                "max_results": self.search.max_results,
+                "fetch_max_chars": self.search.fetch_max_chars,
+                "allow_localhost": self.search.allow_localhost,
+                "max_tool_rounds": self.search.max_tool_rounds,
+                "progress": self.search.progress,
             },
         }
 
@@ -166,14 +236,31 @@ def load(create: bool = True) -> Config:
     if not backends:
         backends = {"ollama": Backend("ollama", "ollama", DEFAULT_OLLAMA_URL)}
     roles = {
-        name: RoleBinding(model=r["model"], backend=r.get("backend", "ollama"))
+        name: RoleBinding(model=r["model"], backend=r.get("backend", "ollama"),
+                          context=int(r.get("context") or 0))
         for name, r in (raw.get("roles") or {}).items()
     }
+    s = raw.get("search") or {}
+    defaults = SearchConfig()
+    search = SearchConfig(
+        enabled=bool(s.get("enabled", defaults.enabled)),
+        auto=bool(s.get("auto", defaults.auto)),
+        provider=str(s.get("provider", defaults.provider)),
+        brave_api_key=str(s.get("brave_api_key", "")),
+        brave_api_key_env=str(s.get("brave_api_key_env", defaults.brave_api_key_env)),
+        searxng_url=str(s.get("searxng_url", "")),
+        max_results=int(s.get("max_results", defaults.max_results)),
+        fetch_max_chars=int(s.get("fetch_max_chars", defaults.fetch_max_chars)),
+        allow_localhost=bool(s.get("allow_localhost", defaults.allow_localhost)),
+        max_tool_rounds=int(s.get("max_tool_rounds", defaults.max_tool_rounds)),
+        progress=str(s.get("progress", defaults.progress)),
+    )
     return Config(
         bind_host=bind.get("host", DEFAULT_BIND_HOST),
         bind_port=int(bind.get("port", DEFAULT_BIND_PORT)),
         backends=backends,
         roles=roles,
+        search=search,
         path=p,
     )
 

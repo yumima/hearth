@@ -9,12 +9,10 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-06-18)
+## Today's commits (2026-07-29)
 
 Latest first.
 
-- [`8c4f3af`](https://github.com/yumima/hearth/commit/8c4f3af) backends: add OpenAI-compatible remote backend (cloud models behind the local API)
-- [`3b12a93`](https://github.com/yumima/hearth/commit/3b12a93) TTS: warmer Piper prosody (length/width-noise/sentence-pause), env-tunable
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

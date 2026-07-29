@@ -20,6 +20,12 @@ import httpx
 # Where our user-local install puts the binary (vendor/ollama/bin/ollama).
 _VENDOR = Path(__file__).resolve().parents[2] / "vendor" / "ollama" / "bin" / "ollama"
 
+# The context window we start Ollama with (see start()). Exported because the
+# gateway has to size tool results against it: Ollama silently drops the OLDEST
+# messages when a request overruns the window, so an oversized fetched page
+# doesn't error — it quietly deletes the system prompt and the user's question.
+DEFAULT_CONTEXT_LENGTH = 8192
+
 
 def ollama_binary() -> str | None:
     env = os.environ.get("HEARTH_OLLAMA_BIN")
@@ -56,7 +62,14 @@ def start(base_url: str, wait_s: float = 30.0) -> subprocess.Popen | None:
     # model loses the tools — which broke tool-calling. 8192 keeps qwen3:14b fully
     # in VRAM on a 12GB GPU; much larger overflows the KV-cache to CPU and slows
     # inference. Respect an explicit operator override if one is already set.
-    env.setdefault("OLLAMA_CONTEXT_LENGTH", "8192")
+    env.setdefault("OLLAMA_CONTEXT_LENGTH", str(DEFAULT_CONTEXT_LENGTH))
+    # Quantize the K/V cache to 8-bit. The cache scales linearly with context and
+    # at 32k it outweighs the model weights themselves; q8_0 halves it for a
+    # perplexity cost in the 0.002-0.05 range — i.e. free context on a 12 GB card.
+    # It only takes effect with flash attention on (Ollama silently falls back to
+    # f16 otherwise, which reads as an unexplained OOM), so the two are set together.
+    env.setdefault("OLLAMA_FLASH_ATTENTION", "1")
+    env.setdefault("OLLAMA_KV_CACHE_TYPE", "q8_0")
     # Keep the chat model resident longer than Ollama's 5-minute default so a brief
     # pause between messages doesn't trigger a ~15-20s cold reload. (Image-gen still
     # evicts explicitly via keep_alive:0, then re-warms — see routes/v1.py.)

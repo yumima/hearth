@@ -508,6 +508,47 @@ def cmd_backend(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_search(args: argparse.Namespace) -> int:
+    """Run the engine's web search directly — no model in the loop.
+
+    The point is separating "search is broken" from "the model didn't search":
+    this exercises the exact provider chain /v1 uses and names which provider
+    answered, so a bad key or a changed markup shows up here first.
+    """
+    import asyncio
+
+    from . import websearch
+
+    bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
+    cfg = cfgmod.load()
+    scfg = cfg.search
+    if args.provider:
+        scfg.provider = args.provider
+
+    if args.fetch:
+        out = asyncio.run(websearch.fetch(args.query, scfg))
+        if "error" in out:
+            print(out["error"], file=sys.stderr)
+            return 1
+        print(f"{dim}[{out['status']}] {out['url']} ({out['content_type']}){reset}\n")
+        print(out["text"] + ("\n…(truncated)" if out["truncated"] else ""))
+        return 0
+
+    try:
+        results = asyncio.run(websearch.search(args.query, scfg, args.count))
+    except websearch.SearchError as e:
+        print(f"search failed — {e}", file=sys.stderr)
+        return 1
+    print(f"{dim}provider: {results[0].source}{reset}\n")
+    for i, r in enumerate(results, 1):
+        age = f" {dim}({r.age}){reset}" if r.age else ""
+        print(f"{bold}{i}. {r.title}{reset}{age}\n   {dim}{r.url}{reset}")
+        if r.snippet:
+            print(f"   {r.snippet}")
+        print()
+    return 0
+
+
 _CODE_HELP = """\
 {dim}commands:
   /add <file>     pin a file into the conversation context
@@ -1192,6 +1233,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--show-thinking", action="store_true",
                    help="show the model's full reasoning text (default: compact indicator)")
     s.set_defaults(func=cmd_chat)
+
+    s = sub.add_parser("search", help="query the web through the engine's search chain")
+    s.add_argument("query", help="search query, or a URL with --fetch")
+    s.add_argument("-n", "--count", type=int, default=0, help="number of results")
+    s.add_argument("--provider", choices=["auto", "brave", "searxng", "brave_html", "wikipedia"],
+                   help="force one provider instead of the configured chain")
+    s.add_argument("--fetch", action="store_true",
+                   help="treat the argument as a URL and print the page text")
+    s.set_defaults(func=cmd_search)
 
     s = sub.add_parser("code", help="coding agent for a project — reads/writes files, runs shell")
     s.add_argument("path", nargs="?", default=".", help="project directory (default: current dir)")
