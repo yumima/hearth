@@ -106,3 +106,45 @@ def test_chat_persistence_tolerates_malformed_messages(tmp_path, monkeypatch):
     r = c.put("/api/chats/bad", json={"title": "x", "messages": ["not-a-dict", {"role": "user", "content": "ok"}]})
     assert r.status_code == 200
     assert len(c.get("/api/chats/bad").json()["messages"]) == 1
+
+
+def test_hearth_engine_tools_surface_as_tool_events(monkeypatch):
+    """hearth runs web_search/web_fetch inside the completion and announces each
+    on a non-standard `hearth_tool` delta field. The proxy rebuilds frames field
+    by field, so anything it doesn't know about is dropped — which left the
+    engine's work invisible in the UI and made answers look unsourced."""
+    import json
+
+    from mantel import app as appmod
+
+    frames = [
+        {"choices": [{"delta": {"hearth_tool": {
+            "phase": "call", "id": "call_1", "name": "web_search",
+            "arguments": {"query": "debian release"}}, "reasoning": "🔎 Searching…\n"}}]},
+        {"choices": [{"delta": {"hearth_tool": {
+            "phase": "result", "id": "call_1", "name": "web_search",
+            "ok": True, "content": "5 results"}}}]},
+        {"choices": [{"delta": {"content": "Debian 13."}}]},
+    ]
+
+    async def fake_stream(prov, req, client=None):
+        for f in frames:
+            yield json.dumps(f)
+
+    monkeypatch.setattr(appmod, "_backend_chat_stream", fake_stream)
+    with _client().stream("POST", "/api/chat",
+                          json={"model": "primary_chat",
+                                "messages": [{"role": "user", "content": "hi"}]}) as r:
+        body = b"".join(r.iter_bytes()).decode()
+
+    events = [json.loads(ln[5:]) for ln in body.splitlines()
+              if ln.startswith("data:") and ln[5:].strip() not in ("", "[DONE]")]
+    tools = [e["mantel_tool"] for e in events if "mantel_tool" in e]
+    assert [t["phase"] for t in tools] == ["call", "result"]
+    # Both phases must carry the SAME id or the UI cannot resolve "running…".
+    assert tools[0]["id"] == tools[1]["id"] == "hearth:call_1"
+    assert tools[0]["name"] == "web_search"
+    assert tools[0]["arguments"]["query"] == "debian release"
+    assert tools[1]["content"] == "5 results"
+    # The answer itself still streams through untouched.
+    assert "Debian 13." in body

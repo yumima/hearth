@@ -713,6 +713,21 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                             if not choices:
                                 continue
                             delta = choices[0].get("delta") or {}
+                            # hearth runs web_search/web_fetch inside the completion,
+                            # announcing each one on this non-standard field. Re-emit
+                            # it as a mantel tool event so engine-side tools render in
+                            # the same card as our own MCP calls — otherwise the work
+                            # is invisible and the answer looks like it came from
+                            # nowhere. The "hearth:" prefix keeps these ids clear of
+                            # our own rows, which are keyed by the raw call id the
+                            # model supplied.
+                            ht = delta.get("hearth_tool")
+                            if isinstance(ht, dict) and ht.get("name"):
+                                yield _tool_frame(
+                                    ht.get("phase") or "call", f"hearth:{ht.get('id') or ''}",
+                                    ht["name"],
+                                    {k: v for k, v in ht.items()
+                                     if k not in ("phase", "id", "name")})
                             if delta.get("content"):
                                 content += delta["content"]
                                 yield _content_frame(delta["content"])

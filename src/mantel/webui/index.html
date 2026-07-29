@@ -583,8 +583,18 @@ function renderTool(wrap, ev){
       try { argStr = JSON.stringify(ev.arguments); } catch { argStr = ""; }
       if (argStr.length > 120) argStr = argStr.slice(0, 120) + "…";
     }
-    row.innerHTML = `🔧 <code>${escapeHtml(ev.name || "")}</code>`
-      + (argStr ? ` <span class="args" title="call arguments">${escapeHtml(argStr)}</span>` : "")
+    // Web tools read as an activity ("Searching the web for X"), not as a
+    // function call — the user cares what it looked up, not the JSON it passed.
+    const a = ev.arguments || {};
+    let icon = "🔧", label = `<code>${escapeHtml(ev.name || "")}</code>`, detail = argStr;
+    if (ev.name === "web_search") {
+      icon = "🔎"; label = "Searching the web"; detail = a.query ? `“${a.query}”` : "";
+    } else if (ev.name === "web_fetch") {
+      icon = "🌐"; label = "Reading"; detail = a.url || "";
+      if (detail.length > 80) detail = detail.slice(0, 80) + "…";
+    }
+    row.innerHTML = `${icon} ${label}`
+      + (detail ? ` <span class="args" title="call arguments">${escapeHtml(detail)}</span>` : "")
       + `<span class="tr"> · running…</span>`;
     tools.appendChild(row);
   } else if (ev.phase === "result") {
@@ -1089,7 +1099,11 @@ async function _streamTurn(userContent, displayText, atts, opts){
         if (obj.error) { err = (obj.error && obj.error.message) || String(obj.error); return true; }
         if (obj.mantel_tool) { renderTool(wrap, obj.mantel_tool); scrollDown(); return false; }
         const d = (obj.choices && obj.choices[0] && obj.choices[0].delta) || {};
-        const reason = d.reasoning || d.reasoning_content || "";
+        let reason = d.reasoning || d.reasoning_content || "";
+        // hearth narrates its engine-side tools into `reasoning` for clients that
+        // can't render a card. We can, so drop the marker line rather than show
+        // the same search twice.
+        if (reason.includes("🔎")) reason = reason.split("\n").filter(l => !l.trim().startsWith("🔎")).join("\n");
         if (reason && !gotContent) { reasoning += reason; schedule(); }
         if (d.content) { if (!gotContent && !voiceMode) setActivity("", ""); gotContent = true; answer += d.content; schedule(); if (voiceMode && !bargedIn) pumpVoiceSentences(answer, false); }
         return false;
