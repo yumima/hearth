@@ -7,15 +7,21 @@ gets live data without shipping its own scraper.
 
 Provider chain (config `search.provider: auto`), in order of preference:
 
-1. **Brave Search API** — the same source Anthropic licenses for Claude's
-   web_search. Clean JSON, dated results, no scraping. Needs a (free-tier) key,
-   read from an env var by default so it never lands in config.yaml or git.
-2. **SearXNG** — a self-hosted metasearch instance (`search.searxng_url`).
-   Free, unlimited, no key, and stays on the user's own machine.
+1. **SearXNG** — a self-hosted metasearch instance (`search.searxng_url`).
+   First because it is the only provider that reaches Google's index, and it
+   does so without a key, an account, or a third party seeing the query: it
+   runs on the user's own machine and aggregates the upstream engines itself.
+   Google's own Custom Search JSON API is closed to new customers and retires
+   on 2027-01-01, so this is the practical route to those results.
+2. **Brave Search API** — the same source Anthropic licenses for Claude's
+   web_search. Clean JSON, dated results, no scraping, and far steadier than
+   any scrape — but it needs a (free-tier) key, read from an env var by default
+   so it never lands in config.yaml or git.
 3. **Brave HTML** — scrape search.brave.com. No key, works out of the box, but
-   brittle by nature (a markup change breaks it) — hence last among the general
-   engines. DuckDuckGo is deliberately NOT in the chain: both its lite and html
-   endpoints answer a bot challenge here, so it returns zero results.
+   brittle by nature (a markup change breaks it) and rate-limited in practice —
+   it starts answering 429 well inside a single agent session. DuckDuckGo is
+   deliberately NOT in the chain: both its lite and html endpoints answer a bot
+   challenge here, so it returns zero results.
 4. **Wikipedia** — always-available last resort. Not a general web index, but
    for encyclopedic questions it beats returning nothing.
 
@@ -285,9 +291,9 @@ async def _wikipedia(client: httpx.AsyncClient, query: str, count: int) -> list[
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-# Order the `auto` chain walks. Each entry is (name, needs) where `needs` is
-# checked against the live config before the provider is attempted.
-_CHAIN = ("brave", "searxng", "brave_html", "wikipedia")
+# Order the `auto` chain walks. A provider that isn't configured is skipped
+# (with its reason recorded), so this order is a preference, not a requirement.
+_CHAIN = ("searxng", "brave", "brave_html", "wikipedia")
 
 # Short-lived result cache. An agent loop re-searches the same phrase often —
 # refining a query, or a second round after a fetch — and the keyless providers
