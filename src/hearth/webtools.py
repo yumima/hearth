@@ -83,7 +83,13 @@ def system_preamble(cfg) -> str:
         "could have changed — do not answer such questions from memory, and do "
         "not tell the user you cannot browse the web. After searching, call "
         "web_fetch on the most relevant result when the snippets are not enough. "
-        "Cite the URLs you used in your answer.")
+        "Cite the URLs you used in your answer.\n"
+        "Search the user's terms EXACTLY as written. Never silently 'correct' an "
+        "unfamiliar ticker, identifier, product name, version or spelling into a "
+        "similar familiar one — an unfamiliar name is usually something newer "
+        "than your training data, which is precisely what you are searching to "
+        "find out. If a search returns nothing for the literal term, say so and "
+        "ask, rather than answering about the thing you assumed was meant.")
     if cfg.allow_localhost:
         note += ("\nweb_fetch may also reach services on this machine "
                  "(http://127.0.0.1:PORT/...), which you can use to inspect "
