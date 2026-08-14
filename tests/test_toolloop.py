@@ -219,3 +219,55 @@ def test_nonstream_loop_strips_unanswerable_engine_calls_at_the_cap():
     assert "tool_calls" not in choice["message"]
     assert choice["finish_reason"] == "stop"
     assert "stopped after 2 tool rounds" in choice["message"]["content"]
+
+
+# ── provider state passthrough ────────────────────────────────────────────────
+#
+# Gemini 3 attaches an encrypted `extra_content.google.thought_signature` to a
+# function call and REJECTS the next turn if it doesn't come back verbatim —
+# the failure that broke multi-turn tool use in LiteLLM and Codex. The loop
+# rebuilds assistant messages from parsed parts, so anything it doesn't model
+# explicitly is dropped by construction unless carried deliberately.
+
+
+_SIG = {"google": {"thought_signature": "EucCCuQCARFNMg9huJ2cOUou"}}
+
+
+def test_accumulate_preserves_provider_fields_on_tool_calls():
+    acc: dict = {}
+    toolloop._accumulate(acc, [{
+        "index": 0, "id": "call_1", "type": "function",
+        "function": {"name": "web_search", "arguments": '{"q":'},
+        "extra_content": _SIG,
+    }])
+    toolloop._accumulate(acc, [{
+        "index": 0, "function": {"arguments": '"nemotron"}'},
+    }])
+    calls = toolloop._finalize(acc)
+    assert len(calls) == 1
+    assert calls[0]["function"]["arguments"] == '{"q":"nemotron"}'
+    assert calls[0]["extra_content"] == _SIG, "thought signature must survive"
+
+
+def test_finalize_without_provider_fields_is_unchanged():
+    """The common case stays byte-identical — no stray keys for other backends."""
+    acc: dict = {}
+    toolloop._accumulate(acc, [{
+        "index": 0, "id": "c1", "function": {"name": "f", "arguments": "{}"}}])
+    assert toolloop._finalize(acc) == [
+        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+    ]
+
+
+def test_accumulate_keeps_parallel_calls_separate_with_own_signatures():
+    acc: dict = {}
+    toolloop._accumulate(acc, [
+        {"index": 0, "id": "a", "function": {"name": "f", "arguments": "{}"},
+         "extra_content": {"google": {"thought_signature": "SIG_A"}}},
+        {"index": 1, "id": "b", "function": {"name": "g", "arguments": "{}"},
+         "extra_content": {"google": {"thought_signature": "SIG_B"}}},
+    ])
+    calls = toolloop._finalize(acc)
+    assert [c["id"] for c in calls] == ["a", "b"]
+    assert calls[0]["extra_content"]["google"]["thought_signature"] == "SIG_A"
+    assert calls[1]["extra_content"]["google"]["thought_signature"] == "SIG_B"

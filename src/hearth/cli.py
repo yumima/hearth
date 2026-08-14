@@ -103,10 +103,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     # Detect + suggest the best-fit model: if the bound primary_chat differs from
     # what fits this hardware best, say so. A model that overflows VRAM runs its
     # spillover on the CPU and starves the GPU (slow). Best-effort; never blocks.
+    # A remote-bound role has no VRAM footprint on this box, so the fit advice
+    # is meaningless for it (and reads as a nag to abandon a deliberate choice).
     try:
         rec = hardware.recommend_roles().get("primary_chat")
         cur = cfg.roles.get("primary_chat")
-        if rec and cur and cur.model != rec:
+        if rec and cur and cur.model != rec and not cfg.role_is_remote("primary_chat"):
             print(f"tip: primary_chat = '{cur.model}', but '{rec}' fits your hardware "
                   f"better (full-GPU speed).\n     apply with:  hearth bind primary_chat "
                   f"{rec}   (or: hearth setup)", file=sys.stderr)
@@ -156,8 +158,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     atexit.register(_cleanup_pid)
 
     # Hint to run `hearth setup` when the primary_chat model isn't pulled yet.
+    # Skipped for a remote-bound role: the provider hosts the weights, so there
+    # is nothing to pull and `hearth pull gemini-3.7-flash` would just fail.
     pm = cfg.roles.get("primary_chat")
-    if ollama and pm:
+    if ollama and pm and not cfg.role_is_remote("primary_chat"):
         try:
             tags = httpx.get(f"{ollama.base_url}/api/tags", timeout=2.0).json().get("models", [])
             names = {t.get("name", "") for t in tags}
@@ -425,7 +429,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     for role, model in rec.items():
         try:
             httpx.put(f"{base}/admin/roles/{role}",
-                      json={"model": model, "backend": "ollama"}, timeout=3.0)
+                      json={"model": model, "backend": "ollama", "context": ctxs.get(role, 0)}, timeout=3.0)
         except httpx.HTTPError:
             pass
 
@@ -444,15 +448,33 @@ def cmd_bind(args: argparse.Namespace) -> int:
     if args.role not in cfgmod.ROLE_NAMES:
         print(f"unknown role {args.role!r}; valid: {', '.join(cfgmod.ROLE_NAMES)}", file=sys.stderr)
         return 2
-    cfg.roles[args.role] = cfgmod.RoleBinding(model=args.model, backend=args.backend)
+    # A role's context is tuned to the MODEL that was bound (what fits in VRAM
+    # at full-GPU speed), so it can't carry over to a different one. Dropping it
+    # silently is the trap: the daemon falls back to its own default and starts
+    # discarding the oldest messages — which reads as the model ignoring its
+    # system prompt, not as a config change. So say it out loud.
+    # getattr, not args.context: `swap` aliases this handler, and an alias that
+    # forgets the flag should not take the command down with an AttributeError.
+    ctx_arg = getattr(args, "context", None)
+    previous = cfg.roles.get(args.role)
+    prior_ctx = int(previous.context or 0) if previous else 0
+    cfg.roles[args.role] = cfgmod.RoleBinding(
+        model=args.model, backend=args.backend, context=int(ctx_arg or 0))
     cfgmod.save(cfg)
     print(f"bound {args.role} -> {args.model} ({args.backend})")
+    if prior_ctx and not ctx_arg:
+        print(f"note: cleared this role's context ({prior_ctx}); the daemon default "
+              f"applies now.\n      keep it with:  hearth bind {args.role} {args.model} "
+              f"--backend {args.backend} --context {prior_ctx}")
+    elif ctx_arg:
+        print(f"context: {int(ctx_arg)}")
     # If a gateway is running, hot-apply via admin so no restart is needed.
     base = _admin_base(cfg)
     try:
         httpx.put(
             f"{base}/admin/roles/{args.role}",
-            json={"model": args.model, "backend": args.backend}, timeout=3.0,
+            json={"model": args.model, "backend": args.backend,
+                  "context": int(ctx_arg or 0)}, timeout=3.0,
         )
         print("(applied to running gateway)")
     except httpx.HTTPError:
@@ -462,8 +484,14 @@ def cmd_bind(args: argparse.Namespace) -> int:
 
 def cmd_roles(args: argparse.Namespace) -> int:
     cfg = cfgmod.load()
+    remote_any = False
     for name, r in cfg.roles.items():
-        print(f"{name:14s} -> {r.model} ({r.backend})")
+        remote = cfg.role_is_remote(name)
+        remote_any = remote_any or remote
+        tag = "  ⚠ off-box" if remote else ""
+        print(f"{name:14s} -> {r.model} ({r.backend}){tag}")
+    if remote_any:
+        print("\n⚠ marked roles send prompts to a remote provider — they leave this machine.")
     return 0
 
 
@@ -663,8 +691,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"status: {health.get('status')}   backends: {health.get('backends')}")
     try:
         roles = httpx.get(f"{base}/admin/roles", timeout=3.0).json().get("roles", {})
+        remote_any = False
         for k, v in roles.items():
-            print(f"  {k:14s} -> {v['model']}")
+            remote = bool(v.get("remote"))
+            remote_any = remote_any or remote
+            print(f"  {k:14s} -> {v['model']}{'  ⚠ off-box' if remote else ''}")
+        if remote_any:
+            print("\n⚠ marked roles send prompts to a remote provider — "
+                  "they leave this machine.")
     except httpx.HTTPError:
         pass
     return 0
@@ -1197,12 +1231,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("role")
     s.add_argument("model")
     s.add_argument("--backend", default="ollama")
+    s.add_argument("--context", type=int, default=None,
+                   help="context window for this role (tokens); omit to clear it")
     s.set_defaults(func=cmd_bind)
     # `swap` is an alias for hot-rebind.
     s2 = sub.add_parser("swap", help="alias for bind (hot rebind)")
     s2.add_argument("role")
     s2.add_argument("model")
     s2.add_argument("--backend", default="ollama")
+    s2.add_argument("--context", type=int, default=None,
+                   help="context window for this role (tokens); omit to clear it")
     s2.set_defaults(func=cmd_bind)
 
     s = sub.add_parser("roles", help="show role bindings")

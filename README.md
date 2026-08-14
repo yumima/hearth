@@ -9,14 +9,10 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-07-29)
+## Today's commits (2026-08-14)
 
 Latest first.
 
-- [`2740c0b`](https://github.com/yumima/hearth/commit/2740c0b) search: try SearXNG first
-- [`74d8f7f`](https://github.com/yumima/hearth/commit/74d8f7f) toolloop: report engine tool results, not just the call
-- [`644a4ca`](https://github.com/yumima/hearth/commit/644a4ca) code: rebuild the agent around search-and-edit, add non-interactive mode
-- [`06faa3e`](https://github.com/yumima/hearth/commit/06faa3e) Give the engine live web access (web_search / web_fetch)
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

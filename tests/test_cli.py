@@ -76,3 +76,16 @@ def test_macos_app_launcher_runs_client_open(tmp_path, monkeypatch):
     launcher = (tmp_path / "Applications" / "Hearth.app" / "Contents" / "MacOS"
                 / "hearth-chat").read_text()
     assert launcher.strip().endswith("exec /opt/hearth/bin/hearth client open")
+
+
+def test_swap_alias_accepts_context_like_bind():
+    """`swap` aliases cmd_bind. When --context existed only on `bind`, every
+    `hearth swap` died with AttributeError before writing anything."""
+    from hearth import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(["swap", "primary_chat", "qwen3:8b"])
+    assert hasattr(args, "context"), "swap must expose --context; cmd_bind reads it"
+    assert args.context is None
+    assert parser.parse_args(
+        ["swap", "primary_chat", "qwen3:8b", "--context", "16384"]).context == 16384

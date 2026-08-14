@@ -15,10 +15,12 @@ touches anything.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -67,6 +69,34 @@ class Backend:
         if self.api_key_env:
             return os.environ.get(self.api_key_env, "")
         return ""
+
+    @property
+    def is_remote(self) -> bool:
+        """Does traffic to this backend leave the machine?
+
+        Hearth's default posture is loopback-only, but a role bound to a cloud
+        backend silently ships every prompt off-box — so the CLI and /admin
+        surface this rather than letting it be invisible (a self-hosted vLLM on
+        127.0.0.1 is an ``openai``-typed backend that is NOT remote, so the
+        answer comes from the URL, never the backend type).
+
+        Literal-address check only: no DNS. A hostname we can't prove is local
+        counts as remote, which is the safe direction to be wrong in.
+        """
+        host = urlparse(self.base_url).hostname or ""
+        if not host:
+            # No parseable host (e.g. a base_url typed without a scheme). We
+            # cannot prove this is on-box, and the docstring's rule is that an
+            # unprovable address counts as remote — under-warning about a
+            # cloud backend is the worse error.
+            return True
+        if host in ("localhost", "localhost.localdomain", "ip6-localhost"):
+            return False
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            return True  # a name we can't resolve cheaply — assume off-box
+        return not (addr.is_loopback or addr.is_private or addr.is_link_local)
 
 
 @dataclass
@@ -169,6 +199,14 @@ class Config:
         """
         binding = self.roles.get(model)
         return int(binding.context or 0) if binding else 0
+
+    def role_is_remote(self, role: str) -> bool:
+        """Does this role's traffic leave the machine? Unbound/unknown → False."""
+        binding = self.roles.get(role)
+        if binding is None:
+            return False
+        backend = self.backends.get(binding.backend)
+        return bool(backend and backend.is_remote)
 
     def backend_for_role(self, role: str) -> tuple[str, Backend] | None:
         binding = self.roles.get(role)

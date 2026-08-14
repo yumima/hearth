@@ -76,6 +76,18 @@ def _frame(cid: str, created: int, model: str, delta: dict,
 
 # ── tool-call accumulation ────────────────────────────────────────────────────
 
+# Keys we already model explicitly on a streamed tool-call delta / an assistant
+# message. Everything else is provider-specific state that has to survive the
+# round-trip untouched (see _accumulate).
+_PASSTHROUGH_SKIP = frozenset({"index", "id", "type", "function"})
+_MSG_PASSTHROUGH_SKIP = frozenset({"role", "content", "tool_calls"})
+# Response-only keys an OpenAI-compatible server may set on a message. Echoing
+# them back as REQUEST fields is at best noise and at worst a 400 from a strict
+# gateway, so they never join the passthrough.
+_RESPONSE_ONLY_KEYS = frozenset({"refusal", "annotations", "audio", "function_call",
+                                 "reasoning_details", "logprobs"})
+
+
 def _accumulate(acc: dict, deltas: list) -> None:
     """Merge streamed tool_call deltas into ``acc`` keyed by index.
 
@@ -84,7 +96,7 @@ def _accumulate(acc: dict, deltas: list) -> None:
     """
     for d in deltas or []:
         idx = d.get("index", 0)
-        slot = acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+        slot = acc.setdefault(idx, {"id": "", "name": "", "arguments": "", "extra": {}})
         if d.get("id"):
             slot["id"] = d["id"]
         fn = d.get("function") or {}
@@ -92,15 +104,26 @@ def _accumulate(acc: dict, deltas: list) -> None:
             slot["name"] = fn["name"]
         if fn.get("arguments"):
             slot["arguments"] += fn["arguments"]
+        # Anything else riding on the call is provider state we must not drop.
+        # Gemini attaches an encrypted `extra_content.google.thought_signature`
+        # that has to come back verbatim in the next request or the API rejects
+        # the turn — the failure that broke multi-turn tool use in LiteLLM and
+        # Codex. We never interpret these fields, we just refuse to lose them,
+        # which keeps the fix provider-neutral.
+        for k, v in d.items():
+            if k not in _PASSTHROUGH_SKIP:
+                slot["extra"][k] = v
 
 
 def _finalize(acc: dict) -> list[dict]:
     out = []
     for idx in sorted(acc):
         s = acc[idx]
-        out.append({"id": s["id"] or f"call_{secrets.token_hex(6)}",
-                    "type": "function",
-                    "function": {"name": s["name"], "arguments": s["arguments"] or "{}"}})
+        call = {"id": s["id"] or f"call_{secrets.token_hex(6)}",
+                "type": "function",
+                "function": {"name": s["name"], "arguments": s["arguments"] or "{}"}}
+        call.update(s.get("extra") or {})  # provider state — see _accumulate
+        out.append(call)
     return out
 
 
@@ -175,6 +198,7 @@ async def stream_with_tools(
     for _round in range(max(1, max_rounds)):
         acc: dict = {}
         content_seen = ""
+        msg_extra: dict = {}
         finish: str | None = None
         body = {**payload, "messages": messages}
         # aclosing: we can leave this loop early (an error frame, or a client
@@ -197,6 +221,23 @@ async def stream_with_tools(
                 delta = choice.get("delta") or {}
                 if choice.get("finish_reason"):
                     finish = choice["finish_reason"]
+                # Message-level provider state (Gemini puts thought_signature in
+                # `extra_content` here when the turn has no tool call to hang it
+                # on). Collected separately from the per-call extras.
+                for k, v in delta.items():
+                    if k in _MSG_PASSTHROUGH_SKIP:
+                        continue
+                    # Strings ACCUMULATE. An opaque blob (Gemini's
+                    # extra_content) arrives whole and simply overwrites, but a
+                    # provider that streams a text field hearth doesn't model
+                    # (reasoning_content / reasoning / thinking on
+                    # DeepSeek-R1-style endpoints) sends one fragment per
+                    # chunk — last-writer-wins would replay a mid-sentence
+                    # fragment into the next round's history.
+                    if isinstance(v, str) and isinstance(msg_extra.get(k), str):
+                        msg_extra[k] += v
+                    else:
+                        msg_extra[k] = v
                 if delta.get("tool_calls"):
                     # Hold these back: we don't yet know whether they're ours to
                     # run or the client's to receive.
@@ -225,7 +266,7 @@ async def stream_with_tools(
             return
 
         messages.append({"role": "assistant", "content": content_seen or None,
-                         "tool_calls": calls})
+                         "tool_calls": calls, **msg_extra})
         for c in calls:
             name = c["function"]["name"]
             args = _parse_args(c["function"]["arguments"])
@@ -265,7 +306,12 @@ async def chat_with_tools(
                 ((c.get("function") or {}).get("name") in our_names) for c in calls):
             return resp
         messages.append({"role": "assistant", "content": msg.get("content") or None,
-                         "tool_calls": calls})
+                         "tool_calls": calls,
+                         # Provider state on the message itself — see _accumulate.
+                         **{k: v for k, v in msg.items()
+                            if k not in _MSG_PASSTHROUGH_SKIP
+                            and k not in _RESPONSE_ONLY_KEYS
+                            and v is not None}})
         for c in calls:
             fn = c.get("function") or {}
             name = fn.get("name", "")

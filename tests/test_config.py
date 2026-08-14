@@ -48,3 +48,37 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
     assert loaded.roles["primary_chat"].model == cfg.roles["primary_chat"].model
     assert loaded.bind_port == cfg.bind_port
     assert "ollama" in loaded.backends
+
+
+def test_backend_is_remote_by_url_not_type():
+    """A self-hosted vLLM on loopback is 'openai'-typed but NOT off-box; the
+    answer has to come from the URL or the privacy flag lies."""
+    local_cases = [
+        "http://127.0.0.1:11434",
+        "http://localhost:8000/v1",
+        "http://192.168.1.50:8000/v1",   # LAN box — still not the internet
+        "http://[::1]:8080/v1",
+    ]
+    for url in local_cases:
+        assert not cfgmod.Backend("b", "openai", url).is_remote, url
+
+    remote_cases = [
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "https://openrouter.ai/api/v1",
+        "https://api.openai.com/v1",
+    ]
+    for url in remote_cases:
+        assert cfgmod.Backend("b", "openai", url).is_remote, url
+
+
+def test_role_is_remote():
+    cfg = cfgmod.default_config()
+    assert not cfg.role_is_remote("primary_chat")   # ollama on loopback
+    assert not cfg.role_is_remote("nonexistent")    # unbound never claims remote
+
+    cfg.backends["cloud"] = cfgmod.Backend(
+        "cloud", "openai", "https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env="GEMINI_API_KEY")
+    cfg.roles["primary_chat"] = cfgmod.RoleBinding(model="gemini-3.7-flash", backend="cloud")
+    assert cfg.role_is_remote("primary_chat")
+    assert not cfg.role_is_remote("fast_chat")      # still local

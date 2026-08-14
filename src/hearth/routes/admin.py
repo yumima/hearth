@@ -100,7 +100,12 @@ async def get_roles(request: Request):
     cfg = _cfg(request)
     return {
         "roles": {
-            name: {"model": r.model, "backend": r.backend} for name, r in cfg.roles.items()
+            # `remote` tells a consumer (finterm's settings pane, `hearth status`)
+            # that this role's prompts leave the machine — hearth is loopback-only
+            # by default, so a cloud-bound role should never be invisible.
+            name: {"model": r.model, "backend": r.backend,
+                   "remote": cfg.role_is_remote(name)}
+            for name, r in cfg.roles.items()
         }
     }
 
@@ -118,9 +123,18 @@ async def put_role(role: str, request: Request):
         return JSONResponse({"error": "missing 'model'"}, 400)
     if backend not in cfg.backends:
         return JSONResponse({"error": f"unknown backend {backend!r}"}, 400)
-    cfg.roles[role] = cfgmod.RoleBinding(model=model, backend=backend)
+    # Optional: the CLI sends the context alongside the model so a hot rebind
+    # and a config-file rebind agree. Absent → cleared, matching `hearth bind`.
+    try:
+        context = int(body.get("context") or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "'context' must be an integer"}, 400)
+    if context < 0:
+        return JSONResponse({"error": "'context' must be >= 0"}, 400)
+    cfg.roles[role] = cfgmod.RoleBinding(model=model, backend=backend, context=context)
     cfgmod.save(cfg)
-    return {"role": role, "model": model, "backend": backend}
+    return {"role": role, "model": model, "backend": backend, "context": context,
+            "remote": cfg.role_is_remote(role)}
 
 
 @router.post("/models/pull")
