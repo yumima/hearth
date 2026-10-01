@@ -105,6 +105,35 @@ your backends, `/model ` the available models — so there's nothing to memorize
 `/enable` / `/disable` (applied **live**, no restart), `/provider`, `/model`,
 `/status`, `/clear`, `/help`.
 
+## Voice
+Press the waveform button (shown when the composer is empty) to talk. Mantel
+answers when you pause, speaks sentence by sentence as the reply streams, and
+stops the moment you start talking or tap the orb. **Hold to talk** (Space, or
+press-and-hold the orb) suits noisy rooms or long pauses; **M** mutes, **Esc**
+ends. The pause length and voice interruption are in Settings → Voice.
+
+Under the hood: one mic stream feeds an AudioWorklet, so speech that cuts in
+keeps its first syllables (pre-roll), and it is sent to whisper as 16 kHz WAV.
+Replies are synthesized ahead of playback and scheduled gaplessly on WebAudio;
+hearth keeps a warm Piper process per voice (~50 ms per sentence instead of
+~350 ms).
+
+## Learn (language tutor)
+**Learn** in the sidebar opens a language home: level, streak, goal, and what's
+due. Lessons are spoken (or typed), and the tutor remembers you between them:
+
+- **Guided lesson**: warm-up recall of due items, one new skill, practice,
+  recap. **Free conversation** and **Role-play** (café, doctor, job
+  interview, … or your own scenario) are the other modes.
+- Target-language phrases are highlighted and read by a native voice, with
+  English in an English voice. Click any phrase to hear it again, which also
+  saves it to your words.
+- Ending a lesson extracts new words, corrections and a summary into a
+  **spaced-repetition** store (Leitner boxes). Each mistake becomes a review
+  card, and repeating it makes the card due again sooner.
+- **Review** quizzes you out loud: say the answer, and whisper checks it.
+  **Pronunciation** compares what you said to the target phrase word by word.
+
 ## Config
 `~/.config/mantel/config.yaml` (optional — absent ⇒ local hearth defaults):
 ```yaml

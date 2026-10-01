@@ -32,6 +32,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import config as cfgmod
+from . import tutor
 
 MAX_TOOL_ROUNDS = 8
 _STOP = object()  # sentinel: tell the host runner to stop
@@ -159,21 +160,11 @@ def _open_chats_db() -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS messages("
                 "conv_id TEXT, seq INTEGER, role TEXT, content TEXT)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conv_id)")
-    # Per-language tutor student model: a persistent profile (level, vocabulary,
-    # struggles, topics) so the language tutor teaches adaptively across sessions
-    # like a real teacher. One row per language key.
-    con.execute("CREATE TABLE IF NOT EXISTS tutor_profiles("
-                "lang TEXT PRIMARY KEY, profile TEXT, sessions INTEGER DEFAULT 0, updated REAL)")
+    # Language tutor: student profile, spaced-repetition items, lesson history.
+    tutor.ensure_schema(con)
     con.execute(f"PRAGMA user_version={_CHATS_SCHEMA_VERSION}")  # for future migrations
     con.commit()
     return con
-
-
-def _default_profile(lang: str) -> dict:
-    """A blank student model for a language not seen before."""
-    return {"lang": lang, "level": "A1 (beginner)", "goals": "",
-            "vocab_known": [], "vocab_learning": [], "struggles": [],
-            "topics_covered": [], "recurring_mistakes": [], "notes": "", "sessions": 0}
 
 
 def _extract_json_obj(text: str):
@@ -493,107 +484,98 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
             await asyncio.to_thread(_write)
         return JSONResponse({"ok": True})
 
-    # ── Adaptive language tutor: persistent per-language student model ─────────
-    @app.get("/api/tutor/profile/{lang}")
-    async def tutor_get_profile(lang: str) -> JSONResponse:
-        """The student's stored profile for a language (level, vocabulary,
-        struggles, …), or a blank one if this language is new."""
+    # ── Language tutor: student model, spaced repetition, lesson history ───────
+    async def _tdb(fn, *args):
+        """Run a tutor-store call on the shared connection, off the event loop."""
         con = _db()
-
-        def _read():
-            return con.execute("SELECT profile, sessions FROM tutor_profiles WHERE lang=?",
-                               (lang,)).fetchone()
-
         async with app.state.db_lock:
-            row = await asyncio.to_thread(_read)
-        if not row:
-            return JSONResponse(_default_profile(lang))
-        try:
-            p = json.loads(row[0])
-        except Exception:
-            p = _default_profile(lang)
-        p["lang"] = lang
-        p["sessions"] = row[1] or 0
-        return JSONResponse(p)
+            return await asyncio.to_thread(fn, con, *args)
 
-    @app.post("/api/tutor/assess")
-    async def tutor_assess(request: Request) -> JSONResponse:
-        """End-of-lesson assessment: given the prior profile + this lesson's
-        transcript, have the model produce an UPDATED student profile, persist
-        it, and return it. Runs off the live voice loop, so latency is fine."""
+    @app.get("/api/tutor/languages")
+    async def tutor_languages() -> JSONResponse:
+        return JSONResponse({"languages": await _tdb(tutor.languages)})
+
+    @app.get("/api/tutor/{lang}/overview")
+    async def tutor_overview(lang: str) -> JSONResponse:
+        """Everything the Learn home + the lesson plan need: profile, item
+        counts, due reviews, streak, recent lessons and recurring corrections."""
+        return JSONResponse(await _tdb(tutor.overview, lang))
+
+    @app.put("/api/tutor/{lang}/profile")
+    async def tutor_put_profile(lang: str, request: Request) -> JSONResponse:
         body = await request.json()
-        lang = (body.get("lang") or "").strip()
+        fields = {k: body[k] for k in ("goals", "level") if k in body}
+        return JSONResponse(await _tdb(tutor.update_profile_fields, lang, fields))
+
+    @app.get("/api/tutor/{lang}/items")
+    async def tutor_items(lang: str, kind: str = "") -> JSONResponse:
+        return JSONResponse({"items": await _tdb(tutor.list_items, lang, kind or None)})
+
+    @app.get("/api/tutor/{lang}/due")
+    async def tutor_due(lang: str, limit: int = 10) -> JSONResponse:
+        return JSONResponse({"items": await _tdb(tutor.due_items, lang, max(1, min(limit, 50)))})
+
+    @app.post("/api/tutor/{lang}/items")
+    async def tutor_add_item(lang: str, request: Request) -> JSONResponse:
+        item = await _tdb(tutor.add_item, lang, await request.json())
+        if not item:
+            return JSONResponse({"error": "missing 'text'"}, status_code=400)
+        return JSONResponse(item)
+
+    @app.delete("/api/tutor/{lang}/items/{iid}")
+    async def tutor_delete_item(lang: str, iid: int) -> JSONResponse:
+        await _tdb(tutor.delete_item, lang, iid)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/tutor/{lang}/review")
+    async def tutor_review(lang: str, request: Request) -> JSONResponse:
+        """Grade one spaced-repetition item: passed → next box, failed → box 0."""
+        body = await request.json()
+        try:
+            iid = int(body.get("id"))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "missing 'id'"}, status_code=400)
+        item = await _tdb(tutor.review_item, lang, iid, bool(body.get("passed")))
+        if not item:
+            return JSONResponse({"error": "no such item"}, status_code=404)
+        return JSONResponse(item)
+
+    @app.post("/api/tutor/{lang}/drill")
+    async def tutor_drill(lang: str, request: Request) -> JSONResponse:
+        """Log a finished flashcard / pronunciation drill as a lesson."""
+        body = await request.json()
+        await _tdb(tutor.record_drill, lang, str(body.get("mode") or "review"),
+                   int(body.get("reviewed") or 0), int(body.get("passed") or 0))
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/tutor/{lang}/assess")
+    async def tutor_assess(lang: str, request: Request) -> JSONResponse:
+        """End-of-lesson: the model EXTRACTS what happened (vocabulary,
+        corrections, topics, level, summary); tutor.merge_assessment folds it
+        into the store deterministically. Runs off the live loop."""
+        body = await request.json()
         messages = body.get("messages") or []
-        if not lang or not isinstance(messages, list) or len(messages) < 4:
+        if not isinstance(messages, list) or sum(
+                1 for m in messages if isinstance(m, dict) and m.get("role") == "user") < 2:
             return JSONResponse({"skipped": True})
-        con = _db()
-
-        def _read():
-            return con.execute("SELECT profile, sessions FROM tutor_profiles WHERE lang=?",
-                               (lang,)).fetchone()
-
-        async with app.state.db_lock:
-            row = await asyncio.to_thread(_read)
-        prior, sessions = _default_profile(lang), 0
-        if row:
-            try:
-                prior = json.loads(row[0])
-            except Exception:
-                pass
-            sessions = row[1] or 0
-
-        def _text(c):
-            return c if isinstance(c, str) else json.dumps(c)
-        transcript = "\n".join(
-            f"{m.get('role','')}: {_text(m.get('content',''))}"
-            for m in messages if isinstance(m, dict) and m.get("role") in ("user", "assistant"))
-        transcript = transcript[-8000:]
-
-        sys = ("You are a language-learning progress tracker. Given a student's PRIOR "
-               "profile JSON and a lesson TRANSCRIPT, output an UPDATED profile as a "
-               "SINGLE JSON object with exactly these keys: lang, level, goals, "
-               "vocab_known, vocab_learning, struggles, topics_covered, "
-               "recurring_mistakes, notes. Adjust 'level' (CEFR A1–C2) only on clear "
-               "evidence. Append genuinely new words the student PRODUCED correctly to "
-               "vocab_known; words they were taught but haven't mastered to "
-               "vocab_learning; grammar/patterns they struggled with to struggles; "
-               "concrete errors to recurring_mistakes; new subjects to topics_covered. "
-               "Keep every list deduplicated and concise (cap ~40 items, drop oldest). "
-               "Output ONLY the JSON object, nothing before or after it.")
-        user = f"PRIOR PROFILE:\n{json.dumps(prior)}\n\nLESSON TRANSCRIPT:\n{transcript}"
-        prov = app.state.cfg.active()
+        prof = await _tdb(tutor.load_profile, lang)
         req = {"model": app.state.cfg.model, "think": False, "stream": False,
-               "messages": [{"role": "system", "content": sys},
-                            {"role": "user", "content": user}]}
+               "messages": tutor.assess_prompt(str(body.get("name") or lang), prof,
+                                               tutor.transcript_of(messages))}
+        prov = app.state.cfg.active()
         try:
             r = await _http().post(f"{prov.base_url}/chat/completions", json=req,
-                                   headers=prov.headers(), timeout=120.0)
+                                   headers=prov.headers(), timeout=180.0)
             r.raise_for_status()
             content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
         except Exception as e:
             return JSONResponse({"error": f"assess failed: {e}"}, status_code=502)
-
-        updated = _extract_json_obj(content)
-        if not updated:
-            return JSONResponse({"error": "no profile returned"}, status_code=502)
-        # Authoritative server-side fields — never trust the model with these.
-        updated["lang"] = lang
-        sessions += 1
-        updated["sessions"] = sessions
-        now = time.time()
-        blob = json.dumps(updated)
-
-        def _write():
-            con.execute(
-                "INSERT INTO tutor_profiles(lang,profile,sessions,updated) VALUES(?,?,?,?) "
-                "ON CONFLICT(lang) DO UPDATE SET profile=excluded.profile, "
-                "sessions=excluded.sessions, updated=excluded.updated",
-                (lang, blob, sessions, now))
-            con.commit()
-
-        async with app.state.db_lock:
-            await asyncio.to_thread(_write)
-        return JSONResponse(updated)
+        data = _extract_json_obj(content)
+        if data is None:
+            return JSONResponse({"error": "no assessment returned"}, status_code=502)
+        session = {k: body.get(k) for k in ("mode", "focus", "started")}
+        session["turns"] = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
+        return JSONResponse(await _tdb(tutor.merge_assessment, lang, data, session))
 
     @app.post("/api/extract")
     async def api_extract(file: UploadFile = File(...)) -> JSONResponse:
