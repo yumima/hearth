@@ -45,6 +45,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
                 "text TEXT NOT NULL, gloss TEXT DEFAULT '', wrong TEXT DEFAULT '', note TEXT DEFAULT '', "
                 "box INTEGER DEFAULT 0, due REAL, reps INTEGER DEFAULT 0, lapses INTEGER DEFAULT 0, "
                 "seen INTEGER DEFAULT 1, created REAL, last_seen REAL)")
+    cols = {r[1] for r in con.execute("PRAGMA table_info(tutor_items)")}
+    if "last_error" not in cols:  # added after the first release of this table
+        con.execute("ALTER TABLE tutor_items ADD COLUMN last_error REAL")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_key "
                 "ON tutor_items(lang, kind, text COLLATE NOCASE)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_items_due ON tutor_items(lang, due)")
@@ -142,7 +145,7 @@ def _upsert_item(con, lang, kind, text, gloss="", wrong="", note="", box=0, now=
     if not text or kind not in KINDS:
         return None, False
     now = now or time.time()
-    row = con.execute("SELECT id, box, lapses, last_seen FROM tutor_items WHERE lang=? AND kind=? "
+    row = con.execute("SELECT id, box, lapses, last_error FROM tutor_items WHERE lang=? AND kind=? "
                       "AND text=? COLLATE NOCASE", (lang, kind, text)).fetchone()
     if row:
         iid = row[0]
@@ -150,18 +153,18 @@ def _upsert_item(con, lang, kind, text, gloss="", wrong="", note="", box=0, now=
         # inline ✏️ line, then the end-of-lesson assessment) is one mistake.
         if kind == "correction" and now - (row[3] or 0) > SAME_LESSON:
             con.execute("UPDATE tutor_items SET box=0, due=?, lapses=lapses+1, seen=seen+1, "
-                        "last_seen=? WHERE id=?", (now, now, iid))
+                        "last_seen=?, last_error=? WHERE id=?", (now, now, now, iid))
         elif kind != "correction":
             con.execute("UPDATE tutor_items SET seen=seen+1, last_seen=?, "
                         "gloss=CASE WHEN gloss='' THEN ? ELSE gloss END WHERE id=?",
                         (now, str(gloss or "")[:200], iid))
         return iid, False
     cur = con.execute(
-        "INSERT INTO tutor_items(lang,kind,text,gloss,wrong,note,box,due,created,last_seen) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO tutor_items(lang,kind,text,gloss,wrong,note,box,due,created,last_seen,last_error) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (lang, kind, text, str(gloss or "")[:200], str(wrong or "")[:200], str(note or "")[:300],
          box, due if due is not None else now + (INTERVALS[box] if box else NEW_ITEM_DELAY),
-         now, now))
+         now, now, now if kind == "correction" else None))
     return cur.lastrowid, True
 
 
@@ -295,16 +298,20 @@ ASSESS_SYSTEM = (
     '  "struggles": short names of grammar or skills they found hard, e.g. "past tense",\n'
     '  "topics": short names of subjects covered, e.g. "ordering coffee",\n'
     '  "summary": one or two plain English sentences on what the lesson covered and how it went,\n'
-    '  "next_focus": one short suggestion for what the next lesson should practise.\n'
+    '  "next_focus": one short suggestion for what the next lesson should practise,\n'
+    '  "reviewed": for each REVIEW ITEM the tutor actually quizzed, '
+    '{"text": "<the item exactly as listed>", "correct": true or false} — true only if '
+    'the learner produced it correctly without being told; omit items never asked.\n'
     "Only include things that actually appear in the transcript — never invent words, "
     "mistakes or progress. Empty lists are fine. Output ONLY the JSON object."
 )
 
 
-def assess_prompt(lang_name: str, prof: dict, transcript: str) -> list[dict]:
+def assess_prompt(lang_name: str, prof: dict, transcript: str, review: list | None = None) -> list[dict]:
     known = {k: prof.get(k) for k in ("level", "struggles", "topics_covered")}
-    user = (f"TARGET LANGUAGE: {lang_name}\nPRIOR PROFILE: {json.dumps(known)}\n\n"
-            f"LESSON TRANSCRIPT:\n{transcript}")
+    items = "; ".join(str(r.get("text")) for r in review or [] if isinstance(r, dict) and r.get("text"))
+    user = (f"TARGET LANGUAGE: {lang_name}\nPRIOR PROFILE: {json.dumps(known)}\n"
+            f"REVIEW ITEMS: {items or '(none)'}\n\nLESSON TRANSCRIPT:\n{transcript}")
     return [{"role": "system", "content": ASSESS_SYSTEM}, {"role": "user", "content": user}]
 
 
@@ -327,11 +334,26 @@ def _text(v, cap: int) -> str:
     return str(v or "").strip()[:cap]
 
 
-def merge_assessment(con, lang: str, data: dict, session: dict, now: float | None = None) -> dict:
-    """Fold an extracted lesson into the store. Returns counts for the UI."""
+def merge_assessment(con, lang: str, data: dict, session: dict, now: float | None = None,
+                     review: list | None = None) -> dict:
+    """Fold an extracted lesson into the store. Returns counts for the UI.
+    ``review`` is the [{id, text}] the tutor was told to quiz in the warm-up;
+    the model's verdicts on those move them through the Leitner boxes."""
     now = now or time.time()
     prof = load_profile(con, lang)
-    new_items = corrections = 0
+    new_items = corrections = reviewed = 0
+    by_text = {str(r.get("text") or "").strip().lower(): r.get("id")
+               for r in review or [] if isinstance(r, dict) and r.get("id") is not None}
+    for v in data.get("reviewed") or []:
+        if not isinstance(v, dict):
+            continue
+        iid = by_text.pop(str(v.get("text") or "").strip().lower(), None)  # each item graded once
+        try:
+            iid = int(iid) if iid is not None else None
+        except (TypeError, ValueError):
+            iid = None
+        if iid is not None and review_item(con, lang, iid, v.get("correct") is True, now=now):
+            reviewed += 1
     for v in (data.get("vocab") or [])[:40]:
         if isinstance(v, dict):
             text = v.get("text") or ""
@@ -358,7 +380,7 @@ def merge_assessment(con, lang: str, data: dict, session: dict, now: float | Non
                  _text(data.get("summary"), 600), _text(data.get("next_focus"), 200),
                  new_items, corrections))
     con.commit()
-    return {"profile": prof, "new_items": new_items, "corrections": corrections,
+    return {"profile": prof, "new_items": new_items, "corrections": corrections, "reviewed": reviewed,
             "summary": _text(data.get("summary"), 600), "next_focus": _text(data.get("next_focus"), 200)}
 
 

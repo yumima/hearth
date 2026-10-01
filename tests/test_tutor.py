@@ -114,3 +114,46 @@ def test_tutor_http_surface(tmp_path, monkeypatch):
         {"role": "user", "content": "bien"}]}).status_code == 502
     c.delete(f"/api/tutor/es/items/{it['id']}")
     assert c.get("/api/tutor/es/items").json()["items"] == []
+
+
+def test_warmup_review_items_are_graded_by_the_assessment():
+    con = _con()
+    now = time.time()
+    a = tutor.add_item(con, "it", {"text": "grazie", "gloss": "thanks"})
+    b = tutor.add_item(con, "it", {"text": "prego", "gloss": "you're welcome"})
+    c = tutor.add_item(con, "it", {"text": "ciao"})
+    review = [{"id": a["id"], "text": "grazie"}, {"id": b["id"], "text": "prego"}]
+    out = tutor.merge_assessment(con, "it", {"reviewed": [
+        {"text": "Grazie", "correct": True}, {"text": "prego", "correct": False},
+        {"text": "ciao", "correct": True},          # not in the warm-up list: ignored
+        {"text": "grazie", "correct": True}]},      # graded once only
+        {}, now=now, review=review)
+    assert out["reviewed"] == 2
+    items = {i["text"]: i for i in tutor.list_items(con, "it")}
+    assert items["grazie"]["box"] == 1 and items["grazie"]["reps"] == 1
+    assert items["prego"]["box"] == 0 and items["prego"]["lapses"] == 1
+    assert items["ciao"]["reps"] == 0 and c
+
+
+def test_a_drill_does_not_mask_a_repeat_mistake():
+    con = _con()
+    t0 = time.time()
+    tutor.merge_assessment(con, "it", {"corrections": [{"wrong": "in il bar", "right": "al bar"}]}, {}, now=t0)
+    item = [i for i in tutor.list_items(con, "it") if i["kind"] == "correction"][0]
+    later = t0 + tutor.SAME_LESSON + 600
+    tutor.review_item(con, "it", item["id"], True, now=later)          # drilled it...
+    tutor.merge_assessment(con, "it", {"corrections": [{"wrong": "in il bar", "right": "al bar"}]},
+                           {}, now=later + 60)                          # ...then made it again
+    item = tutor.get_item(con, item["id"])
+    assert item["lapses"] == 1 and item["box"] == 0
+
+
+def test_schema_upgrade_adds_last_error(tmp_path):
+    con = sqlite3.connect(tmp_path / "old.db")
+    con.execute("CREATE TABLE tutor_items(id INTEGER PRIMARY KEY AUTOINCREMENT, lang TEXT NOT NULL, "
+                "kind TEXT NOT NULL, text TEXT NOT NULL, gloss TEXT DEFAULT '', wrong TEXT DEFAULT '', "
+                "note TEXT DEFAULT '', box INTEGER DEFAULT 0, due REAL, reps INTEGER DEFAULT 0, "
+                "lapses INTEGER DEFAULT 0, seen INTEGER DEFAULT 1, created REAL, last_seen REAL)")
+    tutor.ensure_schema(con)
+    assert "last_error" in {r[1] for r in con.execute("PRAGMA table_info(tutor_items)")}
+    tutor.ensure_schema(con)   # idempotent

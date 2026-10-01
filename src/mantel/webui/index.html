@@ -646,11 +646,12 @@ function lessonFocus(ov, mode, scenario){
   if ((p.struggles || []).length) return `Practise: ${p.struggles[p.struggles.length - 1]}.`;
   return p.goals ? `Something practical toward their goal (${p.goals}) that they haven't covered yet.` : "A practical everyday topic that suits their level.";
 }
+// The due items the tutor quizzes in the warm-up; the assessment grades them.
+function warmupItems(ls){ return (ls.ov?.due || []).filter(i => i.kind !== "correction").slice(0, 5).map(i => ({ id: i.id, text: i.text, gloss: i.gloss })); }
 function tutorPrompt(ls){
   const L = ls.lang.name, ov = ls.ov || {}, p = ov.profile || {}, spoken = ls.voice || voice.on;
   const list = (a, n) => (a || []).slice(0, n).join("; ");
-  const due = (ov.due || []).filter(i => i.kind !== "correction").slice(0, 5)
-    .map(i => i.gloss ? `${i.text} (${i.gloss})` : i.text);
+  const due = warmupItems(ls).map(i => i.gloss ? `${i.text} (${i.gloss})` : i.text);
   const watch = (ov.corrections || []).slice(0, 4).map(c => `${c.wrong ? c.wrong + " → " : ""}${c.text}`);
   const known = (ov.recent_vocab || []).map(i => i.text);
   const last = (ov.sessions || []).find(s => s.summary);
@@ -1336,7 +1337,7 @@ const VE = {
   listeners: new Set(),
   out: null, outAnalyser: null, outData: null,
   sources: new Set(), nextT: 0, epoch: 0, queue: [], pumping: false, inflight: new Set(),
-  users: 0,
+  users: 0, opening: null,
 };
 const WORKLET = `class C extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(1024);this.n=0}
 process(i){const c=i[0]&&i[0][0];if(c){for(let k=0;k<c.length;k++){this.b[this.n++]=c[k];if(this.n===1024){this.port.postMessage(this.b.slice(0));this.n=0}}}return true}}
@@ -1355,12 +1356,14 @@ function veEnsureCtx(){
 // Open the mic (ref-counted: voice chat, drills and dictation share it).
 async function veOpen(){
   VE.users++;
+  try { await (VE.opening ||= _veOpen().finally(() => { VE.opening = null; })); }
+  catch (e) { VE.users--; throw e; }
+}
+async function _veOpen(){
   if (VE.stream) return;
   const ctx = veEnsureCtx();
   VE.rate = ctx.sampleRate; VE.chunkMs = 1024 / VE.rate * 1000;
-  try {
-    VE.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
-  } catch (e) { VE.users--; throw e; }
+  VE.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
   const src = ctx.createMediaStreamSource(VE.stream);
   const sink = ctx.createGain(); sink.gain.value = 0; sink.connect(ctx.destination);
   let node = null;
@@ -1385,8 +1388,9 @@ function veClose(force){
   VE.nodes = []; VE.stream = null; VE.ring = []; VE.micLevel = 0;
 }
 function veChunk(buf){
+  if (VE.muted) buf = new Float32Array(buf.length);   // muted = nothing recorded, not just a low meter
   let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
-  const rms = VE.muted ? 0 : Math.sqrt(s / buf.length);
+  const rms = Math.sqrt(s / buf.length);
   VE.micLevel = rms;
   VE.ring.push(buf); if (VE.ring.length > VE.ringMax) VE.ring.shift();
   for (const fn of VE.listeners) fn(buf, rms);
@@ -1423,7 +1427,7 @@ function veListen(opts){
   h.cancel = () => finish(false);
   const fn = (chunk, rms) => {
     if (opts.hold) {
-      if (holdDown && state === "idle") begin(true);
+      if (holdDown && !VE.muted && state === "idle") begin(true);
       if (state === "speech") { buf.push(chunk); total += VE.chunkMs; speech += VE.chunkMs; if (!holdDown || total > opts.maxMs) finish(true); }
       return;
     }
@@ -1513,7 +1517,9 @@ async function vePump(){
     while (VE.queue.length) {
       const item = VE.queue[0];
       let buf = await item.buf;
-      VE.queue.shift();
+      // veStopAudio may have swapped in a fresh queue while we awaited; only
+      // drop the item we were waiting on, never a newer one queued after the stop.
+      if (VE.queue[0] === item) VE.queue.shift();
       if (item.epoch !== VE.epoch) continue;
       if (!buf) { if (item.err && !item.err.name?.includes("Abort")) voiceNote(String(item.err.message || item.err)); continue; }
       buf = veTrim(buf, item.tail);
@@ -1622,7 +1628,7 @@ function sayPhrase(text, el){
 // ═════════════════════════════════════════════════════════════════════════════
 // Voice conversation (Gemini Live / Claude voice-style)
 // ═════════════════════════════════════════════════════════════════════════════
-const voice = { on: false, phase: "idle", listen: null, reply: null, loopId: 0 };
+const voice = { on: false, starting: false, phase: "idle", listen: null, reply: null, loopId: 0 };
 let holdDown = false;
 function patienceMs(){ return ({ quick: 650, normal: 1000, patient: 1600 })[prefs.patience] + (lesson ? 500 : 0); }
 function setPhase(p, sub){
@@ -1639,10 +1645,12 @@ function setPhase(p, sub){
 }
 function voiceNote(msg){ if (voice.on) $("vsub").textContent = msg; }
 async function startVoice(){
-  if (voice.on) return;
+  if (voice.on || voice.starting) return voice.on;
   showChat();
+  voice.starting = true;
   try { await veOpen(); }
-  catch (e) { sysMsg(`⚠ Microphone unavailable — ${escapeHtml(String(e.message || e))}`); return; }
+  catch (e) { sysMsg(`⚠ Microphone unavailable — ${escapeHtml(String(e.message || e))}`); return false; }
+  finally { voice.starting = false; }
   voice.on = true; VE.muted = false; holdDown = false;
   document.body.classList.add("voicing");
   syncVoiceControls();
@@ -1650,6 +1658,7 @@ async function startVoice(){
   orbStart();
   voiceLoop(++voice.loopId);
   $("orb").focus();
+  return true;
 }
 function stopVoice(){
   if (!voice.on) return;
@@ -1658,6 +1667,7 @@ function stopVoice(){
   veStopAudio();
   if (streaming) controller?.abort();
   veClose();
+  VE.muted = false; syncVoiceControls();       // a mute belongs to this conversation, not to dictation/drills
   document.body.classList.remove("voicing");
   orbStop();
   $("input").focus();
@@ -1673,9 +1683,10 @@ async function voiceLoop(id){
       let chunks = pending; pending = null;
       if (!chunks) {
         setPhase(VE.muted ? "muted" : prefs.turn === "hold" ? "hold" : "listening");
-        voice.listen = veListen({ endMs: patienceMs(), hold: prefs.turn === "hold" });
-        voice.listen.started.then(() => { if (alive() && voice.phase !== "speaking") setPhase("hearing"); });
-        chunks = await voice.listen.result; voice.listen = null;
+        const l = voice.listen = veListen({ endMs: patienceMs(), hold: prefs.turn === "hold" });
+        l.started.then(() => { if (alive() && voice.phase !== "speaking") setPhase("hearing"); });
+        chunks = await l.result;
+        if (voice.listen === l) voice.listen = null;
       }
       if (!alive()) break;
       if (!chunks) continue;
@@ -1704,12 +1715,17 @@ async function voiceLoop(id){
     barge?.started.then(onBarge);
     voice.interrupt = onBarge;
     const res = await streamTurn(text || KICKOFF, text, [], { silentUser: !text, onStart: (c) => turnCtl = c, onDelta: (a, done) => { if (!interrupted && alive()) speak(a, done); } });
-    if (res?.error && alive()) { barge?.cancel(); setPhase("listening", "Something went wrong — see the chat. Still listening."); voice.interrupt = null; await new Promise(f => setTimeout(f, 1800)); continue; }
+    if (res?.error && alive()) { barge?.cancel(); setPhase("listening", "Something went wrong — see the chat. Still listening."); if (voice.interrupt === onBarge) voice.interrupt = null; await new Promise(f => setTimeout(f, 1800)); continue; }
     if (!interrupted && alive()) await Promise.race([veIdle(), barge ? barge.started : new Promise(() => {})]);
-    voice.interrupt = null;
+    if (voice.interrupt === onBarge) voice.interrupt = null;
     if (!alive()) { barge?.cancel(); break; }
-    if (interrupted && barge) { voice.listen = barge; pending = await barge.result; voice.listen = null; }
-    else barge?.cancel();
+    if (barge && (interrupted || barge.state() === "speech")) {
+      // Interrupted — or the learner began answering just as playback ended:
+      // keep that capture rather than restarting and clipping their first words.
+      if (!interrupted) setPhase("hearing");
+      voice.listen = barge; pending = await barge.result;
+      if (voice.listen === barge) voice.listen = null;
+    } else barge?.cancel();
   }
 }
 function orbTap(){
@@ -1726,7 +1742,11 @@ function syncVoiceControls(){
 }
 function setTurnMode(m){
   prefs.turn = m; savePrefs(); syncVoiceControls();
-  if (voice.on) { voice.listen?.cancel(); voice.loopId++; veStopAudio(); voiceLoop(voice.loopId); }
+  if (voice.on) {
+    voice.listen?.cancel(); voice.loopId++; veStopAudio();
+    if (streaming) controller?.abort();          // the old loop's reply must not outlive it
+    voiceLoop(voice.loopId);
+  }
 }
 $("voicebtn").addEventListener("click", startVoice);
 $("vend").addEventListener("click", stopVoice);
@@ -1940,8 +1960,8 @@ async function startLesson(lang, spoken){
   showLessonChip();
   showChat(); setFresh(false);
   $("topTitle").textContent = "";
-  if (spoken) startVoice();
-  else {
+  if (!spoken || !(await startVoice())) {
+    lesson.voice = false;                       // no mic: a typed lesson, with the typed-lesson prompt
     await streamTurn(KICKOFF, "", [], { silentUser: true });
     $("input").focus();
   }
@@ -1974,7 +1994,7 @@ async function endLesson(show){
   if (streaming) controller?.abort();
   const msgs = history.slice(ls.startIndex).map(m => ({ role: m.role, content: m.content }));
   const userTurns = msgs.filter(m => m.role === "user" && m.content !== KICKOFF).length;
-  const body = JSON.stringify({ name: ls.lang.name, messages: msgs.filter(m => m.content !== KICKOFF), mode: ls.mode, focus: ls.focus, started: ls.started });
+  const body = JSON.stringify({ name: ls.lang.name, messages: msgs.filter(m => m.content !== KICKOFF), mode: ls.mode, focus: ls.focus, started: ls.started, review_items: warmupItems(ls) });
   const url = `/api/tutor/${encodeURIComponent(ls.lang.key)}/assess`;
   if (!show) { if (userTurns >= 2) fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true }).catch(() => {}); return; }
   if (userTurns < 2) { sysMsg(`${escapeHtml(ls.lang.name)} lesson ended — too short to save progress.`); return; }
@@ -2000,7 +2020,7 @@ window.addEventListener("pagehide", () => {
   const msgs = history.slice(lesson.startIndex).filter(m => m.content !== KICKOFF).map(m => ({ role: m.role, content: m.content }));
   if (msgs.filter(m => m.role === "user").length < 2) return;
   navigator.sendBeacon?.(`/api/tutor/${encodeURIComponent(lesson.lang.key)}/assess`,
-    new Blob([JSON.stringify({ name: lesson.lang.name, messages: msgs, mode: lesson.mode, focus: lesson.focus, started: lesson.started })], { type: "application/json" }));
+    new Blob([JSON.stringify({ name: lesson.lang.name, messages: msgs, mode: lesson.mode, focus: lesson.focus, started: lesson.started, review_items: warmupItems(lesson) })], { type: "application/json" }));
 });
 async function refreshDue(){
   let total = 0;

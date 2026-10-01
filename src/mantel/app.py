@@ -559,9 +559,10 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                 1 for m in messages if isinstance(m, dict) and m.get("role") == "user") < 2:
             return JSONResponse({"skipped": True})
         prof = await _tdb(tutor.load_profile, lang)
+        review = body.get("review_items") if isinstance(body.get("review_items"), list) else []
         req = {"model": app.state.cfg.model, "think": False, "stream": False,
                "messages": tutor.assess_prompt(str(body.get("name") or lang), prof,
-                                               tutor.transcript_of(messages))}
+                                               tutor.transcript_of(messages), review)}
         prov = app.state.cfg.active()
         try:
             r = await _http().post(f"{prov.base_url}/chat/completions", json=req,
@@ -575,7 +576,7 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
             return JSONResponse({"error": "no assessment returned"}, status_code=502)
         session = {k: body.get(k) for k in ("mode", "focus", "started")}
         session["turns"] = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
-        return JSONResponse(await _tdb(tutor.merge_assessment, lang, data, session))
+        return JSONResponse(await _tdb(tutor.merge_assessment, lang, data, session, None, review))
 
     @app.post("/api/extract")
     async def api_extract(file: UploadFile = File(...)) -> JSONResponse:
