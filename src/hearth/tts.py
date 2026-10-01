@@ -23,6 +23,7 @@ from pathlib import Path
 
 IDLE_SECS = float(os.environ.get("HEARTH_TTS_IDLE_SECS", "300"))
 SYNTH_TIMEOUT = 60.0
+ORPHAN_GRACE = 2.0  # how long a cancelled request may keep the worker busy
 
 
 def prosody_args() -> list[str]:
@@ -86,11 +87,37 @@ class _Worker:
         return self.proc is not None and self.proc.returncode is None
 
     async def synth(self, text: str) -> bytes:
-        async with self.lock:
+        await self.lock.acquire()
+        try:
             self.last_used = time.monotonic()
             if not self.alive():
                 await self.close_unlocked()
                 await self._start()
+        except BaseException:
+            self.lock.release()
+            raise
+        # The round trip runs as its own task, which owns (and releases) the
+        # lock. If this request is cancelled — the client hung up, e.g. on a
+        # barge-in — the task still collects piper's reply for this line, so
+        # the next request doesn't read it as its own and the worker stays warm.
+        task = asyncio.get_running_loop().create_task(self._roundtrip(text))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # orphan: don't warn
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Let the orphan finish a normal sentence, but never let a slow or
+            # wedged piper hold the voice's lock for long: after a short grace,
+            # kill it (readline then sees EOF, the worker closes and the lock
+            # frees) — the next request cold-starts, as it would have anyway.
+            proc = self.proc
+            def _reap_orphan():
+                if not task.done() and proc is not None and proc.returncode is None:
+                    proc.kill()
+            asyncio.get_running_loop().call_later(ORPHAN_GRACE, _reap_orphan)
+            raise
+
+    async def _roundtrip(self, text: str) -> bytes:
+        try:
             # One utterance per line: piper treats a newline as "next utterance".
             line = " ".join(text.split()) + "\n"
             try:
@@ -100,12 +127,6 @@ class _Worker:
             except (asyncio.TimeoutError, OSError, BrokenPipeError) as e:
                 await self.close_unlocked()
                 raise TTSError(f"piper worker failed: {e!r}") from e
-            except BaseException:
-                # Cancelled mid-utterance (the client hung up, e.g. a barge-in):
-                # piper will still print this line's path, which the NEXT request
-                # would read as its own. Drop the worker so nothing desyncs.
-                await asyncio.shield(self.close_unlocked())
-                raise
             path = raw.decode("utf-8", "ignore").strip()
             # Only ever read a file inside our own output dir.
             if not path or os.path.dirname(os.path.abspath(path)) != os.path.abspath(self.outdir):
@@ -122,6 +143,8 @@ class _Worker:
             if not data:
                 raise TTSError("piper worker produced an empty file")
             return data
+        finally:
+            self.lock.release()
 
     async def close_unlocked(self) -> None:
         p, self.proc = self.proc, None

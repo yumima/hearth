@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`5772247`](https://github.com/yumima/hearth/commit/5772247) tts: keep one warm Piper process per voice
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

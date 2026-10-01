@@ -23,6 +23,8 @@ if "--output_dir" in args:
         line = sys.stdin.readline()
         if not line:
             break
+        if "wedge" in line:
+            import time; time.sleep(30)
         p = os.path.join(d, f"{n}.wav")
         open(p, "wb").write(b"RIFF" + line.strip().encode())
         print(p, flush=True)
@@ -113,3 +115,29 @@ def test_cancelled_request_does_not_desync_the_worker(tmp_path, monkeypatch):
             await pool.aclose()
 
     assert asyncio.run(go()) == b"RIFFnext"
+    # ...and the interrupted request didn't cost a cold restart
+    assert (tmp_path / "spawns").read_text() == "x"
+    assert not [f for f in tmp_path.rglob("*.wav")]   # its output was collected, not leaked
+
+
+def test_wedged_orphan_is_killed_after_grace(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(tts, "ORPHAN_GRACE", 0.1)
+    piper, voice = _fake(tmp_path), tmp_path / "v.onnx"
+
+    async def go():
+        pool = tts.PiperPool()
+        try:
+            await pool.synth(piper, voice, "warm")
+            t = asyncio.ensure_future(pool.synth(piper, voice, "wedge"))
+            await asyncio.sleep(0.05)
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            return await asyncio.wait_for(pool.synth(piper, voice, "next"), 5)
+        finally:
+            await pool.aclose()
+
+    assert asyncio.run(go()) == b"RIFFnext"   # not stuck behind the wedged sentence
