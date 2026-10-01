@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from . import backends as backends_mod
 from . import config as cfgmod
+from . import tts
 from .middleware import SecurityMiddleware
 from .routes import admin, v1, webui
 
@@ -51,6 +52,7 @@ def create_app(
         try:
             yield
         finally:
+            await tts.pool.aclose()
             if owned:
                 for b in registry.values():
                     await b.aclose()

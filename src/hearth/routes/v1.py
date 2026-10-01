@@ -23,7 +23,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from .. import comfy_supervisor, ollama_supervisor, toolloop, webtools
+from .. import comfy_supervisor, ollama_supervisor, toolloop, tts, webtools
 from ..config import ROLE_NAMES, Config
 
 router = APIRouter()
@@ -283,33 +283,10 @@ async def audio_speech(request: Request):
     if voice is None:
         return _err(503, "no Piper voice provisioned — run `hearth voice en_US-amy-medium`",
                     "backend_unavailable")
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    out_path = tmp.name
-    tmp.close()
-    # Prosody knobs — Piper's bare defaults sound clipped/robotic. Slightly
-    # longer phonemes + a touch more width-noise + a real inter-sentence pause
-    # give a calmer, more human cadence. Tunable via env without a rebuild.
-    length_scale = os.environ.get("HEARTH_TTS_LENGTH_SCALE", "1.08")
-    noise_w      = os.environ.get("HEARTH_TTS_NOISE_W", "0.9")
-    sentence_sil = os.environ.get("HEARTH_TTS_SENTENCE_SILENCE", "0.35")
     try:
-        proc = await asyncio.create_subprocess_exec(
-            piper, "--model", str(voice), "--output_file", out_path,
-            "--length_scale", length_scale, "--noise_w", noise_w,
-            "--sentence_silence", sentence_sil,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await proc.communicate(text.encode("utf-8"))
-        if proc.returncode != 0 or not os.path.getsize(out_path):
-            return _err(502, f"piper failed: {err.decode('utf-8', 'ignore')[:200]}", "backend_error")
-        data = Path(out_path).read_bytes()
-    finally:
-        try:
-            os.unlink(out_path)
-        except OSError:
-            pass
+        data = await tts.pool.synth(piper, voice, text)
+    except tts.TTSError as e:
+        return _err(502, str(e), "backend_error")
     return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
