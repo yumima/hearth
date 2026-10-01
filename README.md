@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`2af5c24`](https://github.com/yumima/hearth/commit/2af5c24) tts: a cancelled request no longer costs a cold restart
 - [`5772247`](https://github.com/yumima/hearth/commit/5772247) tts: keep one warm Piper process per voice
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)

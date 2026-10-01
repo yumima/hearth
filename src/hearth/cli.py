@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import errno
 import json
 import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -75,6 +77,72 @@ def _pid_on_port(port: int) -> int | None:
     return None
 
 
+def _pid_cmdline(pid: int) -> str:
+    """Short command line of `pid`, for naming whoever holds our port. Empty
+    when we can't read it (no /proc, or another user's process)."""
+    try:
+        cl = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+    except OSError:
+        return ""
+    return cl.decode("utf-8", "ignore").strip()[:90]
+
+
+def _gateway_identity(cfg: cfgmod.Config) -> str | None:
+    """`Server:` identity of a hearth gateway already serving cfg's port, else None.
+
+    Probes /admin/version — a constant handler — and deliberately NOT
+    /admin/health: health awaits every configured backend, remote providers
+    included, so one slow round-trip over the internet times the probe out. A
+    duplicate `hearth start` then concludes the port is free, announces itself,
+    and dies on EADDRINUSE.
+    """
+    try:
+        r = httpx.get(f"{_admin_base(cfg)}/admin/version", timeout=2.0)
+    except httpx.HTTPError:
+        return None
+    ident = r.headers.get("server", "")
+    if ident.startswith("hearth"):
+        return ident
+    try:
+        body = r.json()
+    except ValueError:
+        return None
+    if isinstance(body, dict) and body.get("name") == "hearth":
+        return f"hearth/{body.get('version', '?')}"
+    return None
+
+
+def _listen_socket(host: str, port: int) -> socket.socket:
+    """Claim the gateway's port before we announce anything.
+
+    uvicorn binds late — after the lifespan has started — so leaving the bind
+    to it means a port clash surfaces only once we have printed "serving ..."
+    and written a pidfile, and the doomed process then deletes the live
+    gateway's pidfile on its way out. Binding here turns a clash into an
+    OSError we can report before touching any shared state. The socket is
+    non-inheritable (Python's default), so a child we spawn later can't keep
+    the port held after we exit.
+    """
+    # Same family rule uvicorn uses: IPv6 only for a literal IPv6 host. Letting
+    # getaddrinfo pick could turn "localhost" into an IPv6-only ::1 listener
+    # that clients dialing 127.0.0.1 can't reach.
+    family = socket.AF_INET6 if ":" in (host or "") else socket.AF_INET
+    infos = socket.getaddrinfo(host or None, port, family=family, type=socket.SOCK_STREAM,
+                               flags=socket.AI_PASSIVE)
+    family, socktype, proto, _canon, addr = infos[0]
+    sock = socket.socket(family, socktype, proto)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(addr)
+        # Listen now, not when uvicorn gets to it: with SO_REUSEADDR a bound
+        # but non-listening port can still be bound by a racing second start.
+        sock.listen(2048)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -115,6 +183,34 @@ def cmd_start(args: argparse.Namespace) -> int:
     except Exception:
         pass
 
+    # Refuse to start a second gateway on a port that's already serving — a
+    # double-start would orphan the first one (overwritten pidfile) and
+    # bind-fail. Done before anything with a side effect (Ollama, pidfile) so a
+    # duplicate start is a single line and no more.
+    if (ident := _gateway_identity(cfg)) is not None:
+        print(f"[hearth] a gateway is already serving on {_admin_base(cfg)} ({ident}) "
+              "— use `hearth stop` first to restart", file=sys.stderr)
+        return 0
+
+    # Claim the port now: whoever holds it, we find out here rather than from
+    # uvicorn after we've already claimed to be serving.
+    try:
+        sock = _listen_socket(cfg.bind_host, cfg.bind_port)
+    except OSError as exc:
+        where = f"http://{cfg.bind_host}:{cfg.bind_port}"
+        if exc.errno == errno.EADDRINUSE:
+            pid = _pid_on_port(cfg.bind_port)
+            who = f" by pid {pid}" if pid else ""
+            cl = _pid_cmdline(pid) if pid else ""
+            print(f"[hearth] {where} is already in use{who} — not starting."
+                  + (f"\n         holder: {cl}" if cl else "")
+                  + "\n         stop the gateway that holds it (`hearth stop`, or "
+                    "`hearth service stop` for the daemon), or serve elsewhere "
+                    "with `hearth start --bind 127.0.0.1:PORT`", file=sys.stderr)
+        else:
+            print(f"[hearth] cannot bind {where} — {exc}", file=sys.stderr)
+        return 1
+
     # Bring up Ollama unless told not to.
     ollama = cfg.backends.get("ollama")
     if ollama and not args.no_manage:
@@ -129,16 +225,6 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "chat/embeddings will be unavailable until it's up",
                 file=sys.stderr,
             )
-
-    # Refuse to start a second gateway on a port that's already serving — a
-    # double-start would orphan the first one (overwritten pidfile) and bind-fail.
-    try:
-        if httpx.get(f"{_admin_base(cfg)}/admin/health", timeout=1.5).status_code in (200, 503):
-            print(f"[hearth] a gateway is already serving on http://{cfg.bind_host}:{cfg.bind_port} "
-                  "— use `hearth stop` first to restart", file=sys.stderr)
-            return 0
-    except httpx.HTTPError:
-        pass  # not up — proceed to start
 
     # Write a PID file so `hearth stop` / `hearth status` can find this gateway.
     # Only remove it on exit if it still holds OUR pid (don't clobber a pidfile
@@ -177,8 +263,11 @@ def cmd_start(args: argparse.Namespace) -> int:
     print(f"[hearth] probe: GET /v1/models   health: GET /admin/health   chat: hearth chat")
     # server_header=False suppresses uvicorn's own "Server: uvicorn" so our
     # middleware's "Server: hearth/<v>" is the single, clean identity.
-    uvicorn.run(app, host=cfg.bind_host, port=cfg.bind_port,
-                log_level=args.log_level, server_header=False)
+    # The socket is already bound (see _listen_socket) — uvicorn serves on it
+    # instead of binding its own.
+    config = uvicorn.Config(app, host=cfg.bind_host, port=cfg.bind_port,
+                            log_level=args.log_level, server_header=False)
+    uvicorn.Server(config).run(sockets=[sock])
     return 0
 
 
