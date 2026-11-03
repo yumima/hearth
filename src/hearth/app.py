@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from . import backends as backends_mod
 from . import config as cfgmod
 from . import tts
+from . import kokoro_tts
 from .middleware import SecurityMiddleware
 from .routes import admin, v1, webui
 
@@ -53,6 +54,7 @@ def create_app(
             yield
         finally:
             await tts.pool.aclose()
+            await kokoro_tts.engine.aclose()
             if owned:
                 for b in registry.values():
                     await b.aclose()

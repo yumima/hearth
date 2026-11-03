@@ -28,6 +28,12 @@ stt = [
     # separate interpreter when the host Python lacks ctranslate2 wheels.
     "faster-whisper>=1.0",
 ]
+tts = [
+    # Natural read-aloud voices (Kokoro-82M, ONNX). Optional: without it
+    # /v1/audio/speech serves Piper. `hearth voice --voice kokoro` installs it
+    # and fetches the model files.
+    "kokoro-onnx>=0.4,<0.5",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

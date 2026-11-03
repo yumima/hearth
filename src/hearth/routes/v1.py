@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 import random
 import shutil
@@ -23,10 +24,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from .. import comfy_supervisor, ollama_supervisor, toolloop, tts, webtools
+from .. import comfy_supervisor, kokoro_tts, ollama_supervisor, toolloop, tts, webtools
 from ..config import ROLE_NAMES, Config
 
 router = APIRouter()
+log = logging.getLogger("hearth.tts")
 
 # Rough English/code average; good enough to keep a tool result from evicting
 # the conversation, which is all this estimate is used for.
@@ -250,7 +252,7 @@ def _find_voice(voice: str | None) -> Path | None:
     voice requested, default to English — NOT whatever sorts first alphabetically
     (that was 'de_DE-…', so default read-aloud came out German)."""
     d = _voice_dir()
-    if voice:
+    if isinstance(voice, str) and voice:  # JSON may carry any type here
         name = os.path.basename(voice)  # basename only — never escape the voice dir
         if name:
             p = d / (name if name.endswith(".onnx") else f"{name}.onnx")
@@ -267,14 +269,67 @@ def _find_voice(voice: str | None) -> Path | None:
     return onnx[0] if onnx else None
 
 
+class _ClientGone(Exception):
+    pass
+
+
+async def _unless_disconnected(request: Request, coro):
+    """Await `coro`, cancelling it if the client hangs up first. Starlette does
+    not cancel a handler on disconnect, so without this a stopped read-aloud
+    keeps the engine busy synthesising audio nobody will hear — and the next
+    request queues behind it (Kokoro holds one lock for the whole text)."""
+    task = asyncio.ensure_future(coro)
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=0.25)
+        if done:
+            return task.result()
+        if await request.is_disconnected():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise _ClientGone()
+
+
+def _wants_kokoro(payload: dict) -> bool:
+    """`model: "kokoro"`, or a Kokoro-shaped voice id ('af_heart') with no
+    model named. `model: "piper"` (and any OpenAI model name) keeps Piper."""
+    model = str(payload.get("model") or "").lower()
+    if model == "kokoro":
+        return True
+    if model:
+        return False
+    return kokoro_tts.engine.is_voice_id(payload.get("voice"))
+
+
 @router.post("/audio/speech")
 async def audio_speech(request: Request):
-    """Synthesize speech with Piper (OpenAI /v1/audio/speech shape) → WAV bytes."""
+    """Synthesize speech (OpenAI /v1/audio/speech shape) → WAV bytes.
+
+    Kokoro when asked for (natural voices); Piper otherwise, and as the
+    fallback when Kokoro isn't installed or fails — read-aloud keeps working,
+    just in the plainer voice. `X-Hearth-TTS-Engine` says which one answered."""
     payload = await request.json()
     text = (payload.get("input") or "").strip()
     if not text:
         return _err(400, "missing 'input'")
     text = text[:8000]  # bound synthesis time/memory for direct callers
+    headers = {"Cache-Control": "no-store"}
+    if _wants_kokoro(payload):
+        try:
+            speed = float(payload.get("speed") or 1.0)
+        except (TypeError, ValueError):
+            speed = 1.0
+        try:
+            data = await _unless_disconnected(request, kokoro_tts.engine.synth(text, payload.get("voice"), speed))
+            return Response(content=data, media_type="audio/wav",
+                            headers={**headers, "X-Hearth-TTS-Engine": "kokoro"})
+        except _ClientGone:
+            return Response(status_code=499)  # nobody is listening; nothing to send
+        except kokoro_tts.KokoroError as e:
+            log.warning("kokoro unavailable, falling back to piper: %s", e)
+        payload = {**payload, "voice": None}  # a Kokoro id means nothing to Piper
     piper = _piper_bin()
     if piper is None:
         return _err(503, "piper not installed — run `hearth voice <id>` to provision TTS",
@@ -284,10 +339,38 @@ async def audio_speech(request: Request):
         return _err(503, "no Piper voice provisioned — run `hearth voice en_US-amy-medium`",
                     "backend_unavailable")
     try:
-        data = await tts.pool.synth(piper, voice, text)
+        data = await _unless_disconnected(request, tts.pool.synth(piper, voice, text))
+    except _ClientGone:
+        return Response(status_code=499)
     except tts.TTSError as e:
         return _err(502, str(e), "backend_error")
-    return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+    return Response(content=data, media_type="audio/wav",
+                    headers={**headers, "X-Hearth-TTS-Engine": "piper"})
+
+
+@router.get("/audio/voices")
+async def audio_voices():
+    """The voices /audio/speech can use right now (hearth extension, not OpenAI).
+    `model` is what to send back in the speech request; `default` is the one
+    a client should pick when the user hasn't."""
+    voices: list[dict] = []
+    default = None
+    if kokoro_tts.installed():
+        for vid, label in kokoro_tts.CURATED:
+            voices.append({"id": vid, "model": "kokoro", "label": label})
+        # What /audio/speech uses for a Kokoro request naming no voice.
+        default = {"model": "kokoro", "id": kokoro_tts.DEFAULT_VOICE}
+    d = _voice_dir()
+    for p in sorted(d.glob("*.onnx")) if d.is_dir() else []:
+        if p.name.startswith("en_"):  # read-aloud speaks English text
+            voices.append({"id": p.stem, "model": "piper",
+                           "label": f"{p.stem.split('-')[1].capitalize()} — Piper, fast ({p.stem.split('-')[0]})"
+                           if p.stem.count("-") >= 2 else p.stem})
+    if default is None:
+        piper_default = _find_voice(None)  # same resolution as a voice-less speech request
+        if piper_default is not None:
+            default = {"model": "piper", "id": piper_default.stem}
+    return {"voices": voices, "default": default}
 
 
 # ── Speech-to-text (faster-whisper) ───────────────────────────────────────────

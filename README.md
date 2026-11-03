@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`50f85be`](https://github.com/yumima/hearth/commit/50f85be) middleware: pure ASGI, so routes see a client hang up
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

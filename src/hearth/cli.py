@@ -467,10 +467,65 @@ def _provision_voice(voice: str) -> bool:
         return False
 
 
+_KOKORO_RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+# Pinned: a swapped release asset must not be loaded into onnxruntime unnoticed.
+_KOKORO_FILES = {
+    "kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+    "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+}
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _provision_kokoro() -> bool:
+    """Provision the Kokoro engine (natural voices): the `kokoro-onnx` package
+    into THIS interpreter (the gateway imports it) + the model files, checked
+    against pinned hashes. Best-effort, like _provision_voice: never raises."""
+    from . import kokoro_tts
+
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("kokoro_onnx") is None:
+            print("  installing kokoro-onnx…")
+            # Same range as the `tts` extra in pyproject.toml; the pinned
+            # model-files-v1.0 below are what the 0.4 series loads.
+            r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "kokoro-onnx>=0.4,<0.5"])
+            if r.returncode != 0:
+                print("  pip install kokoro-onnx failed", file=sys.stderr)
+                return False
+        d = kokoro_tts.model_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        for name, digest in _KOKORO_FILES.items():
+            dest = d / name
+            if dest.is_file() and _sha256(dest) == digest:
+                continue
+            print(f"  downloading {name}…")
+            if not _download(_KOKORO_RELEASE + name, dest):
+                return False
+            if _sha256(dest) != digest:
+                dest.unlink(missing_ok=True)
+                print(f"  {name}: checksum mismatch — removed", file=sys.stderr)
+                return False
+        print(f"  ✓ kokoro ready: {d} (restart the gateway to pick it up)")
+        return True
+    except Exception as e:  # voice provisioning must never crash setup
+        print(f"  kokoro provisioning error: {e}", file=sys.stderr)
+        return False
+
+
 def cmd_voice(args: argparse.Namespace) -> int:
     voice = getattr(args, "voice", None) or _DEFAULT_VOICE
     print(f"provisioning local TTS voice '{voice}'…")
-    if _provision_voice(voice):
+    if (_provision_kokoro() if voice == "kokoro" else _provision_voice(voice)):
         print("✓ done — finterm's read-aloud (LISTEN / 🔊) auto-discovers it, no config needed.")
         return 0
     print("voice provisioning failed.", file=sys.stderr)
@@ -527,6 +582,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if not getattr(args, "no_voice", False):
         print("\nprovisioning a local TTS voice (Piper) for read-aloud…")
         _provision_voice(_DEFAULT_VOICE)
+        if not getattr(args, "no_kokoro", False):
+            print("provisioning the natural-voice engine (Kokoro, ~350 MB; skip with --no-kokoro)…")
+            _provision_kokoro()
 
     print("\n✓ setup complete — models pulled, roles bound. Try: hearth chat")
     return 0
@@ -1357,10 +1415,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("setup", help="probe hardware, pull a fitting model, bind roles")
     s.add_argument("--yes", "-y", action="store_true", help="don't prompt; pull + bind")
     s.add_argument("--no-voice", action="store_true", help="skip provisioning a TTS voice")
+    s.add_argument("--no-kokoro", action="store_true",
+                   help="keep the Piper voice but skip the natural-voice Kokoro engine (~350 MB)")
     s.set_defaults(func=cmd_setup)
 
     s = sub.add_parser("voice", help="provision a local Piper TTS voice (read-aloud)")
-    s.add_argument("--voice", default=_DEFAULT_VOICE, help="piper voice id (default en_US-amy-medium)")
+    s.add_argument("--voice", default=_DEFAULT_VOICE, help="piper voice id (default en_US-amy-medium), or 'kokoro' for the natural-voice engine")
     s.set_defaults(func=cmd_voice)
 
     s = sub.add_parser("status", help="show whether the gateway is up + roles")

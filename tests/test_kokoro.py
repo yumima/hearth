@@ -1,0 +1,221 @@
+"""Kokoro on /v1/audio/speech: engine selection, the Piper fallback, the voice
+list, and (when the model is provisioned) a real synthesis."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import wave
+
+import pytest
+from fastapi.testclient import TestClient
+
+from hearth import config as cfgmod
+from hearth import kokoro_tts, tts
+from hearth.app import create_app
+from hearth.routes import v1
+
+from .test_routes import FakeBackend
+
+
+def _client():
+    app = create_app(cfgmod.default_config(), allow_any_host=True, backends_override={"ollama": FakeBackend()})
+    return TestClient(app)
+
+
+@pytest.fixture
+def engines(monkeypatch, tmp_path):
+    """Both engines faked; records which one answered and with what voice."""
+    calls = []
+
+    async def kokoro_synth(text, voice=None, speed=1.0):
+        calls.append(("kokoro", voice, speed))
+        if voice == "broken":
+            raise kokoro_tts.KokoroError("boom")
+        return b"RIFFkokoro"
+
+    async def piper_synth(piper, voice, text):
+        calls.append(("piper", voice.stem, None))
+        return b"RIFFpiper"
+
+    (tmp_path / "en_US-amy-medium.onnx").write_bytes(b"x")
+    monkeypatch.setattr(kokoro_tts.engine, "synth", kokoro_synth)
+    monkeypatch.setattr(tts.pool, "synth", piper_synth)
+    monkeypatch.setattr(v1, "_piper_bin", lambda: "/bin/piper")
+    monkeypatch.setattr(v1, "_voice_dir", lambda: tmp_path)
+    return calls
+
+
+def test_model_kokoro_uses_kokoro(engines):
+    r = _client().post("/v1/audio/speech", json={"model": "kokoro", "voice": "af_bella", "input": "hi", "speed": 0.9})
+    assert r.status_code == 200
+    assert r.content == b"RIFFkokoro"
+    assert r.headers["X-Hearth-TTS-Engine"] == "kokoro"
+    assert engines == [("kokoro", "af_bella", 0.9)]
+
+
+def test_kokoro_voice_without_model_uses_kokoro(engines):
+    r = _client().post("/v1/audio/speech", json={"voice": "af_heart", "input": "hi"})
+    assert r.headers["X-Hearth-TTS-Engine"] == "kokoro"
+
+
+def test_model_piper_stays_piper(engines):
+    r = _client().post("/v1/audio/speech", json={"model": "piper", "input": "hi"})
+    assert r.content == b"RIFFpiper"
+    assert r.headers["X-Hearth-TTS-Engine"] == "piper"
+    assert engines == [("piper", "en_US-amy-medium", None)]
+
+
+def test_kokoro_failure_falls_back_to_default_piper_voice(engines):
+    r = _client().post("/v1/audio/speech", json={"model": "kokoro", "voice": "broken", "input": "hi"})
+    assert r.status_code == 200
+    assert r.content == b"RIFFpiper"
+    # The Kokoro id is dropped, not looked up as a Piper file.
+    assert engines[-1] == ("piper", "en_US-amy-medium", None)
+
+
+def test_voices_lists_kokoro_first_then_english_piper(engines, monkeypatch, tmp_path):
+    (tmp_path / "de_DE-thorsten-medium.onnx").write_bytes(b"x")
+    monkeypatch.setattr(kokoro_tts, "installed", lambda: True)
+    body = _client().get("/v1/audio/voices").json()
+    ids = [(v["model"], v["id"]) for v in body["voices"]]
+    assert ids[0] == ("kokoro", "af_heart")
+    assert ("piper", "en_US-amy-medium") in ids
+    assert all(i != "de_DE-thorsten-medium" for _, i in ids)
+    assert body["default"] == {"model": "kokoro", "id": "af_heart"}
+
+
+def test_voices_without_kokoro_default_to_piper(engines, monkeypatch):
+    monkeypatch.setattr(kokoro_tts, "installed", lambda: False)
+    body = _client().get("/v1/audio/voices").json()
+    assert body["default"] == {"model": "piper", "id": "en_US-amy-medium"}
+
+
+@pytest.mark.parametrize("vid,ok", [("af_heart", True), ("bf_emma", True), ("en_US-amy-medium", False),
+                                    ("", False), (None, False), ("AF_x", False)])
+def test_is_voice_id(vid, ok):
+    assert kokoro_tts.engine.is_voice_id(vid) is ok
+
+
+@pytest.mark.skipif(not kokoro_tts.installed(), reason="kokoro not provisioned")
+def test_real_synthesis_is_a_wav():
+    eng = kokoro_tts.KokoroEngine()
+    data = asyncio.run(eng.synth("Markets were steady.", "af_heart"))
+    with wave.open(io.BytesIO(data)) as w:
+        assert w.getframerate() == 24000
+        assert w.getsampwidth() == 2
+        assert w.getnframes() > 24000 * 0.5
+    with pytest.raises(kokoro_tts.KokoroError):
+        asyncio.run(eng.synth("x", "zz_nobody"))
+
+
+def test_split_sentences_merges_short_pieces():
+    # A piece under 60 chars absorbs the next sentence; one past it stands alone.
+    long = "Treasury yields climbed to their highest level in three weeks."  # 63 chars
+    assert kokoro_tts.split_sentences(f"Hi. Markets fell. {long} {long}") == [
+        f"Hi. Markets fell. {long}",
+        long,
+    ]
+    assert kokoro_tts.split_sentences("   ") == []
+
+
+def test_cancel_stops_synthesis_at_the_next_sentence():
+    """A cancelled request gives the engine back within one sentence: the
+    engine lock is held for the whole text, so this bounds how long the next
+    request (a restarted read-aloud) waits."""
+    import threading
+
+    import numpy as np
+
+    cancel = threading.Event()
+    calls = []
+
+    class FakeModel:
+        def create(self, text, voice, speed, lang):
+            calls.append(text)
+            cancel.set()  # the client hangs up while the first sentence synthesises
+            return np.zeros(2400, dtype=np.float32), 24000
+
+    eng = kokoro_tts.KokoroEngine()
+    eng._model, eng._voices = FakeModel(), ["af_heart"]
+    text = " ".join(["Treasury yields climbed to their highest level in three weeks."] * 5)
+    with pytest.raises(kokoro_tts.KokoroError, match="cancelled"):
+        eng._synth_blocking(text, "af_heart", 1.0, cancel)
+    assert len(calls) == 1
+    assert not eng._lock.locked()
+
+
+def test_uncancelled_synthesis_joins_every_sentence():
+    import threading
+
+    import numpy as np
+
+    class FakeModel:
+        def create(self, text, voice, speed, lang):
+            return np.full(1000, 0.1, dtype=np.float32), 24000
+
+    eng = kokoro_tts.KokoroEngine()
+    eng._model, eng._voices = FakeModel(), ["bf_emma"]
+    text = " ".join(["Treasury yields climbed to their highest level in three weeks."] * 3)
+    data = eng._synth_blocking(text, "bf_emma", 1.0, threading.Event())
+    with wave.open(io.BytesIO(data)) as w:
+        assert w.getnframes() == 3000  # three sentences, three pieces, all joined
+
+
+def test_non_string_voice_falls_through_to_piper(engines):
+    r = _client().post("/v1/audio/speech", json={"voice": 123, "input": "hi"})
+    assert r.status_code == 200
+    assert r.headers["X-Hearth-TTS-Engine"] == "piper"
+
+
+def test_broken_kokoro_install_falls_back_to_piper(monkeypatch, tmp_path):
+    """installed() can be true while loading fails (bad import, corrupt file):
+    that must surface as KokoroError — the route's fallback — not a 500."""
+    (tmp_path / "en_US-amy-medium.onnx").write_bytes(b"x")
+
+    async def piper_synth(piper, voice, text):
+        return b"RIFFpiper"
+
+    monkeypatch.setattr(kokoro_tts, "installed", lambda: True)
+    monkeypatch.setattr(kokoro_tts, "model_dir", lambda: tmp_path / "missing")
+    monkeypatch.setattr(kokoro_tts, "engine", kokoro_tts.KokoroEngine())
+    monkeypatch.setattr(tts.pool, "synth", piper_synth)
+    monkeypatch.setattr(v1, "_piper_bin", lambda: "/bin/piper")
+    monkeypatch.setattr(v1, "_voice_dir", lambda: tmp_path)
+    r = _client().post("/v1/audio/speech", json={"model": "kokoro", "voice": "af_heart", "input": "hi"})
+    assert r.status_code == 200
+    assert r.headers["X-Hearth-TTS-Engine"] == "piper"
+
+
+def test_voices_default_follows_the_configured_kokoro_voice(engines, monkeypatch):
+    monkeypatch.setattr(kokoro_tts, "installed", lambda: True)
+    monkeypatch.setattr(kokoro_tts, "DEFAULT_VOICE", "bf_emma")
+    assert _client().get("/v1/audio/voices").json()["default"] == {"model": "kokoro", "id": "bf_emma"}
+
+
+def test_piper_default_matches_what_speech_uses(engines, monkeypatch, tmp_path):
+    # Sorts before amy, but a voice-less request speaks amy (HEARTH_TTS_VOICE default).
+    (tmp_path / "en_GB-alan-medium.onnx").write_bytes(b"x")
+    monkeypatch.setattr(kokoro_tts, "installed", lambda: False)
+    assert _client().get("/v1/audio/voices").json()["default"] == {"model": "piper", "id": "en_US-amy-medium"}
+
+
+def test_closing_engine_stops_synthesis_at_the_next_sentence():
+    import threading
+
+    import numpy as np
+
+    eng = kokoro_tts.KokoroEngine()
+    calls = []
+
+    class FakeModel:
+        def create(self, text, voice, speed, lang):
+            calls.append(text)
+            eng._closing.set()  # shutdown begins mid-text
+            return np.zeros(10, dtype=np.float32), 24000
+
+    eng._model, eng._voices = FakeModel(), ["af_heart"]
+    text = " ".join(["Treasury yields climbed to their highest level in three weeks."] * 4)
+    with pytest.raises(kokoro_tts.KokoroError):
+        eng._synth_blocking(text, "af_heart", 1.0, threading.Event())
+    assert len(calls) == 1
