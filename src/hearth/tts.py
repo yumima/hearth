@@ -100,10 +100,9 @@ class _Worker:
         # lock. If this request is cancelled — the client hung up, e.g. on a
         # barge-in — the task still collects piper's reply for this line, so
         # the next request doesn't read it as its own and the worker stays warm.
-        task = asyncio.get_running_loop().create_task(self._roundtrip(text))
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # orphan: don't warn
+        task = asyncio.get_running_loop().create_task(self._roundtrip_guarded(text))
         try:
-            return await asyncio.shield(task)
+            ok, value = await asyncio.shield(task)
         except asyncio.CancelledError:
             # Let the orphan finish a normal sentence, but never let a slow or
             # wedged piper hold the voice's lock for long: after a short grace,
@@ -115,6 +114,19 @@ class _Worker:
                     proc.kill()
             asyncio.get_running_loop().call_later(ORPHAN_GRACE, _reap_orphan)
             raise
+        if not ok:
+            raise value
+        return value
+
+    async def _roundtrip_guarded(self, text: str):
+        """_roundtrip as (ok, value) — never raises. An orphaned (shielded)
+        task that raises is logged by asyncio.shield as "exception in shielded
+        future" on Python ≥3.13, however its result is retrieved; a reaped
+        orphan always raises, so every cancelled request logged a traceback."""
+        try:
+            return True, await self._roundtrip(text)
+        except Exception as e:
+            return False, e
 
     async def _roundtrip(self, text: str) -> bytes:
         try:

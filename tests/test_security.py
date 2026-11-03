@@ -28,3 +28,16 @@ def test_unsafe_bind_requires_key_passes_with_token():
     assert client.get("/admin/health", headers={"host": "evil.example.com"}).status_code == 401
     r = client.get("/admin/health", headers={"host": "evil.example.com", "authorization": "Bearer secret"})
     assert r.status_code in (200, 503)
+
+
+def test_passed_through_responses_carry_one_hearth_server_header():
+    from hearth import __version__
+
+    client = TestClient(_app(), base_url="http://localhost:11435")
+    r = client.get("/admin/health")
+    assert r.headers.get_list("server") == [f"hearth/{__version__}"]
+
+
+def test_rejections_are_json_errors():
+    r = TestClient(_app()).get("/admin/health", headers={"host": "evil.example.com"})
+    assert r.json()["error"]["type"] == "forbidden"

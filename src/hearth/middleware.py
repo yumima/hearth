@@ -16,8 +16,7 @@ check here.
 
 from __future__ import annotations
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 
 from . import __version__
@@ -33,30 +32,46 @@ def _host_only(value: str) -> str:
     return value.rsplit(":", 1)[0] if ":" in value else value
 
 
-class SecurityMiddleware(BaseHTTPMiddleware):
+class SecurityMiddleware:
+    """Pure ASGI, not BaseHTTPMiddleware: that wrapper hides the client's
+    disconnect from the route (request.is_disconnected() never turns true),
+    so a request whose client hung up — a stopped read-aloud — kept the
+    engine synthesising for nobody while the next request queued behind it."""
+
     def __init__(self, app, *, allow_any_host: bool = False, api_key: str | None = None):
-        super().__init__(app)
+        self.app = app
         self.allow_any_host = allow_any_host
         self.api_key = api_key
 
-    async def dispatch(self, request: Request, call_next):
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
         if not self.allow_any_host:
-            host = _host_only(request.headers.get("host", ""))
+            host = _host_only(headers.get("host", ""))
             if host not in _ALLOWED_HOSTS:
-                return JSONResponse(
-                    {"error": {"message": "host not allowed", "type": "forbidden"}},
-                    status_code=403,
-                )
+                await self._reject(scope, receive, send, 403, "host not allowed", "forbidden")
+                return
         if self.api_key is not None:
-            auth = request.headers.get("authorization", "")
+            auth = headers.get("authorization", "")
             token = auth[7:] if auth.lower().startswith("bearer ") else ""
             if token != self.api_key:
-                return JSONResponse(
-                    {"error": {"message": "invalid api key", "type": "unauthorized"}},
-                    status_code=401,
-                )
-        response = await call_next(request)
-        # Identify hearth to consumers (detection / version-floor); set on all
-        # passed-through responses so even /v1/* carries it.
-        response.headers["Server"] = _SERVER_HEADER
-        return response
+                await self._reject(scope, receive, send, 401, "invalid api key", "unauthorized")
+                return
+
+        async def send_with_server(message):
+            # Identify hearth to consumers (detection / version-floor); set on
+            # all passed-through responses so even /v1/* carries it.
+            if message["type"] == "http.response.start":
+                raw = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"server"]
+                raw.append((b"server", _SERVER_HEADER.encode()))
+                message = {**message, "headers": raw}
+            await send(message)
+
+        await self.app(scope, receive, send_with_server)
+
+    @staticmethod
+    async def _reject(scope, receive, send, status: int, message: str, etype: str) -> None:
+        response = JSONResponse({"error": {"message": message, "type": etype}}, status_code=status)
+        await response(scope, receive, send)
