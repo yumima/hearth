@@ -134,7 +134,7 @@ def as_dict() -> dict:
 
 def recommend_roles() -> dict[str, str]:
     """Pick a role→model set that fits the detected hardware (the first-run
-    wizard). Qwen3 generation.
+    wizard). Qwen3 generation, except the 12–16 GB tier (Bonsai 2).
 
     The governing rule is **fit the model entirely in VRAM**. A model that
     spills to system RAM (e.g. the 30B on a 12 GB GPU) runs its overflow layers
@@ -142,7 +142,8 @@ def recommend_roles() -> dict[str, str]:
     utilisation and far slower than a smaller model that sits 100% on-GPU. The
     MoE's "few active params" doesn't rescue this: the partial-offload penalty
     dominates. So we pick the largest model whose Q4 footprint (weights + KV
-    cache) fits in VRAM. Approx footprints: 32b ~22GB, 30b-a3b ~20GB, 14b ~10GB,
+    cache) fits in VRAM. Approx footprints: 32b ~22GB, 30b-a3b ~20GB, bonsai-2:27b
+    ~10GB (at a 64k context), 14b ~10GB,
     8b ~6GB, 4b ~4GB, 1.7b ~2GB. Thresholds carry ~2–3 GB of headroom over the
     weights so the KV cache at real context lengths still sits 100% on-GPU (a
     threshold set to the bare footprint would itself spill once context grows).
@@ -160,7 +161,9 @@ def recommend_roles() -> dict[str, str]:
     elif vram >= 23000:
         primary, fast = "qwen3:30b-a3b", "qwen3:8b"   # ~20GB + KV; MoE only where it fits
     elif vram >= 11000:
-        primary, fast = "qwen3:14b", "qwen3:8b"        # 12–16 GB: dense 14B fits fully
+        # 12–16 GB: ternary 27B fits fully. One model for both roles, so a
+        # fast/primary hop needn't swap models on a card this tight.
+        primary, fast = "bonsai-2:27b", "bonsai-2:27b"
     elif vram >= 7000:
         primary, fast = "qwen3:8b", "qwen3:4b"
     elif vram >= 4500:
@@ -194,9 +197,17 @@ _FOOTPRINT: dict[str, tuple[int, int]] = {
     "qwen3:14b":    (8850, 80),
     "qwen3:32b":   (19500, 128),
     "qwen3:30b-a3b": (17700, 48),
+    # Measured, not derived: Ollama reported 9915 MiB loaded at 64k and 13369 MiB
+    # at 128k on an RTX 5070 Ti 12 GB. Those two points give the weight and KV
+    # figures below, and 128k spilled to the CPU at 5.3 tok/s vs 17.9 at 64k.
+    "bonsai-2:27b": (6461, 54),
 }
-# Contexts worth choosing between. Qwen3 tops out at 40960.
-_CONTEXT_STEPS = (40960, 32768, 24576, 16384, 12288, 8192, 4096)
+# Contexts worth choosing between. Qwen3 tops out at 40960. _MAX_CONTEXT lists
+# models allowed higher; Bonsai's is the largest context tested here, not a limit
+# of the model, so a bigger card could go further once that has been measured.
+_CONTEXT_STEPS = (65536, 40960, 32768, 24576, 16384, 12288, 8192, 4096)
+_DEFAULT_MAX_CONTEXT = 40960
+_MAX_CONTEXT: dict[str, int] = {"bonsai-2:27b": 65536}
 # Held back from the KV budget for CUDA context, compute buffers and whatever
 # else shares the card. Under-reserving here is what turns a "it fits" estimate
 # into layers silently running on the CPU.
@@ -230,7 +241,8 @@ def recommend_contexts(models: dict[str, str], vram_mib: int = 0) -> dict[str, i
         budget_mib = int(vram_mib * _VRAM_USABLE) - weights - _VRAM_OVERHEAD_MIB
         if budget_mib <= 0:
             continue
-        affordable = int(budget_mib * 1024 / kv_kib)
+        affordable = min(int(budget_mib * 1024 / kv_kib),
+                         _MAX_CONTEXT.get(model, _DEFAULT_MAX_CONTEXT))
         for step in _CONTEXT_STEPS:
             if step <= affordable:
                 out[role] = step

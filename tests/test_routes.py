@@ -183,3 +183,41 @@ def test_unbound_role_chat_is_clear_error():
     client = TestClient(app)
     r = client.post("/v1/chat/completions", json={"model": "primary_chat", "messages": []})
     assert r.status_code == 503
+
+
+def _warm_body(monkeypatch, tmp_path, context):
+    """What _warm_chat posts to Ollama for a primary_chat bound at `context`."""
+    import asyncio
+
+    from hearth.routes import v1
+
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
+    cfg = cfgmod.load()
+    cfg.roles["primary_chat"].context = context
+    sent = {}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json):
+            sent.update(json)
+
+    monkeypatch.setattr(v1.httpx, "AsyncClient", FakeClient)
+    asyncio.run(v1._warm_chat(cfg))
+    return sent
+
+
+def test_warm_chat_loads_at_the_role_context(monkeypatch, tmp_path):
+    # Warming at another context makes the next chat reload the model anyway.
+    assert _warm_body(monkeypatch, tmp_path, 65536)["options"] == {"num_ctx": 65536}
+
+
+def test_warm_chat_leaves_context_to_the_daemon_when_unset(monkeypatch, tmp_path):
+    assert "options" not in _warm_body(monkeypatch, tmp_path, 0)

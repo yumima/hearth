@@ -28,9 +28,9 @@ def _rec(monkeypatch, vram_mib=None, ram_mib=32000):
     return hardware.recommend_roles()
 
 
-def test_12gb_gpu_picks_14b_not_30b(monkeypatch):
+def test_12gb_gpu_picks_bonsai_not_30b(monkeypatch):
     # The headline regression: 30B overflows a 12 GB GPU -> must NOT be picked.
-    assert _rec(monkeypatch, vram_mib=12227)["primary_chat"] == "qwen3:14b"
+    assert _rec(monkeypatch, vram_mib=12227)["primary_chat"] == "bonsai-2:27b"
 
 
 def test_24gb_gpu_picks_30b_moe(monkeypatch):
@@ -47,8 +47,8 @@ def test_8gb_gpu_picks_8b(monkeypatch):
 
 def test_thresholds_carry_kv_headroom(monkeypatch):
     # A GPU sized to a model's bare weights must drop a tier (room for KV cache).
-    assert _rec(monkeypatch, vram_mib=20000)["primary_chat"] == "qwen3:14b"   # not 30b (~20GB)
-    assert _rec(monkeypatch, vram_mib=22000)["primary_chat"] == "qwen3:14b"   # not 32b (~22GB)
+    assert _rec(monkeypatch, vram_mib=20000)["primary_chat"] == "bonsai-2:27b"   # not 30b (~20GB)
+    assert _rec(monkeypatch, vram_mib=22000)["primary_chat"] == "bonsai-2:27b"   # not 32b (~22GB)
 
 
 def test_cpu_only_sized_by_ram(monkeypatch):
@@ -60,4 +60,16 @@ def test_cpu_only_sized_by_ram(monkeypatch):
 def test_embedding_and_fast_roles_stable(monkeypatch):
     r = _rec(monkeypatch, vram_mib=12227)
     assert r["embedding"] == "nomic-embed-text"
-    assert r["fast_chat"] == "qwen3:8b" and r["coding"] == "qwen3:8b"
+    assert r["fast_chat"] == "bonsai-2:27b" and r["coding"] == "bonsai-2:27b"
+
+
+# ── recommend_contexts(): the largest context that stays 100% on the GPU ────
+
+def test_bonsai_context_on_12gb_is_the_measured_fit():
+    # 64k measured fully on-GPU on this card; 128k spilled to the CPU.
+    assert hardware.recommend_contexts({"primary_chat": "bonsai-2:27b"}, 12227) == {"primary_chat": 65536}
+
+
+def test_context_ceiling_is_per_model():
+    # Opening a 64k step for Bonsai must not push Qwen3 past its 40960 limit.
+    assert hardware.recommend_contexts({"primary_chat": "qwen3:0.6b"}, 32768) == {"primary_chat": 40960}

@@ -177,9 +177,13 @@ def cmd_start(args: argparse.Namespace) -> int:
         rec = hardware.recommend_roles().get("primary_chat")
         cur = cfg.roles.get("primary_chat")
         if rec and cur and cur.model != rec and not cfg.role_is_remote("primary_chat"):
+            # Bind drops the role's context when none is given, so the advice has
+            # to carry the one that makes this model the better fit.
+            ctx = hardware.recommend_contexts({"primary_chat": rec}).get("primary_chat")
+            flag = f" --context {ctx}" if ctx else ""
             print(f"tip: primary_chat = '{cur.model}', but '{rec}' fits your hardware "
                   f"better (full-GPU speed).\n     apply with:  hearth bind primary_chat "
-                  f"{rec}   (or: hearth setup)", file=sys.stderr)
+                  f"{rec}{flag}   (or: hearth setup)", file=sys.stderr)
     except Exception:
         pass
 

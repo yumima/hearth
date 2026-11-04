@@ -173,3 +173,21 @@ def test_listen_socket_is_listening_and_ipv4_for_hostnames():
             cli._listen_socket("127.0.0.1", port)
     finally:
         sock.close()
+
+
+def test_start_tip_carries_the_recommended_context(tmp_path, monkeypatch, capsys):
+    """Bind clears a role's context when none is given, so a tip without one
+    would land the model on the daemon's default and silently drop old messages."""
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.hardware, "recommend_roles", lambda: {"primary_chat": "some-model:1b"})
+    monkeypatch.setattr(cli.hardware, "recommend_contexts", lambda models: {"primary_chat": 16384})
+    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: None)
+
+    with socket.socket() as squatter:  # stops cmd_start right after the tip
+        squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        squatter.bind(("127.0.0.1", 0))
+        squatter.listen(1)
+        port = squatter.getsockname()[1]
+        cli.cmd_start(_start_args(f"127.0.0.1:{port}", no_manage=True))
+
+    assert "hearth bind primary_chat some-model:1b --context 16384" in capsys.readouterr().err

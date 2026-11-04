@@ -489,9 +489,14 @@ async def _warm_chat(cfg) -> None:
     except Exception:
         return
     keep = os.environ.get("HEARTH_KEEP_ALIVE", "30m")
+    body: dict = {"model": concrete, "keep_alive": keep}
+    # Warm at the context chats will ask for: Ollama reloads a model whose
+    # num_ctx changes, so warming at its default just buys a second cold start.
+    if ctx := cfg.context_for("primary_chat"):
+        body["options"] = {"num_ctx": ctx}
     try:
         async with httpx.AsyncClient(timeout=180.0) as c:
-            await c.post(f"{_OLLAMA_URL}/api/generate", json={"model": concrete, "keep_alive": keep})
+            await c.post(f"{_OLLAMA_URL}/api/generate", json=body)
     except Exception:
         pass
 
