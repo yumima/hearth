@@ -9,7 +9,7 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-11-04)
+## Today's commits (2026-11-05)
 
 Latest first.
 
@@ -127,9 +127,10 @@ Admin (off `/v1` so OpenAI clients never see it):
 ### Role registry
 
 `model: "primary_chat"` → role registry → concrete `(model_id, backend)`. A
-literal id (`qwen3:14b`) routes straight through. Config at
-`~/.hearth/config.yaml` (written on first run); rebind with
-`hearth bind primary_chat qwen3:8b` (persisted + hot-applied).
+literal id (`bonsai-2:27b`) routes straight through, at the daemon's default
+context rather than a role's. Config at `~/.hearth/config.yaml` (written on first
+run); rebind with `hearth bind <role> <model> --context <tokens>` (persisted +
+hot-applied). Omitting `--context` clears the role's context.
 
 Built-in defaults; `hearth setup` overrides them per your hardware:
 

@@ -73,7 +73,7 @@ async def list_models(request: Request):
     """List servable models in OpenAI shape (F4).
 
     Concrete backend models plus the role aliases — so a consumer's model
-    dropdown can pick either ``primary_chat`` or ``qwen2.5:14b...``. Role
+    dropdown can pick either ``primary_chat`` or ``bonsai-2:27b``. Role
     *bindings* (which alias → which model) live at /admin/roles so OpenAI SDK
     clients don't see non-standard fields here.
     """

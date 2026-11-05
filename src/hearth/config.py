@@ -5,8 +5,8 @@ Hearth resolves a request's ``model`` field two ways (design doc §4.2):
 1. **Role alias** — ``primary_chat`` / ``fast_chat`` / ``coding`` /
    ``embedding`` / ``stt`` / ``vision`` → the role registry → a concrete
    ``(model_id, backend)``.
-2. **Literal model id** — ``qwen2.5:14b`` routes straight to the backend
-   that has it.
+2. **Literal model id** — ``bonsai-2:27b`` routes straight to the default
+   (first Ollama) backend, with no role context.
 
 Config lives at ``~/.hearth/config.yaml`` (override via ``HEARTH_CONFIG``).
 First run writes the default file so the engine is usable before the user

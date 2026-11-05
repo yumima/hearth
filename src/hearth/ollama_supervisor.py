@@ -59,9 +59,10 @@ def start(base_url: str, wait_s: float = 30.0) -> subprocess.Popen | None:
     env = {**os.environ, "OLLAMA_HOST": host}
     # Raise the default model context window above Ollama's 4096. Tool-heavy chat
     # (curated MCP tool schemas + history + tool results) overruns 4096 and the
-    # model loses the tools — which broke tool-calling. 8192 keeps qwen3:14b fully
-    # in VRAM on a 12GB GPU; much larger overflows the KV-cache to CPU and slows
-    # inference. Respect an explicit operator override if one is already set.
+    # model loses the tools — which broke tool-calling. This is only the floor for
+    # requests with no context of their own: a role's bound context overrides it,
+    # sized per model so the KV cache stays in VRAM (hardware.recommend_contexts).
+    # Respect an explicit operator override if one is already set.
     env.setdefault("OLLAMA_CONTEXT_LENGTH", str(DEFAULT_CONTEXT_LENGTH))
     # Quantize the K/V cache to 8-bit. The cache scales linearly with context and
     # at 32k it outweighs the model weights themselves; q8_0 halves it for a
