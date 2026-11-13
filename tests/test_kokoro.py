@@ -110,12 +110,15 @@ def test_real_synthesis_is_a_wav():
 
 
 def test_split_sentences_merges_short_pieces():
-    # A piece under 60 chars absorbs the next sentence; one past it stands alone.
+    # A piece under min_len absorbs the next sentence (the model phrases them
+    # as one passage); one past it stands alone.
     long = "Treasury yields climbed to their highest level in three weeks."  # 63 chars
-    assert kokoro_tts.split_sentences(f"Hi. Markets fell. {long} {long}") == [
+    assert kokoro_tts.split_sentences(f"Hi. Markets fell. {long} {long}", min_len=60) == [
         f"Hi. Markets fell. {long}",
         long,
     ]
+    # the default merges up to a passage (160 chars)
+    assert kokoro_tts.split_sentences(f"Hi. Markets fell. {long} {long}") == [f"Hi. Markets fell. {long} {long}"]
     assert kokoro_tts.split_sentences("   ") == []
 
 
@@ -156,10 +159,22 @@ def test_uncancelled_synthesis_joins_every_sentence():
 
     eng = kokoro_tts.KokoroEngine()
     eng._model, eng._voices = FakeModel(), ["bf_emma"]
-    text = " ".join(["Treasury yields climbed to their highest level in three weeks."] * 3)
+    sentence = "Treasury yields climbed to their highest level in three weeks as traders " * 3 + "waited."
+    text = " ".join([sentence] * 3)  # each > min_len: three pieces
     data = eng._synth_blocking(text, "bf_emma", 1.0, threading.Event())
+    pause = int(24000 * kokoro_tts.PAUSE_SENTENCE_S)
     with wave.open(io.BytesIO(data)) as w:
-        assert w.getnframes() == 3000  # three sentences, three pieces, all joined
+        # three pieces, all joined, each followed by a sentence pause (they
+        # used to be butted together, so sentences ran into each other)
+        assert w.getnframes() == 3 * (1000 + pause)
+
+
+def test_piece_edges_are_trimmed_to_even_gaps():
+    import numpy as np
+
+    s = np.concatenate([np.zeros(5000), np.full(1000, 0.2), np.zeros(5000)]).astype(np.float32)
+    t = kokoro_tts._trim(s)
+    assert len(t) == 1000 + 2 * 600  # 25 ms kept either side of the sound
 
 
 def test_non_string_voice_falls_through_to_piper(engines):

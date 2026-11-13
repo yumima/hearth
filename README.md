@@ -9,7 +9,7 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-11-05)
+## Today's commits (2026-11-12)
 
 Latest first.
 
@@ -45,8 +45,7 @@ also run `.venv/bin/hearth …` directly without `install-cli`.
 
 The bundled Ollama binary lives under `vendor/` (downloaded, not committed). It
 ships its own CUDA runtime, so on an NVIDIA box it uses the GPU with no system
-CUDA toolkit. Keep it current: the default `bonsai-2:27b` is tested on Ollama
-0.40.14, and 0.30.4 refuses to pull it (HTTP 412).
+CUDA toolkit. Keep it current: Qwen 3.8 is tested on Ollama 0.40.14.
 
 ## Commands
 
@@ -127,29 +126,28 @@ Admin (off `/v1` so OpenAI clients never see it):
 ### Role registry
 
 `model: "primary_chat"` → role registry → concrete `(model_id, backend)`. A
-literal id (`bonsai-2:27b`) routes straight through, at the daemon's default
-context rather than a role's. Config at `~/.hearth/config.yaml` (written on first
+literal id (`qwen3.8:27b`) routes straight through, using the context of any
+role bound to it. Config at `~/.hearth/config.yaml` (written on first
 run); rebind with `hearth bind <role> <model> --context <tokens>` (persisted +
-hot-applied). Omitting `--context` clears the role's context.
+hot-applied). Omitting `--context` matches other roles on that model, or else
+clears the role's context.
 
 Built-in defaults; `hearth setup` overrides them per your hardware:
 
 | Role | Built-in default | `setup` picks (largest that fits VRAM) |
 |---|---|---|
-| `primary_chat` | `bonsai-2:27b` | 12 GB → `bonsai-2:27b` · 24 GB → `qwen3:30b-a3b` · 32 GB → `qwen3:32b` |
-| `fast_chat` / `coding` | `bonsai-2:27b` | 12 GB → `bonsai-2:27b` · 24 GB → `qwen3:8b` · 32 GB → `qwen3:14b` |
+| `primary_chat` | 2-bit Qwen 3.8 27B | 20 GB+ → `qwen3.8:27b` · 11–20 GB → 2-bit Qwen 3.8 27B · 7–11 GB → `qwen3:8b` |
+| `fast_chat` / `coding` | 2-bit Qwen 3.8 27B | 20 GB+ → `qwen3.8:27b` · 11–20 GB → 2-bit Qwen 3.8 27B · 7–11 GB → `qwen3:4b` |
 | `embedding` | `nomic-embed-text` | `nomic-embed-text` |
 | `stt` | `faster-whisper:medium` *(M2)* | — |
 
 **Model fit (`hearth setup`).** The wizard probes GPU VRAM + system RAM and picks
-the **largest model that fits entirely in VRAM** — that's the rule that
-matters. A model that overflows VRAM (e.g. the 30B on a 12 GB GPU) runs its
-spillover layers on the CPU, leaving the GPU mostly idle waiting on them
-(measured ~12% GPU utilisation, far slower than a smaller model sitting 100%
-on-GPU); the MoE's few-active-params doesn't rescue this. So a 12 GB GPU gets
-`bonsai-2:27b` at a 64k context (fits → ~18 tok/s, 100% on-GPU; tested on Ollama
-0.40.14), a 24 GB GPU gets `qwen3:30b-a3b`,
-32 GB+ gets `qwen3:32b` (thresholds keep ~2–3 GB headroom for the KV cache);
+the **largest model that fits entirely in VRAM**. A model that overflows runs its
+spillover layers on the CPU, leaving the GPU mostly idle waiting on them. On a
+12 GB GPU the full `qwen3.8:27b` managed only about 3 tok/s that way, so 11–20 GB
+cards get `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_S`, a 2-bit community build that
+fits fully at a 40960 context and trades some accuracy for usable speed. 20 GB+
+cards get the full model.
 CPU-only boxes are sized by RAM. Precedence: built-in default
 → `~/.hearth/config.yaml` (`setup`/`bind`) → per-request `model`.
 

@@ -24,7 +24,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from .. import comfy_supervisor, kokoro_tts, ollama_supervisor, toolloop, tts, webtools
+from .. import comfy_supervisor, kokoro_tts, ollama_supervisor, speech_text, toolloop, tts, webtools
 from ..config import ROLE_NAMES, Config
 
 router = APIRouter()
@@ -339,7 +339,8 @@ async def audio_speech(request: Request):
         return _err(503, "no Piper voice provisioned — run `hearth voice en_US-amy-medium`",
                     "backend_unavailable")
     try:
-        data = await _unless_disconnected(request, tts.pool.synth(piper, voice, text))
+        # Piper phonemizes with espeak too: numbers and money as words first.
+        data = await _unless_disconnected(request, tts.pool.synth(piper, voice, speech_text.normalize(text)))
     except _ClientGone:
         return Response(status_code=499)
     except tts.TTSError as e:

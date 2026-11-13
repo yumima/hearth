@@ -23,6 +23,8 @@ import time
 import wave
 from pathlib import Path
 
+from hearth.speech_text import normalize
+
 MODEL_FILE = "kokoro-v1.0.onnx"
 VOICES_FILE = "voices-v1.0.bin"
 DEFAULT_VOICE = os.environ.get("HEARTH_KOKORO_VOICE", "af_heart")
@@ -51,11 +53,19 @@ class KokoroError(Exception):
 
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+")
 
+# Pause after a piece, by how it ends — Kokoro is synthesised a piece at a
+# time and the pieces used to be butted together with no gap at all, which is
+# what made sentences run into each other. Tuned to a newsreader's pace.
+PAUSE_SENTENCE_S = 0.32
+PAUSE_CLAUSE_S = 0.18  # ':' / ';'
+SILENCE_THRESHOLD = 0.004  # |sample| below this at a piece's edges is trimmed
 
-def split_sentences(text: str, min_len: int = 60) -> list[str]:
-    """Sentence-sized pieces (short ones merged up to `min_len`). Synthesis runs
-    one piece at a time so a cancelled request stops within a sentence instead
-    of holding the engine for the whole text."""
+
+def split_sentences(text: str, min_len: int = 160) -> list[str]:
+    """Sentence-sized pieces (short ones merged up to `min_len`, so the model
+    phrases two short sentences as one passage). Synthesis runs one piece at a
+    time so a cancelled request stops within a piece instead of holding the
+    engine for the whole text."""
     out: list[str] = []
     for s in _SENTENCE_END.split(" ".join(text.split())):
         if out and len(out[-1]) < min_len:
@@ -88,6 +98,18 @@ def installed() -> bool:
 
 def lang_for(voice: str) -> str:
     return "en-gb" if voice.startswith("b") else "en-us"
+
+
+def _trim(samples):
+    """Drop the near-silent head/tail Kokoro leaves on a piece (uneven, so the
+    gaps between pieces were uneven), keeping 25 ms so no onset is clipped."""
+    import numpy as np
+
+    loud = np.flatnonzero(np.abs(samples) > SILENCE_THRESHOLD)
+    if not len(loud):
+        return samples
+    pad = 600  # 25 ms at 24 kHz
+    return samples[max(0, loud[0] - pad): loud[-1] + 1 + pad]
 
 
 def _to_wav(samples, sample_rate: int) -> bytes:
@@ -137,6 +159,7 @@ class KokoroEngine:
             if voice not in self._voices:
                 raise KokoroError(f"unknown kokoro voice {voice!r}")
             parts, sr = [], 24000
+            british = lang_for(voice) == "en-gb"
             for piece in split_sentences(text):
                 # A request whose client went away (stop, voice change) — or a
                 # gateway shutting down — gives the engine back here, not after
@@ -144,11 +167,18 @@ class KokoroEngine:
                 if cancel.is_set() or self._closing.is_set():
                     raise KokoroError("cancelled")
                 try:
-                    samples, sr = model.create(piece, voice=voice, speed=speed, lang=lang_for(voice))
+                    # Numbers, money and shorthand as words: the phonemizer
+                    # reads "2.5%" as "two, five percent" (speech_text).
+                    samples, sr = model.create(normalize(piece, british=british), voice=voice, speed=speed,
+                                               lang=lang_for(voice))
                 except Exception as e:
                     raise KokoroError(f"kokoro synthesis failed: {e}") from e
                 if samples is not None and len(samples):
+                    samples = _trim(samples)
                     parts.append(samples)
+                    tail = piece.rstrip()[-1:]
+                    pause = PAUSE_SENTENCE_S if tail in ".!?" else PAUSE_CLAUSE_S if tail in ":;" else 0.12
+                    parts.append(np.zeros(int(sr * pause), dtype=samples.dtype))
             self._last_used = time.monotonic()
             if not parts:
                 raise KokoroError("kokoro produced no audio")
