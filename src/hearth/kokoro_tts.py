@@ -178,7 +178,8 @@ class KokoroEngine:
                     parts.append(samples)
                     tail = piece.rstrip()[-1:]
                     pause = PAUSE_SENTENCE_S if tail in ".!?" else PAUSE_CLAUSE_S if tail in ":;" else 0.12
-                    parts.append(np.zeros(int(sr * pause), dtype=samples.dtype))
+                    # the pause keeps pace with the voice: 1.2x speech, 1.2x shorter gaps
+                    parts.append(np.zeros(int(sr * pause / speed), dtype=samples.dtype))
             self._last_used = time.monotonic()
             if not parts:
                 raise KokoroError("kokoro produced no audio")

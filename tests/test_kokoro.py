@@ -167,6 +167,10 @@ def test_uncancelled_synthesis_joins_every_sentence():
         # three pieces, all joined, each followed by a sentence pause (they
         # used to be butted together, so sentences ran into each other)
         assert w.getnframes() == 3 * (1000 + pause)
+    # a faster voice gets proportionally shorter pauses
+    data = eng._synth_blocking(text, "bf_emma", 1.25, threading.Event())
+    with wave.open(io.BytesIO(data)) as w:
+        assert w.getnframes() == 3 * (1000 + int(24000 * kokoro_tts.PAUSE_SENTENCE_S / 1.25))
 
 
 def test_piece_edges_are_trimmed_to_even_gaps():

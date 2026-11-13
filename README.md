@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`3eda74f`](https://github.com/yumima/hearth/commit/3eda74f) tts: numbers and money read as words; natural pauses between sentences
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
