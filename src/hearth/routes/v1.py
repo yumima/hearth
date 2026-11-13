@@ -311,10 +311,14 @@ async def audio_speech(request: Request):
     fallback when Kokoro isn't installed or fails — read-aloud keeps working,
     just in the plainer voice. `X-Hearth-TTS-Engine` says which one answered."""
     payload = await request.json()
-    text = (payload.get("input") or "").strip()
+    raw = payload.get("input") or ""
+    text = raw.strip() if isinstance(raw, str) else ""
     if not text:
         return _err(400, "missing 'input'")
     text = text[:8000]  # bound synthesis time/memory for direct callers
+    # Trailing line breaks are meaningful to Kokoro: the chunk ends a paragraph
+    # or a section, so it owes that pause at its end (kokoro_tts.trailing_break).
+    text += "\n" * kokoro_tts.trailing_break(raw)
     headers = {"Cache-Control": "no-store"}
     if _wants_kokoro(payload):
         try:

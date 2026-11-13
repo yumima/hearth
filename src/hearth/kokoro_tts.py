@@ -58,21 +58,54 @@ _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+")
 # what made sentences run into each other. Tuned to a newsreader's pace.
 PAUSE_SENTENCE_S = 0.32
 PAUSE_CLAUSE_S = 0.18  # ':' / ';'
+# A line break is a paragraph, a heading or a bullet: a reader takes a longer
+# breath there than between two sentences. Without it "DEFENSE" ran straight
+# into the section's first bullet.
+PAUSE_PARAGRAPH_S = 0.5
+# A blank line is a section break (the client puts one before a heading): the
+# topic changes, and a newsreader takes the longest breath there.
+PAUSE_SECTION_S = 0.8
 SILENCE_THRESHOLD = 0.004  # |sample| below this at a piece's edges is trimmed
 
 
-def split_sentences(text: str, min_len: int = 160) -> list[str]:
-    """Sentence-sized pieces (short ones merged up to `min_len`, so the model
-    phrases two short sentences as one passage). Synthesis runs one piece at a
-    time so a cancelled request stops within a piece instead of holding the
-    engine for the whole text."""
-    out: list[str] = []
-    for s in _SENTENCE_END.split(" ".join(text.split())):
-        if out and len(out[-1]) < min_len:
-            out[-1] = f"{out[-1]} {s}"
-        elif s:
-            out.append(s)
+# How a piece ends: mid-paragraph, at a line break, or at a blank line.
+BREAK_NONE, BREAK_PARAGRAPH, BREAK_SECTION = 0, 1, 2
+
+
+def split_pieces(text: str, min_len: int = 160) -> list[tuple[str, int]]:
+    """Sentence-sized pieces, each with the break that follows it (BREAK_*).
+    Short sentences merge up to `min_len` so the model phrases them as one
+    passage — but never across a line break: a heading or a bullet is read as
+    its own phrase, then paused after. Synthesis runs one piece at a time so a
+    cancelled request stops within a piece instead of holding the engine for
+    the whole text."""
+    out: list[tuple[str, int]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            if out:
+                out[-1] = (out[-1][0], BREAK_SECTION)
+            continue
+        start = len(out)
+        for s in _SENTENCE_END.split(" ".join(line.split())):
+            if len(out) > start and len(out[-1][0]) < min_len:
+                out[-1] = (f"{out[-1][0]} {s}", BREAK_NONE)
+            elif s:
+                out.append((s, BREAK_NONE))
+        if len(out) > start:
+            out[-1] = (out[-1][0], BREAK_PARAGRAPH)
     return out
+
+
+def split_sentences(text: str, min_len: int = 160) -> list[str]:
+    return [p for p, _ in split_pieces(text, min_len)]
+
+
+def trailing_break(text: str) -> int:
+    """The break a chunked client owes AFTER this text: it ends a chunk with
+    '\n' when the next chunk starts a new paragraph, '\n\n' a new section."""
+    tail = text[len(text.rstrip()):]
+    n = tail.count("\n")
+    return BREAK_SECTION if n >= 2 else BREAK_PARAGRAPH if n == 1 else BREAK_NONE
 
 
 def model_dir() -> Path:
@@ -160,7 +193,9 @@ class KokoroEngine:
                 raise KokoroError(f"unknown kokoro voice {voice!r}")
             parts, sr = [], 24000
             british = lang_for(voice) == "en-gb"
-            for piece in split_sentences(text):
+            pieces = split_pieces(text)
+            ends_with = trailing_break(text)
+            for n, (piece, brk) in enumerate(pieces):
                 # A request whose client went away (stop, voice change) — or a
                 # gateway shutting down — gives the engine back here, not after
                 # the rest of its text.
@@ -177,7 +212,14 @@ class KokoroEngine:
                     samples = _trim(samples)
                     parts.append(samples)
                     tail = piece.rstrip()[-1:]
-                    pause = PAUSE_SENTENCE_S if tail in ".!?" else PAUSE_CLAUSE_S if tail in ":;" else 0.12
+                    if n + 1 == len(pieces):
+                        brk = ends_with  # the text's end is a paragraph only if the client says so
+                    if brk == BREAK_SECTION:
+                        pause = PAUSE_SECTION_S
+                    elif brk == BREAK_PARAGRAPH:
+                        pause = PAUSE_PARAGRAPH_S
+                    else:
+                        pause = PAUSE_SENTENCE_S if tail in ".!?" else PAUSE_CLAUSE_S if tail in ":;" else 0.12
                     # the pause keeps pace with the voice: 1.2x speech, 1.2x shorter gaps
                     parts.append(np.zeros(int(sr * pause / speed), dtype=samples.dtype))
             self._last_used = time.monotonic()

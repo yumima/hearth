@@ -122,6 +122,61 @@ def test_split_sentences_merges_short_pieces():
     assert kokoro_tts.split_sentences("   ") == []
 
 
+def test_route_keeps_a_chunks_trailing_break(monkeypatch):
+    # The input is stripped, but a chunk ending a section must still reach the
+    # engine ending in "\n\n" — that is what earns it the longer pause.
+    seen = []
+
+    async def synth(text, voice=None, speed=1.0):
+        seen.append(text)
+        return b"RIFF"
+
+    monkeypatch.setattr(kokoro_tts.engine, "synth", synth)
+    c = _client()
+    for raw in ("  Fed holds rates.\n\n", "Defense.\n", "Brent rose.  "):
+        assert c.post("/v1/audio/speech", json={"model": "kokoro", "voice": "af_heart", "input": raw}).status_code == 200
+    assert seen == ["Fed holds rates.\n\n", "Defense.\n", "Brent rose."]
+
+
+def test_split_pieces_never_merges_across_a_line_break():
+    # "DEFENSE" ran into its first bullet when lines were flattened: a line is
+    # its own piece however short, and a blank line marks a section.
+    text = "Fed holds rates.\n\nDefense.\nFrance ordered jets. Paris confirmed."
+    assert kokoro_tts.split_pieces(text) == [
+        ("Fed holds rates.", kokoro_tts.BREAK_SECTION),
+        ("Defense.", kokoro_tts.BREAK_PARAGRAPH),
+        ("France ordered jets. Paris confirmed.", kokoro_tts.BREAK_PARAGRAPH),
+    ]
+    assert kokoro_tts.trailing_break("a.\n\n") == kokoro_tts.BREAK_SECTION
+    assert kokoro_tts.trailing_break("a.\n ") == kokoro_tts.BREAK_PARAGRAPH
+    assert kokoro_tts.trailing_break("a.") == kokoro_tts.BREAK_NONE
+
+
+def test_line_breaks_get_longer_pauses():
+    import threading
+
+    import numpy as np
+
+    class FakeModel:
+        def create(self, text, voice, speed, lang):
+            return np.full(1000, 0.1, dtype=np.float32), 24000
+
+    eng = kokoro_tts.KokoroEngine()
+    eng._model, eng._voices = FakeModel(), ["af_heart"]
+
+    def frames(text):
+        with wave.open(io.BytesIO(eng._synth_blocking(text, "af_heart", 1.0, threading.Event()))) as w:
+            return w.getnframes()
+
+    p = {k: int(24000 * v) for k, v in (("s", kokoro_tts.PAUSE_SENTENCE_S), ("p", kokoro_tts.PAUSE_PARAGRAPH_S),
+                                         ("x", kokoro_tts.PAUSE_SECTION_S))}
+    # section break after "rates", paragraph after the heading, sentence at the end
+    assert frames("Fed holds rates.\n\nDefense.\nFrance ordered jets.") == 3000 + p["x"] + p["p"] + p["s"]
+    # a chunk that ends a section owes the section pause at its end
+    assert frames("Fed holds rates.\n\n") == 1000 + p["x"]
+    assert kokoro_tts.PAUSE_SENTENCE_S < kokoro_tts.PAUSE_PARAGRAPH_S < kokoro_tts.PAUSE_SECTION_S
+
+
 def test_cancel_stops_synthesis_at_the_next_sentence():
     """A cancelled request gives the engine back within one sentence: the
     engine lock is held for the whole text, so this bounds how long the next
