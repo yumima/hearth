@@ -88,7 +88,7 @@ def test_another_sites_image_or_frame_is_refused_but_a_followed_link_is_not():
     get = lambda path, **h: c.get(path, headers={k.replace("_", "-"): v for k, v in h.items()}).status_code  # noqa: E731
     for site in ("cross-site", "same-site"):
         assert get("/admin/health", sec_fetch_site=site, sec_fetch_mode="no-cors", sec_fetch_dest="image") == 403
-        assert get("/app", sec_fetch_site=site, sec_fetch_mode="navigate", sec_fetch_dest="iframe") == 403
-        assert get("/app", sec_fetch_site=site, sec_fetch_mode="navigate", sec_fetch_dest="document") == 200
+        assert get("/admin/roles", sec_fetch_site=site, sec_fetch_mode="navigate", sec_fetch_dest="iframe") == 403
+        assert get("/admin/roles", sec_fetch_site=site, sec_fetch_mode="navigate", sec_fetch_dest="document") == 200
     for site in ("same-origin", "none"):  # our page; a typed address
         assert get("/admin/health", sec_fetch_site=site, sec_fetch_mode="cors", sec_fetch_dest="empty") in (200, 503)

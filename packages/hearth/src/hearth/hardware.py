@@ -102,13 +102,10 @@ def _cpu_cores() -> int | None:
 
 def _mem() -> tuple[int | None, int | None]:
     try:
-        info: dict[str, int] = {}
-        with open("/proc/meminfo") as f:
-            for line in f:
-                k, _, rest = line.partition(":")
-                kb = int(rest.strip().split()[0])
-                info[k] = kb // 1024  # MiB
-        return info.get("MemTotal"), info.get("MemAvailable")
+        import psutil
+
+        m = psutil.virtual_memory()
+        return m.total // (1 << 20), m.available // (1 << 20)
     except Exception:
         return None, None
 

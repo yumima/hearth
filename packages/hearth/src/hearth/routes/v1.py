@@ -24,7 +24,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from .. import comfy_supervisor, kokoro_tts, ollama_supervisor, speech_text, toolloop, tts, webtools
+from .. import comfy_supervisor, kokoro_tts, ollama_supervisor, paths, speech_text, toolloop, tts, webtools
 from ..config import ROLE_NAMES, Config
 
 router = APIRouter()
@@ -226,7 +226,7 @@ async def embeddings(request: Request):
 # ── Text-to-speech (Piper) ────────────────────────────────────────────────────
 # Not an Ollama capability — Piper is a standalone local engine. Exposed in the
 # OpenAI /v1/audio/speech shape so any client (incl. mantel) works unmodified.
-# Voices are provisioned by `hearth voice <id>` into ~/.local/share/finterm/piper.
+# Voices are provisioned by `hearth voice <id>` into paths.voices_dir("piper").
 
 
 def _piper_bin() -> str | None:
@@ -245,31 +245,29 @@ def _piper_bin() -> str | None:
     return None
 
 
-def _voice_dir() -> Path:
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "finterm" / "piper"
+def _voices() -> dict[str, Path]:
+    """Piper voices by id, hearth's own folder first (see paths.voice_dirs)."""
+    out: dict[str, Path] = {}
+    for d in paths.voice_dirs("piper"):
+        for p in sorted(d.glob("*.onnx")) if d.is_dir() else []:
+            out.setdefault(p.stem, p)
+    return dict(sorted(out.items()))
 
 
 def _find_voice(voice: str | None) -> Path | None:
     """Resolve a Piper voice id (e.g. 'en_US-amy-medium') to its .onnx. With no
     voice requested, default to English — NOT whatever sorts first alphabetically
     (that was 'de_DE-…', so default read-aloud came out German)."""
-    d = _voice_dir()
+    have = _voices()
     if isinstance(voice, str) and voice:  # JSON may carry any type here
-        name = os.path.basename(voice)  # basename only — never escape the voice dir
-        if name:
-            p = d / (name if name.endswith(".onnx") else f"{name}.onnx")
-            if p.exists():
-                return p
+        name = voice.replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".onnx")
+        if name in have:
+            return have[name]
     default = os.environ.get("HEARTH_TTS_VOICE", "en_US-amy-medium")
-    p = d / f"{default}.onnx"
-    if p.exists():
-        return p
-    en = sorted(d.glob("en_*.onnx"))   # any English voice next
-    if en:
-        return en[0]
-    onnx = sorted(d.glob("*.onnx"))
-    return onnx[0] if onnx else None
+    if default in have:
+        return have[default]
+    english = [p for v, p in have.items() if v.startswith("en_")]  # any English voice next
+    return (english or list(have.values()) or [None])[0]
 
 
 class _ClientGone(Exception):
@@ -368,8 +366,7 @@ async def audio_voices():
             voices.append({"id": vid, "model": "kokoro", "label": label})
         # What /audio/speech uses for a Kokoro request naming no voice.
         default = {"model": "kokoro", "id": kokoro_tts.DEFAULT_VOICE}
-    d = _voice_dir()
-    for p in sorted(d.glob("*.onnx")) if d.is_dir() else []:
+    for p in _voices().values():
         if p.name.startswith("en_"):  # read-aloud speaks English text
             voices.append({"id": p.stem, "model": "piper",
                            "label": f"{p.stem.split('-')[1].capitalize()} — Piper, fast ({p.stem.split('-')[0]})"

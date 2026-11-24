@@ -42,7 +42,7 @@ def engines(monkeypatch, tmp_path):
     monkeypatch.setattr(kokoro_tts.engine, "synth", kokoro_synth)
     monkeypatch.setattr(tts.pool, "synth", piper_synth)
     monkeypatch.setattr(v1, "_piper_bin", lambda: "/bin/piper")
-    monkeypatch.setattr(v1, "_voice_dir", lambda: tmp_path)
+    monkeypatch.setattr(v1.paths, "voice_dirs", lambda engine: [tmp_path])
     return calls
 
 
@@ -259,7 +259,7 @@ def test_broken_kokoro_install_falls_back_to_piper(monkeypatch, tmp_path):
     monkeypatch.setattr(kokoro_tts, "engine", kokoro_tts.KokoroEngine())
     monkeypatch.setattr(tts.pool, "synth", piper_synth)
     monkeypatch.setattr(v1, "_piper_bin", lambda: "/bin/piper")
-    monkeypatch.setattr(v1, "_voice_dir", lambda: tmp_path)
+    monkeypatch.setattr(v1.paths, "voice_dirs", lambda engine: [tmp_path])
     r = _client().post("/v1/audio/speech", json={"model": "kokoro", "voice": "af_heart", "input": "hi"})
     assert r.status_code == 200
     assert r.headers["X-Hearth-TTS-Engine"] == "piper"

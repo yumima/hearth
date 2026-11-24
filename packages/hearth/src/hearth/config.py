@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 
 import yaml
 
+from . import paths
+
 # Role names finterm (and other consumers) address. Keeping the set closed
 # means an OpenAI-SDK client that sends model="primary_chat" always resolves.
 ROLE_NAMES = ("primary_chat", "fast_chat", "coding", "embedding", "stt", "vision")
@@ -51,7 +53,7 @@ def config_path() -> Path:
     env = os.environ.get("HEARTH_CONFIG")
     if env:
         return Path(env).expanduser()
-    return Path(os.environ.get("HEARTH_HOME", "~/.hearth")).expanduser() / "config.yaml"
+    return paths.home() / "config.yaml"
 
 
 @dataclass
@@ -62,6 +64,7 @@ class Backend:
     api_key: str = ""       # literal key for an "openai" backend (avoid if possible)
     api_key_env: str = ""   # OR the name of an env var holding it (preferred — keeps
                             # the secret out of config.yaml)
+    models_dir: str = ""    # an Ollama of hearth's own: where it keeps its models
 
     def resolve_api_key(self) -> str:
         """The effective API key: a literal one wins, else the named env var."""
@@ -238,7 +241,8 @@ class Config:
             "backends": {
                 name: {"type": b.type, "base_url": b.base_url,
                        **({"api_key": b.api_key} if b.api_key else {}),
-                       **({"api_key_env": b.api_key_env} if b.api_key_env else {})}
+                       **({"api_key_env": b.api_key_env} if b.api_key_env else {}),
+                       **({"models_dir": b.models_dir} if b.models_dir else {})}
                 for name, b in self.backends.items()
             },
             "roles": {
@@ -283,7 +287,7 @@ def load(create: bool = True) -> Config:
     bind = raw.get("bind", {})
     backends = {
         name: Backend(name, b.get("type", "ollama"), b["base_url"],
-                      b.get("api_key", ""), b.get("api_key_env", ""))
+                      b.get("api_key", ""), b.get("api_key_env", ""), b.get("models_dir", ""))
         for name, b in (raw.get("backends") or {}).items()
     }
     if not backends:

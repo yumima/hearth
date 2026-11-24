@@ -42,6 +42,18 @@ def _cfg(request: Request) -> cfgmod.Config:
     return request.app.state.cfg
 
 
+@router.post("/shutdown")
+async def shutdown(request: Request):
+    """End this gateway as `hearth stop` means it: in order, its Ollama with it.
+    (A signal does that on Linux and macOS; Windows has none that reaches a
+    process without a console.)"""
+    end = request.app.state.shutdown
+    if end is None:
+        return JSONResponse({"error": "this gateway is not run by `hearth start`"}, 409)
+    end()
+    return {"stopping": True}
+
+
 @router.get("/health")
 async def health(request: Request):
     backends = {}

@@ -212,3 +212,37 @@ def test_relative_paths_still_name_the_same_files(home, tmp_path, monkeypatch):
     assert proc.wait(20) == 0
     assert background.log_path().read_text().split() == [
         str(tmp_path / "h"), str(tmp_path / "src") + os.pathsep + "/abs"]
+
+
+def test_stop_ends_it_in_order(home, tmp_path):
+    """Asked over HTTP, as Windows has to be; its atexit (Ollama) runs."""
+    assert background.start(home, [*EXEC, "start", "--no-manage"])[0]
+    pid = int((tmp_path / "hearth.pid").read_text())
+    r = subprocess.run([*EXEC, "stop"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert not cli.procs.alive(pid)
+    assert "Finished server process" in background.log_path().read_text()  # in order, not killed
+    r = subprocess.run([*EXEC, "stop"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and "no running hearth gateway" in r.stderr
+
+
+def test_stop_does_not_end_a_process_that_only_has_its_pid(home, tmp_path):
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (tmp_path / "hearth.pid").write_text(str(other.pid))
+        # (its command line must not name hearth; tmp_path does not)
+        r = subprocess.run([*EXEC, "stop"], capture_output=True, text=True, timeout=60)
+        assert r.returncode == 1 and "stale pidfile" in r.stderr
+        assert other.poll() is None
+    finally:
+        other.kill()
+
+
+def test_shutdown_of_an_app_nobody_serves():
+    from fastapi.testclient import TestClient
+
+    from hearth.app import create_app
+
+    c = TestClient(create_app(cfgmod.default_config(), backends_override={}), base_url="http://localhost")
+    assert c.post("/admin/shutdown").status_code == 409
+    assert c.post("/admin/shutdown", headers={"origin": "https://evil.example"}).status_code == 403

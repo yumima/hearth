@@ -11,9 +11,7 @@ import atexit
 import errno
 import json
 import os
-import re
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -23,7 +21,7 @@ from pathlib import Path
 import httpx
 
 from . import config as cfgmod
-from . import hardware, ollama_supervisor
+from . import hardware, ollama_supervisor, paths, procs
 from .background import gateway_identity as _gateway_identity
 
 
@@ -37,55 +35,10 @@ def _pid_path() -> Path:
 
 
 def _pid_looks_like_hearth(pid: int) -> bool:
-    """Best-effort check that `pid` is a hearth gateway before we signal it,
-    so a stale pidfile (after SIGKILL/crash) + PID reuse can't kill an
-    unrelated process. On non-Linux (no /proc) we can't introspect — trust the
-    pidfile."""
-    proc = Path(f"/proc/{pid}/cmdline")
-    if not proc.exists():
-        return True
-    try:
-        cl = proc.read_bytes().replace(b"\0", b" ").decode("utf-8", "ignore")
-    except OSError:
-        return True
+    """Is `pid` a hearth gateway? Asked before ending it: a pidfile left by a
+    killed one may name another program's process by now."""
+    cl = procs.command_line(pid)
     return "hearth" in cl or "uvicorn" in cl
-
-
-def _pid_on_port(port: int) -> int | None:
-    """Best-effort: PID listening on `port`, so `stop` can find a gateway that
-    wasn't started via this CLI (no pidfile) — e.g. `python -m hearth start`.
-    Tries `ss` then `lsof`; returns None if neither is available or nothing is
-    listening. Without elevated privileges this only sees same-user processes,
-    which is all we need (single-user, loopback)."""
-    if shutil.which("ss"):
-        try:
-            out = subprocess.run(["ss", "-ltnHp", f"sport = :{port}"],
-                                 capture_output=True, text=True, timeout=4.0, check=False)
-            m = re.search(r"pid=(\d+)", out.stdout)
-            if m:
-                return int(m.group(1))
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    if shutil.which("lsof"):
-        try:
-            out = subprocess.run(["lsof", f"-tiTCP:{port}", "-sTCP:LISTEN"],
-                                 capture_output=True, text=True, timeout=4.0, check=False)
-            for tok in out.stdout.split():
-                if tok.isdigit():
-                    return int(tok)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    return None
-
-
-def _pid_cmdline(pid: int) -> str:
-    """Short command line of `pid`, for naming whoever holds our port. Empty
-    when we can't read it (no /proc, or another user's process)."""
-    try:
-        cl = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
-    except OSError:
-        return ""
-    return cl.decode("utf-8", "ignore").strip()[:90]
 
 
 def _listen_socket(host: str, port: int) -> socket.socket:
@@ -218,9 +171,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     except OSError as exc:
         where = f"http://{cfg.bind_host}:{cfg.bind_port}"
         if exc.errno == errno.EADDRINUSE:
-            pid = _pid_on_port(cfg.bind_port)
+            pid = procs.listening_on(cfg.bind_port)
             who = f" by pid {pid}" if pid else ""
-            cl = _pid_cmdline(pid) if pid else ""
+            cl = procs.command_line(pid)[:90] if pid else ""
             print(f"[hearth] {where} is already in use{who} — not starting."
                   + (f"\n         holder: {cl}" if cl else "")
                   + "\n         stop the gateway that holds it (`hearth stop`, or "
@@ -233,9 +186,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     # Bring up Ollama unless told not to.
     ollama = cfg.backends.get("ollama")
     if ollama and not args.no_manage:
-        proc = ollama_supervisor.start(ollama.base_url)
-        if proc is not None:
-            print(f"[ollama] started ({ollama.base_url})")
+        if ollama_supervisor.Supervisor(ollama.base_url, ollama.models_dir).start():
+            print(f"[ollama] started ({ollama.base_url})" if ollama_supervisor.is_up(ollama.base_url) else
+                  f"[ollama] not up yet ({ollama.base_url}) — it is started again as it ends; "
+                  f"log: {ollama_supervisor.log_path()}")
         elif ollama_supervisor.is_up(ollama.base_url):
             print(f"[ollama] already running ({ollama.base_url})")
             # Only a daemon hearth starts gets these, and the recommended contexts
@@ -244,7 +198,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                   "OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0", file=sys.stderr)
         else:
             print(
-                f"[ollama] WARNING not running and no binary found at {ollama.base_url}; "
+                f"[ollama] WARNING not running and no program found at {ollama.base_url}; "
                 "chat/embeddings will be unavailable until it's up",
                 file=sys.stderr,
             )
@@ -283,14 +237,16 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     app = create_app(cfg, allow_any_host=allow_any_host, api_key=api_key)
     print(f"[hearth] serving OpenAI-compatible API on http://{cfg.bind_host}:{cfg.bind_port}")
-    print(f"[hearth] probe: GET /v1/models   health: GET /admin/health   chat: hearth chat")
+    print("[hearth] probe: GET /v1/models   health: GET /admin/health   chat: hearth chat")
     # server_header=False suppresses uvicorn's own "Server: uvicorn" so our
     # middleware's "Server: hearth/<v>" is the single, clean identity.
     # The socket is already bound (see _listen_socket) — uvicorn serves on it
     # instead of binding its own.
     config = uvicorn.Config(app, host=cfg.bind_host, port=cfg.bind_port,
                             log_level=args.log_level, server_header=False)
-    uvicorn.Server(config).run(sockets=[sock])
+    server = uvicorn.Server(config)
+    app.state.shutdown = lambda: setattr(server, "should_exit", True)
+    server.run(sockets=[sock])
     return 0
 
 
@@ -383,7 +339,7 @@ def _ensure_ollama(cfg: cfgmod.Config):
     if not ollama:
         return None
     if not ollama_supervisor.is_up(ollama.base_url):
-        ollama_supervisor.start(ollama.base_url)
+        ollama_supervisor.Supervisor(ollama.base_url, ollama.models_dir).start()
         if not ollama_supervisor.is_up(ollama.base_url):
             return None
     return ollama
@@ -402,15 +358,14 @@ def cmd_pull(args: argparse.Namespace) -> int:
 #
 # Speech is part of the local AI runtime, so `hearth setup`/`hearth voice`
 # provision it: install the piper CLI (into hearth's venv, symlinked onto PATH)
-# and download a voice model to ~/.local/share/finterm/piper/, which finterm's
+# and download a voice model to hearth's own folder (paths.voices_dir), where finterm's
 # read-aloud auto-discovers — no manual config.
 
 _DEFAULT_VOICE = "en_US-amy-medium"
 
 
 def _voice_dir() -> Path:
-    """Where finterm auto-discovers Piper voices."""
-    return Path.home() / ".local" / "share" / "finterm" / "piper"
+    return paths.voices_dir("piper")
 
 
 def _voice_url(voice: str, ext: str) -> str:
@@ -550,7 +505,7 @@ def _provision_kokoro() -> bool:
             if r.returncode != 0:
                 print("  pip install kokoro-onnx failed", file=sys.stderr)
                 return False
-        d = kokoro_tts.model_dir()
+        d = paths.voices_dir("kokoro") if not kokoro_tts.override_dir() else kokoro_tts.model_dir()
         d.mkdir(parents=True, exist_ok=True)
         for name, digest in _KOKORO_FILES.items():
             dest = d / name
@@ -935,7 +890,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
         # No (valid) pidfile — the gateway may have been started outside this
         # CLI (e.g. `python -m hearth start`). Find it by the port it serves.
         port = cfgmod.load().bind_port
-        found = _pid_on_port(port)
+        found = procs.listening_on(port)
         if found is not None and _pid_looks_like_hearth(found):
             pid, via = found, f"port {port}"
         else:
@@ -943,17 +898,31 @@ def cmd_stop(args: argparse.Namespace) -> int:
                   f"(no pidfile; nothing hearth-like listening on :{port})",
                   file=sys.stderr)
             return 1
-    try:
-        os.kill(pid, signal.SIGTERM)
-        print(f"stopped hearth gateway (pid {pid}, via {via})")
-    except ProcessLookupError:
-        print("hearth gateway not running (stale reference)")
-    except PermissionError:
-        print(f"cannot signal pid {pid}: permission denied (owned by another user?)",
-              file=sys.stderr)
+    if not _ask_to_stop(cfgmod.load(), pid):
+        procs.end_tree(pid)
+    if procs.alive(pid):
+        print(f"could not stop pid {pid} (another user's?)", file=sys.stderr)
         return 1
+    print(f"stopped hearth gateway (pid {pid}, via {via})")
     pid_file.unlink(missing_ok=True)
     return 0
+
+
+def _ask_to_stop(cfg: cfgmod.Config, pid: int, wait_s: float = 15.0) -> bool:
+    """Have the gateway end itself, its Ollama with it. False: it did not."""
+    if procs.listening_on(cfg.bind_port) not in (pid, None):
+        return False  # another gateway has the configured port
+    try:
+        if httpx.post(f"{_admin_base(cfg)}/admin/shutdown", timeout=3.0).status_code != 200:
+            return False
+    except httpx.HTTPError:
+        return False
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if not procs.alive(pid):
+            return True
+        time.sleep(0.1)
+    return False
 
 
 _CHAT_HELP = """\
@@ -1361,7 +1330,7 @@ def cmd_service(args: argparse.Namespace) -> int:
         except Exception:
             port = 11435
         active = _systemctl("is-active", "--quiet", _UNIT_NAME) == 0
-        if not active and _pid_on_port(port):
+        if not active and procs.listening_on(port):
             print(f"warning: something already serves :{port} (likely a foreground "
                   f"`hearth start`). Stop it first (`hearth stop`), or the service "
                   f"will start, find the port taken, and immediately exit.",
@@ -1385,41 +1354,27 @@ def cmd_service(args: argparse.Namespace) -> int:
     return 2
 
 
-# ---- desktop chat app (clickable window) --------------------------------
-#
-# The terminal client is bare `hearth` (or `hearth chat`). `hearth client` is its
-# GUI counterpart — bare `hearth client` shows the chat UI (served by the gateway
-# at /app) in a chrome-less native window; `hearth client install` registers a
-# clickable app-menu launcher whose icon runs `hearth client open`. There is no
-# `service install` — the engine starts on demand (the window auto-starts it,
-# else `hearth start`).
+# ---- the desktop chat app: mantel ---------------------------------------
 
 
-def _hearth_exec_argv() -> list[str]:
-    """argv prefix to invoke `hearth` from a launcher/subprocess (before the
-    subcommand). Prefers the stable ~/.local/bin/hearth symlink — (re)pointed at
-    the real console script, like the service does — so a venv rebuild or moved
-    checkout doesn't break the launcher. Falls back to `<python> -m hearth`.
-    Returned UNQUOTED: each per-OS launcher quotes it for its own context
-    (POSIX shell, PowerShell, or XDG Exec)."""
-    if _real_hearth_bin():
-        return [_launcher()]  # stable symlink path (and points it at the real bin)
-    return [os.path.abspath(sys.executable), "-m", "hearth"]
+def _mantel() -> str | None:
+    """mantel's program: where the installer puts it, beside this one, or on PATH."""
+    exe = "mantel.exe" if sys.platform == "win32" else "mantel"
+    for p in (paths.data_dir() / "bin" / exe, Path(os.path.abspath(sys.executable)).with_name(exe)):
+        if p.is_file():
+            return str(p)
+    return shutil.which("mantel")
 
 
 def cmd_client(args: argparse.Namespace) -> int:
-    from . import desktop
-
-    # Bare `hearth client` opens the window; sub-actions manage the launcher.
+    """hearth's chat window is mantel, a program of its own."""
+    program = _mantel()
+    if program is None:
+        print("mantel, hearth's chat window, is not installed — run hearth's installer again and "
+              "choose it, or use `hearth chat` here", file=sys.stderr)
+        return 1
     action = getattr(args, "action", None) or "open"
-    if action == "open":
-        return desktop.open_window(hearth_exec=_hearth_exec_argv())
-    if action == "install":
-        return desktop.install(_hearth_exec_argv())
-    if action == "uninstall":
-        return desktop.uninstall()
-    print(f"unknown client action {action!r}", file=sys.stderr)
-    return 2
+    return subprocess.run([program, *([] if action == "open" else [action])]).returncode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1548,11 +1503,11 @@ def build_parser() -> argparse.ArgumentParser:
                       help="with 'on': also start at boot, before login (linger)")
     sp.set_defaults(func=cmd_service)
 
-    cp = sub.add_parser("client", help="desktop chat app — open the window, or install/uninstall the launcher")
+    cp = sub.add_parser("client", help="open the chat window (mantel), or add/remove its launcher")
     cp_sub = cp.add_subparsers(dest="action")
-    cp_sub.add_parser("open", help="open the desktop chat window (starts the engine if needed)")
-    cp_sub.add_parser("install", help="install the desktop app (adds it to your app menu)")
-    cp_sub.add_parser("uninstall", help="remove the desktop app")
+    cp_sub.add_parser("open", help="open the chat window")
+    cp_sub.add_parser("install", help="add mantel to your app menu")
+    cp_sub.add_parser("uninstall", help="remove it from your app menu")
     cp.set_defaults(func=cmd_client, action=None)  # bare `hearth client` → open
     return p
 

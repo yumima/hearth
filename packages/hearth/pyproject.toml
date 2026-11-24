@@ -11,18 +11,11 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "pyyaml>=6.0",
+    "psutil>=6.0",              # other processes and memory, on every system
     "python-multipart>=0.0.9",  # multipart parsing for /v1/audio/transcriptions
 ]
 
 [project.optional-dependencies]
-gui = [
-    # Desktop chat window (`hearth client`). pywebview wraps each OS's NATIVE
-    # webview — WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux —
-    # so there's no bundled browser; the chat UI is served by the gateway at
-    # /app and shown in a chrome-less window. Optional: without it, `hearth client`
-    # falls back to a Chromium/Edge --app window or the default browser.
-    "pywebview>=5.0",
-]
 stt = [
     # M2: faster-whisper for /v1/audio/transcriptions. Installed into a
     # separate interpreter when the host Python lacks ctranslate2 wheels.
@@ -53,10 +46,6 @@ version = { attr = "hearth.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-# Ship the chat UI + icon with the wheel (non-Python assets under the package).
-hearth = ["webui/*.html", "assets/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

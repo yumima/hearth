@@ -17,7 +17,7 @@ from . import config as cfgmod
 from . import tts
 from . import kokoro_tts
 from .middleware import SecurityMiddleware
-from .routes import admin, v1, webui
+from .routes import admin, v1
 
 
 def create_app(
@@ -63,10 +63,10 @@ def create_app(
     app = FastAPI(title="hearth", version=__version__, lifespan=lifespan)
     app.state.cfg = cfg
     app.state.backends = registry
+    app.state.shutdown = None  # `hearth start` sets it: /admin/shutdown ends the server
     app.add_middleware(
         SecurityMiddleware, allow_any_host=allow_any_host, api_key=api_key
     )
     app.include_router(v1.router, prefix="/v1")
     app.include_router(admin.router, prefix="/admin")
-    app.include_router(webui.router)  # GET /app (chat UI) + / → /app
     return app

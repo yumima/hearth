@@ -348,17 +348,6 @@ def test_turning_automatic_search_off_still_keeps_our_chats_off_the_web(monkeypa
     assert cfgmod.load().search.chat is False
 
 
-def test_the_chat_window_asks_as_configured():
-    for chat in (True, False):
-        cfg = cfgmod.default_config()
-        cfg.search.chat = chat
-        app = create_app(cfg, backends_override={"ollama": FakeBackend()})
-        r = TestClient(app, base_url="http://localhost").get("/app")
-        assert f"const WEB_SEARCH = {str(chat).lower()};" in r.text
-        assert "req.web_search = WEB_SEARCH" in r.text and "__WEB_SEARCH__" not in r.text
-        assert r.headers["x-frame-options"] == "DENY"
-
-
 def test_the_terminal_chat_asks_as_configured(monkeypatch, capsys):
     import io
 

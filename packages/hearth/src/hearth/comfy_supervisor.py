@@ -18,13 +18,14 @@ import asyncio
 import atexit
 import os
 import shlex
-import signal
 import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+
+from . import procs
 
 _URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
 # Blackwell (sm_120) produces black/NaN images in fp16; --bf16-unet --fp32-vae
@@ -67,7 +68,7 @@ def _resolve_python(d: Path) -> str:
     env = os.environ.get("HEARTH_COMFY_PYTHON")
     if env:
         return env
-    for c in (d / "venv" / "bin" / "python", d / ".venv" / "bin" / "python"):
+    for c in (d / v / sub for v in ("venv", ".venv") for sub in ("bin/python", "Scripts/python.exe")):
         if c.exists():
             return str(c)
     return "python3"
@@ -108,7 +109,7 @@ async def ensure_up() -> bool:
         global _proc
         try:
             _proc = subprocess.Popen(
-                cmd, cwd=str(d), start_new_session=True,
+                cmd, cwd=str(d), **procs.own_group(),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
         except OSError:
             _proc = None
@@ -192,21 +193,7 @@ async def _stop() -> None:
     p, _proc = _proc, None
     if p is None or p.poll() is not None:
         return
-    try:
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        try:
-            p.terminate()
-        except OSError:
-            return
-    for _ in range(50):                # up to ~10s for a graceful exit
-        if p.poll() is not None:
-            return
-        await asyncio.sleep(0.2)
-    try:
-        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
+    await asyncio.to_thread(procs.end_tree, p.pid)
 
 
 def shutdown() -> None:
@@ -215,10 +202,7 @@ def shutdown() -> None:
     p = _proc
     if p is None or p.poll() is not None:
         return
-    try:
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    procs.end_tree(p.pid, wait_s=3)
 
 
 atexit.register(shutdown)

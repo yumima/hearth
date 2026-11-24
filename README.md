@@ -13,10 +13,15 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`fccccf8`](https://github.com/yumima/hearth/commit/fccccf8) layout: hearth under packages/
 - [`279c827`](https://github.com/yumima/hearth/commit/279c827) start --background: what the review found
+- [`6d22b0c`](https://github.com/yumima/hearth/commit/6d22b0c) **ci:** the engine branch too
 - [`876842f`](https://github.com/yumima/hearth/commit/876842f) **ci:** the engine branch too
+- [`1edae77`](https://github.com/yumima/hearth/commit/1edae77) Voice and web search: what the review found
 - [`83f1dc3`](https://github.com/yumima/hearth/commit/83f1dc3) start --background: the gateway outlives whoever started it
+- [`0e41e46`](https://github.com/yumima/hearth/commit/0e41e46) Fresh installs work again (mcp 1.x); ask hearth for web search
 - [`efbb107`](https://github.com/yumima/hearth/commit/efbb107) 0.2.0: web search only for a request that asks; other web pages are refused
+- [`0db91e9`](https://github.com/yumima/hearth/commit/0db91e9) voice: choose the English voice; speech goes to a voice that can pronounce it
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

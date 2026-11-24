@@ -1,30 +1,40 @@
-"""Locate and (optionally) supervise a user-local Ollama daemon.
+"""Locate, run and keep an eye on Ollama.
 
-Design doc §4.1/§N5: backends are external processes. By default Hearth
-*discovers* a running Ollama; with supervision on (the bundled-binary case,
-which is our install path here) it starts ``ollama serve`` itself and stops
-it on exit, so a clean ``hearth start`` brings up the whole stack.
+Design doc §4.1/§N5: backends are external processes. An Ollama that already
+answers at the configured address is used and left alone. Otherwise hearth
+starts one, keeps its output, starts it again when it dies, and ends it on exit.
 """
 
 from __future__ import annotations
 
 import atexit
+import json
+import logging
 import os
-import signal
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
+from shutil import which
+from urllib.parse import urlsplit
 
 import httpx
 
-# Where our user-local install puts the binary (vendor/ollama/bin/ollama).
-_VENDOR = Path(__file__).resolve().parents[2] / "vendor" / "ollama" / "bin" / "ollama"
+from . import paths, procs
 
-# The context window we start Ollama with (see start()). Exported because the
+log = logging.getLogger("hearth.ollama")
+
+# The context window we start Ollama with (see _env()). Exported because the
 # gateway has to size tool results against it: Ollama silently drops the OLDEST
 # messages when a request overruns the window, so an oversized fetched page
 # doesn't error — it quietly deletes the system prompt and the user's question.
 DEFAULT_CONTEXT_LENGTH = 8192
+
+_LOG_MAX = 5_000_000
+_LOOK_S = 3.0             # how often the watcher looks
+_BACKOFF_S = (1, 2, 5, 15, 60)
+_SETTLED_S = 300.0        # up this long, and the next failure is a new one
 
 
 def effective_default_context() -> int:
@@ -38,13 +48,15 @@ def effective_default_context() -> int:
 
 
 def ollama_binary() -> str | None:
+    """HEARTH_OLLAMA_BIN, the installed one, a source checkout's vendor/, PATH."""
     env = os.environ.get("HEARTH_OLLAMA_BIN")
     if env and Path(env).exists():
         return env
-    if _VENDOR.exists():
-        return str(_VENDOR)
-    from shutil import which
-
+    exe = "ollama.exe" if sys.platform == "win32" else "ollama"
+    for root in (paths.data_dir() / "ollama", paths.find_in_checkout("vendor", "ollama")):
+        for rel in ("bin", ""):  # the Linux archive has bin/, the others do not
+            if root is not None and (p := root / rel / exe).is_file():
+                return str(p)
     return which("ollama")
 
 
@@ -55,18 +67,19 @@ def is_up(base_url: str, timeout: float = 1.5) -> bool:
         return False
 
 
-def start(base_url: str, wait_s: float = 30.0) -> subprocess.Popen | None:
-    """Start ``ollama serve`` if it isn't already up. Returns the process we
-    started (so the caller can stop it), or None if Ollama was already up or
-    no binary is available."""
-    if is_up(base_url):
-        return None
-    binary = ollama_binary()
-    if not binary:
-        return None
+def log_path() -> Path:
+    return paths.home() / "ollama.log"
+
+
+def _pid_path() -> Path:
+    return paths.home() / "ollama.pid"
+
+
+def _env(base_url: str, models_dir: str) -> dict:
     # OLLAMA_HOST controls the daemon's bind. Mirror our configured base_url.
-    host = base_url.split("://", 1)[-1]
-    env = {**os.environ, "OLLAMA_HOST": host}
+    env = {**os.environ, "OLLAMA_HOST": urlsplit(base_url).netloc}
+    if models_dir:
+        env["OLLAMA_MODELS"] = models_dir
     # Raise the default model context window above Ollama's 4096. Tool-heavy chat
     # (curated MCP tool schemas + history + tool results) overruns 4096 and the
     # model loses the tools — which broke tool-calling. This is only the floor for
@@ -85,28 +98,123 @@ def start(base_url: str, wait_s: float = 30.0) -> subprocess.Popen | None:
     # pause between messages doesn't trigger a ~15-20s cold reload. (Image-gen still
     # evicts explicitly via keep_alive:0, then re-warms — see routes/v1.py.)
     env.setdefault("OLLAMA_KEEP_ALIVE", os.environ.get("HEARTH_KEEP_ALIVE", "30m"))
-    proc = subprocess.Popen(
-        [binary, "serve"],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    return env
 
-    def _stop():
-        if proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                proc.terminate()
 
-    atexit.register(_stop)
+class Supervisor:
+    """One Ollama, ours. start() → watch() → stop()."""
 
-    deadline = time.monotonic() + wait_s
-    while time.monotonic() < deadline:
-        if is_up(base_url):
-            return proc
-        if proc.poll() is not None:
-            return None  # died on startup
-        time.sleep(0.5)
-    return proc  # may still be warming; caller surfaces health
+    def __init__(self, base_url: str, models_dir: str = ""):
+        self.base_url = base_url
+        self.models_dir = models_dir
+        self._pid = 0
+        self._since = 0.0
+        self._failures = 0
+        self._stopping = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._proc: subprocess.Popen | None = None
+
+    # ── one start ────────────────────────────────────────────────────────────
+    def _spawn(self) -> bool:
+        binary = ollama_binary()
+        if not binary:
+            return False
+        p = log_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if p.stat().st_size > _LOG_MAX:
+                p.replace(p.with_suffix(".log.1"))
+        except OSError:
+            pass
+        try:
+            with open(p, "ab") as out:
+                self._proc = subprocess.Popen(
+                    [binary, "serve"], env=_env(self.base_url, self.models_dir),
+                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **procs.own_group())
+        except OSError as e:
+            log.error("could not run %s: %s", binary, e)
+            return False
+        self._pid, self._since = self._proc.pid, time.monotonic()
+        try:
+            _pid_path().write_text(json.dumps({"pid": self._pid, "started": procs.started_at(self._pid)}))
+        except OSError:
+            pass
+        return True
+
+    def _ended(self) -> bool:
+        if self._proc is not None:
+            return self._proc.poll() is not None
+        return not procs.alive(self._pid)
+
+    def _adopt(self) -> bool:
+        """One a hearth that was killed had started: ours to end, still."""
+        try:
+            was = json.loads(_pid_path().read_text())
+            pid, started = int(was["pid"]), float(was["started"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        if not started or procs.started_at(pid) != started or "ollama" not in procs.command_line(pid).lower():
+            return False
+        self._pid, self._since = pid, time.monotonic()
+        return True
+
+    def start(self, wait_s: float = 30.0) -> bool:
+        """Is Ollama ours now, and running? False: one was already up that is
+        not ours, or there is none to run (is_up() tells which)."""
+        if is_up(self.base_url):
+            if not self._adopt():
+                return False
+            log.info("took over the Ollama of an earlier run (pid %s)", self._pid)
+        elif not self._spawn():
+            return False
+        atexit.register(self.stop)
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline and not is_up(self.base_url):
+            if self._ended():
+                break  # the watcher starts it again; what it said is in the log
+            time.sleep(0.5)
+        self._thread = threading.Thread(target=self._watch, name="ollama-watch", daemon=True)
+        self._thread.start()
+        return True
+
+    # ── staying up ───────────────────────────────────────────────────────────
+    def _watch(self) -> None:
+        while not self._stopping.wait(_LOOK_S):
+            if not self._ended():
+                continue
+            if time.monotonic() - self._since > _SETTLED_S:
+                self._failures = 0
+            wait = _BACKOFF_S[min(self._failures, len(_BACKOFF_S) - 1)]
+            self._failures += 1
+            log.error("Ollama ended (exit %s) — starting it again in %s s; its output is in %s",
+                      self._proc.returncode if self._proc else "?", wait, log_path())
+            if self._stopping.wait(wait):
+                return
+            if is_up(self.base_url):
+                # Somebody else's has the address now: theirs to keep up.
+                log.info("another Ollama answers at %s — leaving it alone", self.base_url)
+                self._forget()
+                return
+            self._spawn()
+
+    def _forget(self) -> None:
+        self._pid, self._proc = 0, None
+        _pid_path().unlink(missing_ok=True)
+
+    def stop(self) -> None:
+        self._stopping.set()
+        if self._pid and not self._ended():
+            procs.end_tree(self._pid)
+        if self._pid:
+            self._forget()
+
+
+def last_lines(count: int = 8) -> str:
+    """The end of Ollama's own output, for a person who wants to know why."""
+    try:
+        with open(log_path(), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 8192))
+            return "\n".join(f.read().decode("utf-8", "replace").splitlines()[-count:])
+    except OSError:
+        return ""

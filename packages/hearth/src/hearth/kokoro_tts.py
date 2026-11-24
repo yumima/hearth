@@ -3,7 +3,7 @@
 Piper is fast but sounds synthetic; Kokoro (82M params, Apache-2.0, ONNX) is
 close to human read-aloud quality and still runs ~4x faster than real time on
 a laptop CPU. It is optional: the ``kokoro-onnx`` package plus two model files
-under ``~/.local/share/finterm/kokoro`` (``hearth voice --voice kokoro``
+under ``paths.voices_dir("kokoro")`` (``hearth voice --voice kokoro``
 provisions both). When either is missing, callers fall back to Piper.
 
 One model instance serves every voice (a voice is a 256-float style vector,
@@ -23,6 +23,7 @@ import time
 import wave
 from pathlib import Path
 
+from hearth import paths
 from hearth.speech_text import normalize
 
 MODEL_FILE = "kokoro-v1.0.onnx"
@@ -108,12 +109,17 @@ def trailing_break(text: str) -> int:
     return BREAK_SECTION if n >= 2 else BREAK_PARAGRAPH if n == 1 else BREAK_NONE
 
 
-def model_dir() -> Path:
+def override_dir() -> Path | None:
     override = os.environ.get("HEARTH_KOKORO_DIR")
-    if override:
-        return Path(override)
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "finterm" / "kokoro"
+    return Path(override) if override else None
+
+
+def model_dir() -> Path:
+    """Where its files are: the first of hearth's folders that has them all."""
+    if (d := override_dir()) is not None:
+        return d
+    dirs = paths.voice_dirs("kokoro")
+    return next((d for d in dirs if (d / MODEL_FILE).is_file() and (d / VOICES_FILE).is_file()), dirs[0])
 
 
 def installed() -> bool:

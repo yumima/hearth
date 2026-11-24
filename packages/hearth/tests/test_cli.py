@@ -1,4 +1,4 @@
-"""CLI command-surface + desktop-launcher tests.
+"""CLI command-surface tests.
 
 Locks the surface so the recurring app→client→gui→client renames can't silently
 break dispatch or the launcher's open-the-window subcommand again. No window is
@@ -9,11 +9,12 @@ tmp HOME/XDG dir.
 from __future__ import annotations
 
 import socket
+import sys
 
 import httpx
 import pytest
 
-from hearth import cli, desktop
+from hearth import cli
 from hearth.cli import build_parser
 
 
@@ -50,35 +51,36 @@ def test_removed_commands_are_rejected(argv):
         build_parser().parse_args(argv)
 
 
-# ── launcher: every OS opens the window via `<hearth> client open` ─────────────
+# ── the chat window is mantel ─────────────────────────────────────────────────
 
-def test_launch_argv_is_client_open():
-    assert desktop._launch_argv(["/x/hearth"]) == ["/x/hearth", "client", "open"]
-    assert desktop._launch_argv(["/usr/bin/python", "-m", "hearth"]) == \
-        ["/usr/bin/python", "-m", "hearth", "client", "open"]
-
-
-def test_windows_lnk_target_and_arguments():
-    # _install_windows sets TargetPath = argv[0], Arguments = the rest.
-    argv = desktop._launch_argv(["C:/h/hearth.exe"])
-    assert argv[0] == "C:/h/hearth.exe"
-    assert " ".join(argv[1:]) == "client open"
+def _client_runs(monkeypatch, program, *argv):
+    ran = []
+    monkeypatch.setattr(cli, "_mantel", lambda: program)
+    monkeypatch.setattr(cli.subprocess, "run", lambda a, **k: ran.append(a) or type("R", (), {"returncode": 7})())
+    return cli.main(["client", *argv]), ran
 
 
-def test_linux_desktop_entry_runs_client_open(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    assert desktop._install_linux(["/opt/hearth/bin/hearth"]) == 0
-    entry = (tmp_path / "applications" / "hearth-chat.desktop").read_text()
-    assert "Exec=/opt/hearth/bin/hearth client open" in entry
-    assert "Icon=" in entry
+def test_client_is_mantel(monkeypatch):
+    assert _client_runs(monkeypatch, "/x/mantel") == (7, [["/x/mantel"]])
+    assert _client_runs(monkeypatch, "/x/mantel", "open") == (7, [["/x/mantel"]])
+    assert _client_runs(monkeypatch, "/x/mantel", "install") == (7, [["/x/mantel", "install"]])
+    assert _client_runs(monkeypatch, "/x/mantel", "uninstall") == (7, [["/x/mantel", "uninstall"]])
 
 
-def test_macos_app_launcher_runs_client_open(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))            # Path.home() → tmp
-    assert desktop._install_macos(["/opt/hearth/bin/hearth"]) == 0
-    launcher = (tmp_path / "Applications" / "Hearth.app" / "Contents" / "MacOS"
-                / "hearth-chat").read_text()
-    assert launcher.strip().endswith("exec /opt/hearth/bin/hearth client open")
+def test_client_without_mantel_says_so(monkeypatch, capsys):
+    assert _client_runs(monkeypatch, None) == (1, [])
+    assert "hearth chat" in capsys.readouterr().err
+
+
+def test_mantel_is_looked_for_where_the_installer_puts_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("HEARTH_DATA", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "executable", str(tmp_path / "venv" / "python"))
+    monkeypatch.setattr(cli.shutil, "which", lambda n: None)
+    assert cli._mantel() is None
+    exe = tmp_path / "bin" / ("mantel.exe" if sys.platform == "win32" else "mantel")
+    exe.parent.mkdir()
+    exe.write_text("")
+    assert cli._mantel() == str(exe)
 
 
 def test_swap_alias_accepts_context_like_bind():
