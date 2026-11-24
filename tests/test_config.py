@@ -5,7 +5,7 @@ def test_default_config_has_roles_and_ollama_backend():
     cfg = cfgmod.default_config()
     assert "ollama" in cfg.backends
     assert cfg.backends["ollama"].type == "ollama"
-    assert cfg.roles["primary_chat"].model.startswith("bonsai-2")
+    assert cfg.roles["primary_chat"].model.endswith("Qwen3.8-27B-GGUF:UD-IQ2_S")
     assert cfg.bind_port == 11435
 
 
@@ -82,3 +82,20 @@ def test_role_is_remote():
     cfg.roles["primary_chat"] = cfgmod.RoleBinding(model="gemini-3.7-flash", backend="cloud")
     assert cfg.role_is_remote("primary_chat")
     assert not cfg.role_is_remote("fast_chat")      # still local
+
+
+def test_literal_model_id_borrows_a_role_context():
+    # The same model at two contexts reloads on every switch.
+    cfg = cfgmod.default_config()
+    cfg.roles["primary_chat"] = cfgmod.RoleBinding("some-model", "ollama", 32768)
+    cfg.roles["fast_chat"] = cfgmod.RoleBinding("some-model", "ollama", 16384)
+    assert cfg.context_for("some-model") == 32768
+    assert cfg.context_for("fast_chat") == 16384
+    assert cfg.context_for("not-bound-to-any-role") == 0
+
+
+def test_context_of_model_can_exclude_a_role():
+    cfg = cfgmod.default_config()
+    cfg.roles = {"coding": cfgmod.RoleBinding("some-model", "ollama", 32768)}
+    assert cfg.context_of_model("some-model", exclude_role="coding") == 0
+

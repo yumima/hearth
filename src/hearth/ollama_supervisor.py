@@ -27,6 +27,16 @@ _VENDOR = Path(__file__).resolve().parents[2] / "vendor" / "ollama" / "bin" / "o
 DEFAULT_CONTEXT_LENGTH = 8192
 
 
+def effective_default_context() -> int:
+    """The daemon-wide window for requests with no context of their own: what
+    start() launches with, an operator's OLLAMA_CONTEXT_LENGTH included."""
+    try:
+        value = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", ""))
+    except ValueError:
+        return DEFAULT_CONTEXT_LENGTH
+    return value if value > 0 else DEFAULT_CONTEXT_LENGTH
+
+
 def ollama_binary() -> str | None:
     env = os.environ.get("HEARTH_OLLAMA_BIN")
     if env and Path(env).exists():

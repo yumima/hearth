@@ -191,3 +191,80 @@ def test_start_tip_carries_the_recommended_context(tmp_path, monkeypatch, capsys
         cli.cmd_start(_start_args(f"127.0.0.1:{port}", no_manage=True))
 
     assert "hearth bind primary_chat some-model:1b --context 16384" in capsys.readouterr().err
+
+
+# ── `hearth bind` ─────────────────────────────────────────────────────────────
+
+def _bind(*argv):
+    return cli.cmd_bind(build_parser().parse_args(["bind", *argv]))
+
+
+def _gateway_says(monkeypatch, status):
+    monkeypatch.setattr(cli.httpx, "put", lambda url, **kw: httpx.Response(
+        status, request=httpx.Request("PUT", url)))
+
+
+def test_bind_reports_when_the_gateway_refuses(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
+    _gateway_says(monkeypatch, 401)
+    assert _bind("primary_chat", "some-model") == 0
+    out, err = capsys.readouterr()
+    assert "applied to running gateway" not in out
+    assert "HTTP 401" in err
+
+
+def test_bind_reports_when_the_gateway_applies(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
+    _gateway_says(monkeypatch, 200)
+    _bind("primary_chat", "some-model")
+    assert "applied to running gateway" in capsys.readouterr().out
+
+
+def test_bind_rejects_a_negative_context_without_saving(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
+    before = cli.cfgmod.load().roles["primary_chat"].model
+    assert _bind("primary_chat", "some-model", "--context", "-1") == 2
+    assert cli.cfgmod.load().roles["primary_chat"].model == before
+
+
+def test_bind_matches_the_context_of_other_roles_on_the_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
+    _gateway_says(monkeypatch, 200)
+    _bind("primary_chat", "some-model", "--context", "32768")
+    _bind("fast_chat", "some-model")
+    assert cli.cfgmod.load().roles["fast_chat"].context == 32768
+
+
+def test_bind_explicit_zero_context_still_clears(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
+    _gateway_says(monkeypatch, 200)
+    _bind("primary_chat", "some-model", "--context", "32768")
+    _bind("fast_chat", "some-model", "--context", "0")
+    assert cli.cfgmod.load().roles["fast_chat"].context == 0
+
+
+def test_pull_refused_by_old_daemon_names_the_version(monkeypatch, capsys):
+    class Refused:
+        status_code = 412
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_lines(self):
+            return iter(())
+
+        def read(self):
+            return b""
+
+        def json(self):
+            return {"error": "requires a newer version of Ollama"}
+
+    monkeypatch.setattr(cli.httpx, "stream", lambda *a, **kw: Refused())
+    monkeypatch.setattr(cli.httpx, "get", lambda url, **kw: httpx.Response(200, json={"version": "0.30.4"}))
+    assert cli._pull_model("http://127.0.0.1:1", "new-model") == 1
+    err = capsys.readouterr().err
+    assert "requires a newer version" in err and "Ollama 0.30.4" in err
+

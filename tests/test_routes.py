@@ -80,6 +80,9 @@ class FakeBackend:
 
 def _client(backend=None, **kw):
     cfg = cfgmod.default_config()
+    # These tests pin the routing without a role context, which forces the native path.
+    for role in cfg.roles.values():
+        role.context = 0
     backend = backend or FakeBackend()
     app = create_app(cfg, allow_any_host=True, backends_override={"ollama": backend}, **kw)
     return TestClient(app), backend
@@ -221,3 +224,57 @@ def test_warm_chat_loads_at_the_role_context(monkeypatch, tmp_path):
 
 def test_warm_chat_leaves_context_to_the_daemon_when_unset(monkeypatch, tmp_path):
     assert "options" not in _warm_body(monkeypatch, tmp_path, 0)
+
+
+def test_nonstreaming_chat_stops_when_the_client_hangs_up():
+    """Otherwise the abandoned request keeps the model busy and every later
+    prompt queues behind it, which looks like the model not responding."""
+    import asyncio
+
+    class Hangs(FakeBackend):
+        cancelled = False
+
+        async def chat(self, payload):
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                type(self).cancelled = True
+                raise
+
+    cfg = cfgmod.default_config()
+    for role in cfg.roles.values():
+        role.context = 0
+    cfg.search.enabled = False
+    app = create_app(cfg, allow_any_host=True, backends_override={"ollama": Hangs()})
+    body = json.dumps({"model": "primary_chat",
+                       "messages": [{"role": "user", "content": "hi"}]}).encode()
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+             "path": "/v1/chat/completions", "raw_path": b"/v1/chat/completions", "query_string": b"",
+             "root_path": "", "scheme": "http", "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 11435),
+             "headers": [(b"host", b"127.0.0.1:11435"), (b"content-type", b"application/json")]}
+    sent = []
+
+    async def run():
+        first = True
+        hang_up_at = asyncio.get_running_loop().time() + 0.05
+
+        async def receive():
+            nonlocal first
+            if first:
+                first = False
+                return {"type": "http.request", "body": body, "more_body": False}
+            # is_disconnected() polls with an already-cancelled scope, so the
+            # hang-up must be ready without awaiting once it has happened.
+            if asyncio.get_running_loop().time() < hang_up_at:
+                await asyncio.sleep(3600)
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            sent.append(message)
+
+        await asyncio.wait_for(app(scope, receive, send), timeout=5)
+
+    asyncio.run(run())
+    assert Hangs.cancelled
+    assert sent[0]["status"] == 499
+

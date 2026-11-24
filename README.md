@@ -9,12 +9,10 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-11-12)
+## Today's commits (2026-11-23)
 
 Latest first.
 
-- [`1e99e1b`](https://github.com/yumima/hearth/commit/1e99e1b) tts: pauses between sentences scale with the reading speed
-- [`3eda74f`](https://github.com/yumima/hearth/commit/3eda74f) tts: numbers and money read as words; natural pauses between sentences
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

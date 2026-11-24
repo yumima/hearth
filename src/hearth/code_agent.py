@@ -452,5 +452,5 @@ def _context_budget(model: str) -> int:
     ctx = cfg.context_for(model)
     if ctx:
         return ctx
-    from .ollama_supervisor import DEFAULT_CONTEXT_LENGTH
-    return DEFAULT_CONTEXT_LENGTH
+    from .ollama_supervisor import effective_default_context
+    return effective_default_context()

@@ -223,6 +223,10 @@ def cmd_start(args: argparse.Namespace) -> int:
             print(f"[ollama] started ({ollama.base_url})")
         elif ollama_supervisor.is_up(ollama.base_url):
             print(f"[ollama] already running ({ollama.base_url})")
+            # Only a daemon hearth starts gets these, and the recommended contexts
+            # assume them: without q8_0 the KV cache doubles and spills to the CPU.
+            print("[ollama] note: if hearth didn't start this daemon, run it with "
+                  "OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0", file=sys.stderr)
         else:
             print(
                 f"[ollama] WARNING not running and no binary found at {ollama.base_url}; "
@@ -325,12 +329,37 @@ def _pull_model(ollama_base_url: str, model: str) -> int:
                     last = msg
                 if obj.get("error"):
                     print(f"\nerror: {obj['error']}", file=sys.stderr)
+                    print(_ollama_upgrade_hint(ollama_base_url), file=sys.stderr)
                     return 1
+            if r.status_code >= 400:
+                r.read()
+                detail = _pull_error(r)
+                print(f"\npull failed: {detail}", file=sys.stderr)
+                print(_ollama_upgrade_hint(ollama_base_url), file=sys.stderr)
+                return 1
     except httpx.HTTPError as e:
         print(f"\npull failed: {e}", file=sys.stderr)
         return 1
     print("\ndone")
     return 0
+
+
+def _pull_error(r: httpx.Response) -> str:
+    try:
+        return str(r.json().get("error") or f"HTTP {r.status_code}")
+    except ValueError:
+        return r.text.strip() or f"HTTP {r.status_code}"
+
+
+def _ollama_upgrade_hint(ollama_base_url: str) -> str:
+    """A new model refused by an old daemon otherwise reads as a dead end."""
+    try:
+        version = httpx.get(f"{ollama_base_url}/api/version", timeout=3.0).json().get("version")
+    except (httpx.HTTPError, ValueError):
+        version = None
+    have = f"Ollama {version}" if version else "your Ollama"
+    return (f"hint: {have} may be too old for this model. Update it "
+            "(https://github.com/ollama/ollama/releases, into vendor/ollama) and retry.")
 
 
 def _ensure_ollama(cfg: cfgmod.Config):
@@ -607,13 +636,24 @@ def cmd_bind(args: argparse.Namespace) -> int:
     # getattr, not args.context: `swap` aliases this handler, and an alias that
     # forgets the flag should not take the command down with an AttributeError.
     ctx_arg = getattr(args, "context", None)
+    if ctx_arg is not None and ctx_arg < 0:
+        print("--context must be >= 0", file=sys.stderr)
+        return 2
     previous = cfg.roles.get(args.role)
     prior_ctx = int(previous.context or 0) if previous else 0
+    # With no --context, match a role already on this model: Ollama reloads a
+    # model whose context changes, so hopping between the two would cost a cold
+    # start every time. An explicit --context 0 still clears it.
+    shared_ctx = cfg.context_of_model(args.model, exclude_role=args.role) if ctx_arg is None else 0
+    if shared_ctx:
+        ctx_arg = shared_ctx
     cfg.roles[args.role] = cfgmod.RoleBinding(
         model=args.model, backend=args.backend, context=int(ctx_arg or 0))
     cfgmod.save(cfg)
     print(f"bound {args.role} -> {args.model} ({args.backend})")
-    if prior_ctx and not ctx_arg:
+    if shared_ctx:
+        print(f"context: {shared_ctx} (matches other roles on this model)")
+    elif prior_ctx and not ctx_arg:
         print(f"note: cleared this role's context ({prior_ctx}); the daemon default "
               f"applies now.\n      keep it with:  hearth bind {args.role} {args.model} "
               f"--backend {args.backend} --context {prior_ctx}")
@@ -622,14 +662,18 @@ def cmd_bind(args: argparse.Namespace) -> int:
     # If a gateway is running, hot-apply via admin so no restart is needed.
     base = _admin_base(cfg)
     try:
-        httpx.put(
+        r = httpx.put(
             f"{base}/admin/roles/{args.role}",
             json={"model": args.model, "backend": args.backend,
                   "context": int(ctx_arg or 0)}, timeout=3.0,
         )
-        print("(applied to running gateway)")
     except httpx.HTTPError:
-        pass
+        return 0  # no gateway running; the saved config applies when one starts
+    if r.is_success:
+        print("(applied to running gateway)")
+    else:
+        print(f"warning: saved, but the running gateway refused it (HTTP {r.status_code}) "
+              "and keeps its old binding; restart it to apply.", file=sys.stderr)
     return 0
 
 
@@ -1146,6 +1190,11 @@ def cmd_chat(args: argparse.Namespace) -> int:
                         if show_think:
                             sys.stdout.write(reasoning)
                             sys.stdout.flush()
+                        elif delta.get("hearth_tool"):
+                            # A search step, not a token: name it rather than
+                            # counting it, as these are the long silent stretches.
+                            sys.stdout.write(f"\r{dim}{reasoning.strip()}{reset}\033[K")
+                            sys.stdout.flush()
                         else:
                             think_tokens += 1
                             el = time.monotonic() - think_start
@@ -1383,7 +1432,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("model")
     s.add_argument("--backend", default="ollama")
     s.add_argument("--context", type=int, default=None,
-                   help="context window for this role (tokens); omit to clear it")
+                   help="context window for this role (tokens); if omitted, matches other "
+                        "roles on this model, or else clears it")
     s.set_defaults(func=cmd_bind)
     # `swap` is an alias for hot-rebind.
     s2 = sub.add_parser("swap", help="alias for bind (hot rebind)")
@@ -1391,7 +1441,8 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("model")
     s2.add_argument("--backend", default="ollama")
     s2.add_argument("--context", type=int, default=None,
-                   help="context window for this role (tokens); omit to clear it")
+                   help="context window for this role (tokens); if omitted, matches other "
+                        "roles on this model, or else clears it")
     s2.set_defaults(func=cmd_bind)
 
     s = sub.add_parser("roles", help="show role bindings")

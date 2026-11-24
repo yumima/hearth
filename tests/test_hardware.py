@@ -28,27 +28,24 @@ def _rec(monkeypatch, vram_mib=None, ram_mib=32000):
     return hardware.recommend_roles()
 
 
-def test_12gb_gpu_picks_bonsai_not_30b(monkeypatch):
-    # The headline regression: 30B overflows a 12 GB GPU -> must NOT be picked.
-    assert _rec(monkeypatch, vram_mib=12227)["primary_chat"] == "bonsai-2:27b"
+def test_12gb_gpu_picks_the_build_that_fits(monkeypatch):
+    # The headline regression: the full 27B spills on 12 GB (about 3 tok/s).
+    for vram in (11000, 12227, 16384, 19999):
+        r = _rec(monkeypatch, vram_mib=vram)
+        assert r["primary_chat"] == r["fast_chat"] == r["coding"] == hardware.QWEN38_2BIT
 
 
-def test_24gb_gpu_picks_30b_moe(monkeypatch):
-    assert _rec(monkeypatch, vram_mib=24576)["primary_chat"] == "qwen3:30b-a3b"
+def test_20gb_and_up_picks_the_full_model(monkeypatch):
+    for vram in (20000, 24576, 32768):
+        assert _rec(monkeypatch, vram_mib=vram)["primary_chat"] == "qwen3.8:27b"
 
 
-def test_32gb_gpu_picks_32b(monkeypatch):
-    assert _rec(monkeypatch, vram_mib=32768)["primary_chat"] == "qwen3:32b"
+def test_below_11gb_still_fits_vram(monkeypatch):
+    assert _rec(monkeypatch, vram_mib=10999)["primary_chat"] == "qwen3:8b"
 
 
 def test_8gb_gpu_picks_8b(monkeypatch):
     assert _rec(monkeypatch, vram_mib=8192)["primary_chat"] == "qwen3:8b"
-
-
-def test_thresholds_carry_kv_headroom(monkeypatch):
-    # A GPU sized to a model's bare weights must drop a tier (room for KV cache).
-    assert _rec(monkeypatch, vram_mib=20000)["primary_chat"] == "bonsai-2:27b"   # not 30b (~20GB)
-    assert _rec(monkeypatch, vram_mib=22000)["primary_chat"] == "bonsai-2:27b"   # not 32b (~22GB)
 
 
 def test_cpu_only_sized_by_ram(monkeypatch):
@@ -60,16 +57,29 @@ def test_cpu_only_sized_by_ram(monkeypatch):
 def test_embedding_and_fast_roles_stable(monkeypatch):
     r = _rec(monkeypatch, vram_mib=12227)
     assert r["embedding"] == "nomic-embed-text"
-    assert r["fast_chat"] == "bonsai-2:27b" and r["coding"] == "bonsai-2:27b"
+    assert r["fast_chat"] == hardware.QWEN38_2BIT and r["coding"] == hardware.QWEN38_2BIT
 
 
 # ── recommend_contexts(): the largest context that stays 100% on the GPU ────
 
-def test_bonsai_context_on_12gb_is_the_measured_fit():
-    # 64k measured fully on-GPU on this card; 128k spilled to the CPU.
-    assert hardware.recommend_contexts({"primary_chat": "bonsai-2:27b"}, 12227) == {"primary_chat": 65536}
+def test_2bit_context_on_12gb_is_the_measured_fit():
+    # 40960 measured fully on-GPU on this card; 48k and 64k spilled to the CPU.
+    assert hardware.recommend_contexts({"primary_chat": hardware.QWEN38_2BIT}, 12227) == {"primary_chat": 40960}
+
+
+def test_qwen38_fits_a_large_card_within_its_tested_ceiling():
+    assert hardware.recommend_contexts({"primary_chat": "qwen3.8:27b"}, 32768) == {"primary_chat": 65536}
+
+
+def test_qwen38_context_is_sized_to_a_mid_card():
+    # 20 GB holds the weights, so size the context to stay on the GPU.
+    assert hardware.recommend_contexts({"primary_chat": "qwen3.8:27b"}, 20000) == {"primary_chat": 24576}
+
+
+def test_model_too_big_for_the_card_is_left_to_the_daemon():
+    assert hardware.recommend_contexts({"primary_chat": "qwen3.8:27b"}, 12227) == {}
 
 
 def test_context_ceiling_is_per_model():
-    # Opening a 64k step for Bonsai must not push Qwen3 past its 40960 limit.
+    # Opening a 64k step for Qwen 3.8 must not push Qwen3 past its 40960 limit.
     assert hardware.recommend_contexts({"primary_chat": "qwen3:0.6b"}, 32768) == {"primary_chat": 40960}

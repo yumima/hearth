@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
+from typing import NamedTuple
 
 
 @dataclass
@@ -32,6 +33,10 @@ class Hardware:
     ram_total_mib: int | None
     ram_available_mib: int | None
     gpus: list[Gpu]
+
+
+# Unsloth's 2-bit build of Qwen 3.8 27B (Ollama's own library stops at 18 GB).
+QWEN38_2BIT = "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_S"
 
 
 def _run(cmd: list[str], timeout: float = 4.0) -> str | None:
@@ -134,7 +139,7 @@ def as_dict() -> dict:
 
 def recommend_roles() -> dict[str, str]:
     """Pick a role→model set that fits the detected hardware (the first-run
-    wizard). Qwen3 generation, except the 12–16 GB tier (Bonsai 2).
+    wizard). Qwen 3.8 from 11 GB up (2-bit below 20 GB), Qwen3 below that.
 
     The governing rule is **fit the model entirely in VRAM**. A model that
     spills to system RAM (e.g. the 30B on a 12 GB GPU) runs its overflow layers
@@ -142,8 +147,7 @@ def recommend_roles() -> dict[str, str]:
     utilisation and far slower than a smaller model that sits 100% on-GPU. The
     MoE's "few active params" doesn't rescue this: the partial-offload penalty
     dominates. So we pick the largest model whose Q4 footprint (weights + KV
-    cache) fits in VRAM. Approx footprints: 32b ~22GB, 30b-a3b ~20GB, bonsai-2:27b
-    ~10GB (at a 64k context), 14b ~10GB,
+    cache) fits in VRAM. Approx footprints: 14b ~10GB,
     8b ~6GB, 4b ~4GB, 1.7b ~2GB. Thresholds carry ~2–3 GB of headroom over the
     weights so the KV cache at real context lengths still sits 100% on-GPU (a
     threshold set to the bare footprint would itself spill once context grows).
@@ -156,14 +160,13 @@ def recommend_roles() -> dict[str, str]:
             vram = max(vram, g.vram_mib)
     ram = hw.ram_total_mib or 0
 
-    if vram >= 26000:
-        primary, fast = "qwen3:32b", "qwen3:14b"       # ~22GB + KV headroom
-    elif vram >= 23000:
-        primary, fast = "qwen3:30b-a3b", "qwen3:8b"   # ~20GB + KV; MoE only where it fits
+    # One model for every chat role, so a fast/primary hop needn't swap models.
+    if vram >= 20000:
+        primary, fast = "qwen3.8:27b", "qwen3.8:27b"  # ~17 GB + KV headroom
     elif vram >= 11000:
-        # 12–16 GB: ternary 27B fits fully. One model for both roles, so a
-        # fast/primary hop needn't swap models on a card this tight.
-        primary, fast = "bonsai-2:27b", "bonsai-2:27b"
+        # The full model would run over half on the CPU here: about 3 tok/s
+        # measured on 12 GB, too slow to use. This 2-bit build fits the card.
+        primary, fast = QWEN38_2BIT, QWEN38_2BIT
     elif vram >= 7000:
         primary, fast = "qwen3:8b", "qwen3:4b"
     elif vram >= 4500:
@@ -185,29 +188,31 @@ def recommend_roles() -> dict[str, str]:
     }
 
 
-# (approx q4_K_M weight footprint in MiB, KV cache KiB per token at q8_0).
-# The KV figure is 2 (K+V) x layers x kv_heads x head_dim bytes, read off each
-# model's own metadata — Qwen3 uses grouped-query attention with 8 kv heads
-# (4 on the MoE) and a 128-wide head, so the cost per token varies by depth.
-_FOOTPRINT: dict[str, tuple[int, int]] = {
-    "qwen3:0.6b":    (500, 56),
-    "qwen3:1.7b":   (1400, 56),
-    "qwen3:4b":     (2500, 72),
-    "qwen3:8b":     (4988, 72),
-    "qwen3:14b":    (8850, 80),
-    "qwen3:32b":   (19500, 128),
-    "qwen3:30b-a3b": (17700, 48),
-    # Measured, not derived: Ollama reported 9915 MiB loaded at 64k and 13369 MiB
-    # at 128k on an RTX 5070 Ti 12 GB. Those two points give the weight and KV
-    # figures below, and 128k spilled to the CPU at 5.3 tok/s vs 17.9 at 64k.
-    "bonsai-2:27b": (6461, 54),
+class Footprint(NamedTuple):
+    weights_mib: int  # approx q4_K_M weights
+    # KV cache KiB per token at q8_0: 2 (K+V) x layers x kv_heads x head_dim
+    # bytes, read off each model's metadata. Qwen3 uses grouped-query attention
+    # with 8 kv heads (4 on the MoE) and a 128-wide head.
+    kv_kib: int
+    max_context: int = 40960  # Qwen3's limit; otherwise the largest tested
+
+
+_FOOTPRINT: dict[str, Footprint] = {
+    "qwen3:0.6b": Footprint(500, 56),
+    "qwen3:1.7b": Footprint(1400, 56),
+    "qwen3:4b": Footprint(2500, 72),
+    "qwen3:8b": Footprint(4988, 72),
+    "qwen3:14b": Footprint(8850, 80),
+    "qwen3:32b": Footprint(19500, 128),
+    "qwen3:30b-a3b": Footprint(17700, 48),
+    # Both measured on an RTX 5070 Ti 12 GB from the size Ollama reports loaded.
+    # Full: 19274 MiB at 64k, 21818 MiB at 128k; about 3 tok/s, as it spills.
+    "qwen3.8:27b": Footprint(16730, 40, max_context=65536),
+    # 2-bit: 10467 MiB at 48k and 11241 MiB at 64k both spilled; 40960 fit fully.
+    QWEN38_2BIT: Footprint(8169, 48),
 }
-# Contexts worth choosing between. Qwen3 tops out at 40960. _MAX_CONTEXT lists
-# models allowed higher; Bonsai's is the largest context tested here, not a limit
-# of the model, so a bigger card could go further once that has been measured.
+# Contexts worth choosing between; each model's ceiling is its max_context.
 _CONTEXT_STEPS = (65536, 40960, 32768, 24576, 16384, 12288, 8192, 4096)
-_DEFAULT_MAX_CONTEXT = 40960
-_MAX_CONTEXT: dict[str, int] = {"bonsai-2:27b": 65536}
 # Held back from the KV budget for CUDA context, compute buffers and whatever
 # else shares the card. Under-reserving here is what turns a "it fits" estimate
 # into layers silently running on the CPU.
@@ -237,12 +242,10 @@ def recommend_contexts(models: dict[str, str], vram_mib: int = 0) -> dict[str, i
         fp = _FOOTPRINT.get(model)
         if not fp or not vram_mib or role == "embedding":
             continue
-        weights, kv_kib = fp
-        budget_mib = int(vram_mib * _VRAM_USABLE) - weights - _VRAM_OVERHEAD_MIB
+        budget_mib = int(vram_mib * _VRAM_USABLE) - fp.weights_mib - _VRAM_OVERHEAD_MIB
         if budget_mib <= 0:
             continue
-        affordable = min(int(budget_mib * 1024 / kv_kib),
-                         _MAX_CONTEXT.get(model, _DEFAULT_MAX_CONTEXT))
+        affordable = min(int(budget_mib * 1024 / fp.kv_kib), fp.max_context)
         for step in _CONTEXT_STEPS:
             if step <= affordable:
                 out[role] = step

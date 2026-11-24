@@ -73,7 +73,7 @@ async def list_models(request: Request):
     """List servable models in OpenAI shape (F4).
 
     Concrete backend models plus the role aliases — so a consumer's model
-    dropdown can pick either ``primary_chat`` or ``bonsai-2:27b``. Role
+    dropdown can pick either ``primary_chat`` or ``qwen3.8:27b``. Role
     *bindings* (which alias → which model) live at /admin/roles so OpenAI SDK
     clients don't see non-standard fields here.
     """
@@ -155,7 +155,7 @@ async def chat_completions(request: Request):
         # page against an 8k window doesn't fail loudly, it just makes the model
         # look like it ignored the task. Reserve most of the window for the
         # conversation and let one tool result have the rest.
-        ctx_tokens = ctx or ollama_supervisor.DEFAULT_CONTEXT_LENGTH
+        ctx_tokens = ctx or ollama_supervisor.effective_default_context()
         budget = max(2000, int(ctx_tokens * _CHARS_PER_TOKEN * _TOOL_RESULT_SHARE))
         if scfg.fetch_max_chars > budget:
             scfg = replace(scfg, fetch_max_chars=budget)
@@ -190,10 +190,14 @@ async def chat_completions(request: Request):
         return await backend.chat(body)
 
     try:
-        if search_on:
-            return await toolloop.chat_with_tools(
-                chat_fn, payload, webtools.TOOL_NAMES, _dispatch, scfg.max_tool_rounds)
-        return await chat_fn(payload)
+        work = (toolloop.chat_with_tools(
+                    chat_fn, payload, webtools.TOOL_NAMES, _dispatch, scfg.max_tool_rounds)
+                if search_on else chat_fn(payload))
+        # A non-streaming request is silent until it finishes. Without this, one
+        # whose client hung up keeps the model busy and everyone else queues.
+        return await _unless_disconnected(request, work)
+    except _ClientGone:
+        return Response(status_code=499)
     except Exception as e:
         return _err(502, f"backend error: {e}", "backend_error")
 

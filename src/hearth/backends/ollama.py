@@ -34,12 +34,13 @@ _CAPS = Capabilities(
 
 
 class OllamaBackend:
-    def __init__(self, name: str, base_url: str, timeout: float = 600.0):
+    def __init__(self, name: str, base_url: str, timeout: float = 3600.0):
         self.name = name
         self.base_url = base_url.rstrip("/")
         self.capabilities = _CAPS
-        # Long read timeout: local generation of a long answer can exceed the
-        # httpx default. Connect timeout stays short so a dead backend fails
+        # Long read timeout: a non-streaming request is silent until it finishes,
+        # and a model partly on the CPU can take most of an hour over a long
+        # reasoning answer (about 3 tok/s). Connect timeout stays short so a dead backend fails
         # fast into the consumer's no-failover banner.
         self._client = httpx.AsyncClient(
             base_url=self.base_url,

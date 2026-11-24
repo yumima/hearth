@@ -5,8 +5,8 @@ Hearth resolves a request's ``model`` field two ways (design doc §4.2):
 1. **Role alias** — ``primary_chat`` / ``fast_chat`` / ``coding`` /
    ``embedding`` / ``stt`` / ``vision`` → the role registry → a concrete
    ``(model_id, backend)``.
-2. **Literal model id** — ``bonsai-2:27b`` routes straight to the default
-   (first Ollama) backend, with no role context.
+2. **Literal model id** — ``qwen3.8:27b`` routes straight to the default
+   (first Ollama) backend, using the context of any role bound to it.
 
 Config lives at ``~/.hearth/config.yaml`` (override via ``HEARTH_CONFIG``).
 First run writes the default file so the engine is usable before the user
@@ -34,12 +34,13 @@ DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
 # Defaults tuned for a 12 GB-VRAM consumer GPU (this box: RTX 5070 Ti 12 GB,
 # CUDA compute healthy even though the dGPU is wedged for *display*).
-# bonsai-2:27b (~8 GB download, ternary weights) fits fully on the GPU. The first-run
+# A 2-bit build of Qwen 3.8 27B (~9 GB) fits fully on the GPU. The first-run
 # wizard (M3) will re-pick these from the hardware probe.
-_DEFAULT_ROLES: dict[str, dict[str, str]] = {
-    "primary_chat": {"model": "bonsai-2:27b", "backend": "ollama"},
-    "fast_chat": {"model": "bonsai-2:27b", "backend": "ollama"},
-    "coding": {"model": "bonsai-2:27b", "backend": "ollama"},
+_QWEN38_2BIT = "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_S"
+_DEFAULT_ROLES: dict[str, dict[str, Any]] = {
+    "primary_chat": {"model": _QWEN38_2BIT, "backend": "ollama", "context": 40960},
+    "fast_chat": {"model": _QWEN38_2BIT, "backend": "ollama", "context": 40960},
+    "coding": {"model": _QWEN38_2BIT, "backend": "ollama", "context": 40960},
     "embedding": {"model": "nomic-embed-text", "backend": "ollama"},
     # stt/vision left unbound until M2/optional. An unbound role resolves to
     # None and the endpoint returns a clear "role not bound" error.
@@ -192,13 +193,25 @@ class Config:
         return next(iter(self.backends.values()))
 
     def context_for(self, model: str) -> int:
-        """Configured context window for a role alias (0 = daemon default).
+        """Configured context window for a role alias or literal model id
+        (0 = daemon default).
+
+        A literal id borrows the context of a role bound to that model. Ollama
+        reloads a model whose context changes, so the same model at two contexts
+        costs a cold start on every switch, and its smaller window drops history.
 
         Kept off ``resolve()`` so its two-value contract stays intact for the
         callers that only care about routing.
         """
         binding = self.roles.get(model)
-        return int(binding.context or 0) if binding else 0
+        if binding:
+            return int(binding.context or 0)
+        return self.context_of_model(model)
+
+    def context_of_model(self, model: str, exclude_role: str | None = None) -> int:
+        """Largest context of any role bound to this concrete model, else 0."""
+        return max((int(r.context or 0) for name, r in self.roles.items()
+                    if r.model == model and name != exclude_role), default=0)
 
     def role_is_remote(self, role: str) -> bool:
         """Does this role's traffic leave the machine? Unbound/unknown → False."""
