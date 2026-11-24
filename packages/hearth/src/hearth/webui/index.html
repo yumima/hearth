@@ -56,7 +56,7 @@ summary{cursor:pointer;color:var(--dim);margin:8px 0}
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.filter(k => k != null)); return e; };
 const gb = n => n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : Math.max(1, Math.round(n / 1e6)) + " MB";
-let state = null, drawn = "", problem = "";
+let state = null, drawn = "", problem = "", removing = "", restOpen = false;
 
 async function ask(method, path, body) {
   const r = await fetch(path, { method, cache: "no-store", headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
@@ -105,7 +105,9 @@ function offerView(o) {
 }
 
 function draw() {
-  const key = JSON.stringify(state) + problem;
+  // What changes by itself all the time (free memory) is not shown, and no reason to draw.
+  const { hardware, free_mib, ...plan } = state.plan;
+  const key = JSON.stringify({ ...state, plan, disk: gb((hardware.disk_free_mib || 0) * 1048576) }) + problem + removing;
   if (key === drawn) return;   // a button being used is not replaced under the pointer
   drawn = key;
   const p = state.plan;
@@ -113,7 +115,7 @@ function draw() {
   const fits = p.offers.filter(o => o.recommended || o.fit === "gpu" || o.fit === "cpu");
   const rest = p.offers.filter(o => !fits.includes(o));
   $("offers").replaceChildren(...(problem ? [el("p", { className: "bad", role: "alert", textContent: problem })] : []), ...fits.map(offerView),
-    ...(rest.length ? [el("details", { open: !fits.length && $("offers").querySelector("details")?.open === true }, el("summary", { textContent: fits.length ? "Models that do not suit this computer" : "All models" }), ...rest.map(offerView))] : []));
+    ...(rest.length ? [el("details", { open: restOpen, ontoggle: e => { restOpen = e.target.open; } }, el("summary", { textContent: fits.length ? "Models that do not suit this computer" : "All models" }), ...rest.map(offerView))] : []));
   const v = state.voices;
   const voice = (kind, title, what, have, possible) => {
     const j = last(kind), busy = j && running(j);
@@ -129,17 +131,18 @@ function draw() {
     const card = el("div", { className: "card" }, el("div", {}, el("b", { textContent: m.title }), m.roles.length ? el("span", { className: "tag", textContent: m.embedding ? "memory search" : "in use" }) : null, el("br"), el("code", { textContent: m.model }), el("span", { className: "dim", textContent: " · " + gb(m.size) + (m.embedding ? " · other programs' saved memory depends on it" : "") })));
     const other = !m.offered && !m.embedding, j = other ? last("model", m.model) : null;
     if (other && !m.roles.includes("primary_chat") && !(j && running(j))) card.append(button("Use it", () => install("model", m.model)));
-    if (!m.roles.length) card.append(button("Remove", () => confirmRemove(card, m)));
+    if (!m.roles.length && removing === m.model) return confirmRemove(m);
+    if (!m.roles.length) card.append(button("Remove", () => { removing = m.model; draw(); }));
     if (j) card.append(jobView(j, any => install("model", m.model, any)));
     return card;
   }), ...state.jobs.filter(j => j.kind === "model" && j === last("model", j.what) && j.stage !== "done" && !p.offers.some(o => o.model === j.what) && !state.installed.some(m => same(m.model, j.what)))
     .map(j => el("div", { className: "card" }, el("div", {}, el("b", { textContent: j.what })), jobView(j, any => install("model", j.what, any)))));
 }
 
-function confirmRemove(card, m) {
-  card.replaceChildren(el("div", { textContent: `Remove ${m.title}? It frees ${gb(m.size)}; using it again means downloading it again.` }),
-    button("Remove", () => act("DELETE", "/admin/models/" + m.model.split("/").map(encodeURIComponent).join("/")), true),
-    button("Keep", () => { drawn = ""; draw(); }));
+function confirmRemove(m) {
+  return el("div", { className: "card" }, el("div", { textContent: `Remove ${m.title}? It frees ${gb(m.size)}; using it again means downloading it again.` }),
+    button("Remove", () => { removing = ""; act("DELETE", "/admin/models/" + m.model.split("/").map(encodeURIComponent).join("/")); }, true),
+    button("Keep", () => { removing = ""; draw(); }));
 }
 
 $("other").addEventListener("submit", e => { e.preventDefault(); const n = $("name").value.trim(); if (n) { $("name").value = ""; install("model", n); } });

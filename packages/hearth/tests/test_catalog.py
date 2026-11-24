@@ -33,7 +33,7 @@ def _pick(hw):
     (24564, FULL), (32768, FULL), (48000, FULL),
     (16384, BIT2), (12282, BIT2), (12227, BIT2), (11264, BIT2),
     (10240, "qwen3.5:9b"), (8188, "qwen3.5:9b"),
-    (6144, "qwen3.5:4b"), (4608, "qwen3.5:4b"),
+    (6144, "qwen3.5:4b"), (4608, "qwen3.5:4b"), (4096, "qwen3.5:4b"), (3072, "qwen3.5:2b"),
 ])
 def test_a_gpu_gets_the_best_model_that_stays_on_it(vram, model):
     for vendor in ("nvidia", "amd"):
@@ -74,10 +74,26 @@ def test_a_gpu_too_small_for_any_model_is_not_one():
     assert catalog.verdict(_hw(2048, ram=32000))[0] == "slow"
 
 
+def test_the_verdict_and_the_offers_agree():
+    for vram in range(1024, 26000, 256):
+        for ram in (8000, 32000):
+            hw = _hw(vram, ram=ram)
+            on_gpu = any(o.fit == "gpu" for o in catalog.offers(hw))
+            assert on_gpu == (catalog.verdict(hw)[0] in ("recommended", "works"))
+            best = catalog.offers(hw)[0]
+            assert best.recommended == (catalog.verdict(hw)[0] != "no") and (not on_gpu or best.fit == "gpu")
+
+
+def test_what_is_here_needs_no_disk():
+    hw = _hw(12227, disk=9000)
+    assert _pick(hw) != BIT2
+    assert catalog.recommend_roles(hw, [BIT2])["primary_chat"] == BIT2
+
+
 def test_verdicts():
     level = lambda hw: catalog.verdict(hw)[0]  # noqa: E731
     assert [level(_hw(v)) for v in (24564, 11264, 8188, 4608)] == ["recommended", "recommended", "works", "works"]
-    assert [level(_mac(g)) for g in (64, 24, 16, 8)] == ["recommended", "recommended", "works", "no"]
+    assert [level(_mac(g)) for g in (64, 24, 16, 8)] == ["recommended", "recommended", "works", "works"]
     assert level(Hardware()) == "no"  # nothing could be found out
 
 
@@ -137,7 +153,7 @@ def test_every_entry_can_be_installed_and_checked():
 
 
 def test_the_plan_is_plain_data_and_complete():
-    for hw in (_hw(12227), _hw(), _mac(16), _mac(8), Hardware()):
+    for hw in (_hw(12227), _hw(), _mac(16), _mac(4), Hardware()):
         p = json.loads(json.dumps(catalog.plan(hw)))
         assert p["verdict"] in ("recommended", "works", "slow", "no") and p["summary"]
         assert len(p["offers"]) == len(catalog.chat_models())

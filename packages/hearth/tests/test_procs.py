@@ -299,11 +299,13 @@ def test_where_the_program_is_looked_for(monkeypatch, tmp_path):
     monkeypatch.setattr(osup.paths, "find_in_checkout", lambda *p: None)
     monkeypatch.setattr(osup, "which", lambda n: "/on/path/ollama")
     assert osup.ollama_binary() == "/on/path/ollama"
-    exe = tmp_path / "ollama" / ("ollama.exe" if sys.platform == "win32" else "ollama")
-    exe.parent.mkdir()
+    exe = tmp_path / "ollama" / "0.9" / ("ollama.exe" if sys.platform == "win32" else "ollama")
+    exe.parent.mkdir(parents=True)
     exe.write_text("")
+    assert osup.ollama_binary() == "/on/path/ollama"  # there, and not the current one
+    (tmp_path / "current.json").write_text('{"ollama": "0.9"}')
     assert osup.ollama_binary() == str(exe)  # the installed one comes first
-    nested = tmp_path / "ollama" / "bin" / exe.name
+    nested = tmp_path / "ollama" / "0.9" / "bin" / exe.name
     nested.parent.mkdir()
     nested.write_text("")
     assert osup.ollama_binary() == str(nested)

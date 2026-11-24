@@ -26,7 +26,7 @@ from starlette.background import BackgroundTask
 
 from .. import comfy_supervisor, kokoro_tts, ollama_supervisor, paths, speech_text, toolloop, tts, webtools
 from ..config import ROLE_NAMES, Config
-from ..provision import WHISPER_SIZE, whisper_present
+from ..provision import WHISPER_SIZE, whisper_model, whisper_present
 
 router = APIRouter()
 log = logging.getLogger("hearth.tts")
@@ -403,14 +403,12 @@ def _get_whisper(size: str):
         # for voice. Construct-time CUDA errors fall back to CPU here; a transcribe
         # failure drops the model from cache (see audio_transcriptions).
         device = os.environ.get("HEARTH_WHISPER_DEVICE", "cpu")
-        # hearth's own folder; what an earlier version left in Hugging Face's
-        # cache is used from there.
-        root = str(paths.voices_dir("whisper")) if whisper_present(size) else None
+        what = whisper_model(size)
         try:
-            model = WhisperModel(size, device=device, download_root=root,
+            model = WhisperModel(what, device=device,
                                  compute_type="float16" if device == "cuda" else "int8")
         except Exception:
-            model = WhisperModel(size, device="cpu", compute_type="int8", download_root=root)
+            model = WhisperModel(what, device="cpu", compute_type="int8")
         _whisper_cache[size] = model
     return model
 

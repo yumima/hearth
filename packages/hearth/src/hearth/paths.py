@@ -8,6 +8,7 @@ has for that; the installer puts everything there and uninstalling removes it.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -30,6 +31,15 @@ def data_dir() -> Path:
         xdg = os.environ.get("XDG_DATA_HOME") or ""
         base = xdg if os.path.isabs(xdg) else str(Path.home() / ".local" / "share")
     return Path(base) / "hearth"
+
+
+def current() -> dict:
+    """What the installer made current (install.py); {} without an installation."""
+    try:
+        d = json.loads((data_dir() / "current.json").read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def voices_dir(engine: str) -> Path:

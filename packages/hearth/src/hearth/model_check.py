@@ -171,7 +171,11 @@ class Checker:
                 if name == "_long" and not on_gpu:
                     continue  # minutes on a processor, for an answer known from the model itself
                 self._say("Checking what it can do…")
-                if not getattr(self, name)(res.context):
+                try:
+                    passed = getattr(self, name)(res.context)
+                except (RuntimeError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+                    passed = False  # refused ("does not support tools"), or no answer in time
+                if not passed:
                     res.failed.append(words)
         except Stopped:
             raise

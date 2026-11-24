@@ -20,6 +20,8 @@ from pathlib import Path
 
 import httpx
 
+from . import __version__
+
 from . import config as cfgmod
 from . import catalog, hardware, ollama_supervisor, paths, procs
 from .background import gateway_identity as _gateway_identity
@@ -142,7 +144,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     # is meaningless for it (and reads as a nag to abandon a deliberate choice).
     try:
         hw = hardware.probe()
-        rec = catalog.recommend_roles(hw).get("primary_chat")
+        rec = catalog.recommend_roles(hw, [cfg.roles["primary_chat"].model] if "primary_chat" in cfg.roles else []).get("primary_chat")
         cur = cfg.roles.get("primary_chat")
         if rec and cur and cur.model != rec and not cfg.role_is_remote("primary_chat"):
             # Bind drops the role's context when none is given, so the advice has
@@ -514,8 +516,11 @@ class _Jobs:
             self.own = Provisioner(cfg)
 
     def _ask(self, method: str, path: str, **kw) -> dict:
-        r = httpx.request(method, self.base + path, timeout=30.0, **kw)
-        data = r.json() if r.content else {}
+        try:
+            r = httpx.request(method, self.base + path, timeout=30.0, **kw)
+            data = r.json() if r.content else {}
+        except (httpx.HTTPError, ValueError) as e:
+            raise RuntimeError(f"hearth stopped answering ({e or type(e).__name__}). Start it, and run this again to go on.") from e
         if r.status_code >= 400:
             raise RuntimeError(data.get("error") or f"HTTP {r.status_code}")
         return data
@@ -543,8 +548,11 @@ class _Jobs:
                     print("\r" + text.ljust(78)[:78], end="", flush=True)
                     shown = text
                 time.sleep(0.5)
-                job = next(j for j in self.state()["jobs"] if j["id"] == job["id"]) if self.base else next(
-                    j for j in self.own._jobs if j.id == job["id"]).as_dict()
+                jobs = self.state()["jobs"] if self.base else [j.as_dict() for j in self.own._jobs]
+                found = next((j for j in jobs if j["id"] == job["id"] and j["what"] == what), None)
+                if found is None:
+                    raise RuntimeError("hearth was restarted meanwhile. Run this again to go on.")
+                job = found
         except KeyboardInterrupt:
             if self.own:
                 self.own.stop_job(job["id"])
@@ -564,13 +572,15 @@ def _jobs() -> _Jobs | None:
 
 
 def _run_job(kind: str, what: str = "", anyway: bool = False) -> int:
+    from .provision import Problem
+
     jobs = _jobs()
     if jobs is None:
         return 1
     try:
         job = jobs.run(kind, what, anyway)
-    except RuntimeError as e:
-        print(e, file=sys.stderr)
+    except (RuntimeError, Problem) as e:
+        print(f"\n{e}", file=sys.stderr)
         return 1
     if job.get("can_anyway"):
         print(f"to use it all the same:  hearth install {what} --anyway", file=sys.stderr)
@@ -601,7 +611,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
         return 1
     try:
         jobs.remove(args.model)
-    except (RuntimeError, Problem) as e:
+    except (RuntimeError, Problem, httpx.HTTPError) as e:
         print(e, file=sys.stderr)
         return 1
     print(f"removed {args.model}")
@@ -1338,23 +1348,31 @@ def _launcher() -> str:
 
 
 def _service_autostart(on: bool, boot: bool) -> int:
+    from . import install, service
+
+    if not on:
+        service.disable()
+        print("hearth no longer starts at login")
+    elif _unit_path().exists() and service.foreign():
+        if service.systemctl("enable", _UNIT_NAME) != 0:  # the person's own unit: theirs to write, ours to enable
+            return 1
+        print("hearth starts at login")
+    else:
+        program = install.root() / "bin" / install.exe("hearth")
+        if not install.managed() or not program.exists():
+            print("only an installed hearth can be started at login (or a hearth.service of your own)", file=sys.stderr)
+            return 1
+        try:
+            service.enable(str(program))
+        except (service.Foreign, OSError) as e:
+            print(e, file=sys.stderr)
+            return 1
+        print("hearth starts at login")
     lg = shutil.which("loginctl")
-    user = os.environ.get("USER") or str(os.getuid())
-    if on:
-        rc = _systemctl("enable", _UNIT_NAME)
-        if rc == 0:
-            print("✓ autostart on login: ENABLED")
-            # Only enable boot-linger once login-autostart actually took.
-            if boot and lg and subprocess.run([lg, "enable-linger", user]).returncode == 0:
-                print("✓ lingering: ENABLED (starts at boot, survives logout)")
-        return rc
-    rc = _systemctl("disable", _UNIT_NAME)
-    if rc == 0:
-        print("✓ autostart on login: DISABLED")
-    # 'off' fully reverses 'on --boot': drop linger too (no-op if it was off).
-    if lg:
-        subprocess.run([lg, "disable-linger", user])
-    return rc
+    if lg and (boot or not on):  # 'off' fully reverses 'on --boot'
+        user = os.environ.get("USER") or str(os.getuid())
+        subprocess.run([lg, "enable-linger" if on else "disable-linger", user], check=False)
+    return 0
 
 
 def cmd_service(args: argparse.Namespace) -> int:
@@ -1404,6 +1422,59 @@ def _mantel() -> str | None:
         if p.is_file():
             return str(p)
     return shutil.which("mantel")
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    from . import install
+    from .provision import Problem
+
+    say = lambda t: print(t, flush=True)  # noqa: E731
+    try:
+        if args.rollback:
+            install.rollback(say)
+            return 0
+        rel = install.available()
+        if rel is None:
+            print(f"hearth {install.current().get('version') or __version__} is the latest.")
+            return 0
+        print(f"hearth {rel.version} is available (you have {install.current().get('version') or __version__}).")
+        if args.check:
+            return 0
+        if not args.yes:
+            try:
+                if input("Update now? [Y/n] ").strip().lower() in ("n", "no"):
+                    return 0
+            except EOFError:
+                return 1
+        install.update(rel, say)
+        return 0
+    except Problem as e:
+        print(e, file=sys.stderr)
+        return 1
+    except httpx.HTTPError as e:
+        print(f"The connection failed ({e or type(e).__name__}).", file=sys.stderr)
+        return 1
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    from . import install
+    from .provision import Problem
+
+    keep = args.keep_models
+    if not args.yes:
+        try:
+            if input("Remove hearth from this computer? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 0
+            if not keep:
+                keep = input("Keep the downloaded models and voices? [y/N] ").strip().lower() in ("y", "yes")
+        except EOFError:
+            return 1
+    try:
+        install.uninstall(keep, args.keep_settings, lambda t: print(t, flush=True))
+        return 0
+    except (Problem, OSError) as e:
+        print(e, file=sys.stderr)
+        return 1
 
 
 def cmd_client(args: argparse.Namespace) -> int:
@@ -1559,6 +1630,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp_a.add_argument("--boot", action="store_true",
                       help="with 'on': also start at boot, before login (linger)")
     sp.set_defaults(func=cmd_service)
+
+    s = sub.add_parser("update", help="update hearth (and mantel), or go back")
+    s.add_argument("--check", action="store_true", help="only say whether there is one")
+    s.add_argument("--yes", "-y", action="store_true", help="don't ask")
+    s.add_argument("--rollback", action="store_true", help="go back to the version before")
+    s.set_defaults(func=cmd_update)
+
+    s = sub.add_parser("uninstall", help="remove hearth from this computer")
+    s.add_argument("--yes", "-y", action="store_true", help="don't ask")
+    s.add_argument("--keep-models", action="store_true", help="keep downloaded models and voices")
+    s.add_argument("--keep-settings", action="store_true", help="keep ~/.hearth")
+    s.set_defaults(func=cmd_uninstall)
 
     cp = sub.add_parser("client", help="open the chat window (mantel), or add/remove its launcher")
     cp_sub = cp.add_subparsers(dest="action")

@@ -248,6 +248,8 @@ def _mantel_exec_argv() -> list[str]:
 
     NB: do NOT realpath the interpreter — a venv python is a symlink to the base
     python, which doesn't have mantel (or its deps) installed."""
+    if program := os.environ.get("MANTEL_PROGRAM"):
+        return [program]  # hearth's installer keeps a stable one, and the links to it
     found = shutil.which("mantel")
     if not found:
         cand = Path(sys.executable).with_name("mantel")

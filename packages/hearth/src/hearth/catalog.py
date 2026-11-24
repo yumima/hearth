@@ -15,6 +15,7 @@ import json
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from importlib import resources
+from typing import Iterable
 
 from .hardware import Hardware
 
@@ -96,14 +97,12 @@ def context_in(m: Model, vram_mib: int) -> int:
 def verdict(hw: Hardware) -> tuple[str, str]:
     """("recommended" | "works" | "slow" | "no", one sentence)."""
     g = hw.best_gpu()
-    if g is not None:
-        apple = g.vendor == "apple"
-        size = f"{g.name}, {'' if apple else 'with '}{g.vram_mib / 1024:.0f} GB for models"
+    if g is not None and any(context_in(m, g.vram_mib) >= LEAST_CONTEXT for m in chat_models()):
+        size = f"{g.name}, {'' if g.vendor == 'apple' else 'with '}{g.vram_mib / 1024:.0f} GB for models"
         # From here on (a 24 GB Mac: half of it) the 27B's 2-bit build fits.
         if g.vram_mib >= 11000:
             return "recommended", f"{size}: runs models entirely on the GPU."
-        if g.vram_mib >= 4500:
-            return "works", f"{size}: runs smaller models entirely on the GPU."
+        return "works", f"{size}: runs smaller models entirely on the GPU."
     ram = hw.ram_total_mib or 0
     if hw.avx2 is False:
         return "no", "This processor lacks AVX2, which models need to run at a usable speed."
@@ -112,14 +111,17 @@ def verdict(hw: Hardware) -> tuple[str, str]:
     return "no", f"No GPU that can run models, and {ram / 1024:.0f} GB of memory: too little for a useful model."
 
 
-def offers(hw: Hardware) -> list[Offer]:
-    """Every model, those that suit first, the recommended one marked."""
+def offers(hw: Hardware, here: Iterable[str] = ()) -> list[Offer]:
+    """Every model, those that suit first, the recommended one marked. `here`:
+    models already downloaded, which need no disk."""
     g = hw.best_gpu()
     level, _ = verdict(hw)
     ram = hw.ram_total_mib or 0
+    have = {m.removesuffix(":latest") for m in here}
     out: list[Offer] = []
     for m in chat_models():
-        disk_ok = hw.disk_free_mib is None or hw.disk_free_mib >= m.download / 1e6 + DISK_SPARE_MIB
+        disk_ok = (m.model in have or hw.disk_free_mib is None
+                   or hw.disk_free_mib >= m.download / (1 << 20) + DISK_SPARE_MIB)
         context = context_in(m, g.vram_mib) if g else 0
         if context >= LEAST_CONTEXT:
             fit, note = "gpu", "Runs entirely on the GPU."
@@ -127,7 +129,7 @@ def offers(hw: Hardware) -> list[Offer]:
                 note = "Runs entirely on the GPU, with a short memory for long chats."
         elif level == "slow" and m.weights_mib * 1.15 + _CPU_SPARE_MIB <= ram and m.weights_mib <= 5500:
             fit, context, note = "cpu", 8192, "Runs on the processor: expect a few words a second."
-        elif g and m.weights_mib * 1.1 + _CPU_SPARE_MIB <= ram + g.vram_mib and context == 0 and m.weights_mib > g.vram_mib * 0.5:
+        elif g and m.weights_mib * 1.1 + _CPU_SPARE_MIB <= ram + g.vram_mib and m.weights_mib > g.vram_mib * 0.5:
             fit, context, note = "spills", 0, "Too large for the GPU: part would run on the processor, very slowly."
         else:
             fit, context, note = "no", 0, "Does not fit this computer."
@@ -135,7 +137,7 @@ def offers(hw: Hardware) -> list[Offer]:
             note += " Not enough free disk space."
         out.append(Offer(m.model, m.title, fit, context, m.download, m.license, m.vision, False, note, disk_ok, m.digest))
     # The best that fits comfortably; on the processor the smallest is the usable
-    # one, so it is the best of those under 2 GB of weights.
+    # one, so it is the best of those under 2.6 GB of weights.
     choice = None
     if level in ("recommended", "works"):
         fits = [o for o in out if o.fit == "gpu" and o.disk_ok]
@@ -148,7 +150,7 @@ def offers(hw: Hardware) -> list[Offer]:
     return sorted(out, key=lambda o: (not o.recommended, order[o.fit]))
 
 
-def plan(hw: Hardware) -> dict:
+def plan(hw: Hardware, here: Iterable[str] = ()) -> dict:
     """What the setup page and `hearth plan --json` show."""
     level, sentence = verdict(hw)
     g = hw.best_gpu()
@@ -156,15 +158,15 @@ def plan(hw: Hardware) -> dict:
         "hardware": {**asdict(hw), "best_gpu": asdict(g) if g else None},
         "verdict": level, "summary": sentence,
         "free_mib": g.free_mib if g else None,
-        "offers": [asdict(o) for o in offers(hw)],
+        "offers": [asdict(o) for o in offers(hw, here)],
         "embedding": embedding(),
     }
 
 
-def recommend_roles(hw: Hardware) -> dict[str, str]:
+def recommend_roles(hw: Hardware, here: Iterable[str] = ()) -> dict[str, str]:
     """Role → model for this computer; {} when none suits it. One model for every
     chat role, so a hop from one to another does not swap models."""
-    best = next((o for o in offers(hw) if o.recommended), None)
+    best = next((o for o in offers(hw, here) if o.recommended), None)
     if best is None:
         return {}
     roles = {r: best.model for r in ("primary_chat", "fast_chat", "coding")}

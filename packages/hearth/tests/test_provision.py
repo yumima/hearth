@@ -38,7 +38,7 @@ class FakeOllama:
         self.slow_pull = False
         self.cannot = set()               # checks it fails
         self.chat_error = ""
-        self.refuses_think = False
+        self.refuses_think = self.refuses_tools = self.stalls = False
         self.pulled: list[str] = []
         self.chats: list[dict] = []
         outer = self
@@ -79,6 +79,8 @@ class FakeOllama:
                         return self._reply({"error": outer.chat_error}, 500)
                     if outer.refuses_think and "think" in body:
                         return self._reply({"error": "model does not support thinking"}, 400)
+                    if outer.refuses_tools and body.get("tools"):
+                        return self._reply({"error": "m does not support tools"}, 400)
                     outer.loaded = {body["model"]: body["options"]["num_ctx"]}
                     self._reply({"message": outer.answer(body), "load_duration": 2e9,
                                  "eval_count": 100, "eval_duration": int(100 / outer.speed * 1e9)})
@@ -98,6 +100,8 @@ class FakeOllama:
 
                 try:
                     for done in range(0, 101, 10):
+                        while outer.stalls and done:
+                            time.sleep(0.2)
                         line({"status": "pulling", "digest": "sha256:a", "total": 100, "completed": done})
                         if outer.slow_pull:
                             time.sleep(0.3)
@@ -196,7 +200,7 @@ def test_one_that_fails_a_check_is_not_used_unless_the_person_says_so(prov, olla
     prov.cfg.roles["primary_chat"] = cfgmod.RoleBinding("before", "ollama", 4096)
     ollama.cannot = {check}
     job = _do(prov)
-    assert job.stage == "failed" and words in job.message and job.can_anyway
+    assert job.stage == "failed" and words in job.message and job.as_dict()["can_anyway"]
     assert prov.cfg.roles["primary_chat"].model == "before"  # what was used still is
     assert _do(prov, anyway=True).stage == "done"
     assert prov.cfg.roles["primary_chat"].model == BIT2
@@ -206,14 +210,14 @@ def test_one_that_cannot_be_run_is_never_used(prov, ollama):
     ollama.chat_error = "unable to load model"
     for anyway in (False, True):
         job = _do(prov, anyway=anyway)
-        assert job.stage == "failed" and "unable to load model" in job.message and not job.can_anyway
+        assert job.stage == "failed" and "unable to load model" in job.message and not job.as_dict()["can_anyway"]
     assert "primary_chat" not in prov.cfg.roles
 
 
 def test_one_that_is_not_the_build_that_was_tested(prov, ollama):
     ollama.serves[BIT2] = "e" * 64
     job = _do(prov)
-    assert job.stage == "failed" and "has changed since it was tested" in job.message and job.can_anyway
+    assert job.stage == "failed" and "has changed since it was tested" in job.message and job.as_dict()["can_anyway"]
     assert "primary_chat" not in prov.cfg.roles and not ollama.chats  # not even run
     assert _do(prov, anyway=True).stage == "done"
 
@@ -223,9 +227,63 @@ def test_one_already_here_is_not_downloaded_again(prov, ollama):
     assert _do(prov).stage == "done" and ollama.pulled == []
 
 
-def test_an_older_build_already_here_is_updated(prov, ollama):
-    ollama.models = {BIT2: "0" * 64, EMBED: catalog.digest_of(EMBED)}
-    assert _do(prov).stage == "done" and ollama.pulled == [BIT2]
+def test_one_that_is_here_is_never_downloaded_over(prov, ollama):
+    """A role may be using it as it is; the tag may be another model by now."""
+    ollama.models = {BIT2: "0" * 64, EMBED: "1" * 64}  # other builds than the tested ones
+    job = _do(prov)
+    assert job.stage == "failed" and "that is here is not the build that was tested" in job.message
+    assert _do(prov, anyway=True).stage == "done"
+    assert ollama.pulled == [] and ollama.models == {BIT2: "0" * 64, EMBED: "1" * 64}
+
+
+def test_going_on_in_spite_of_one_thing_is_not_in_spite_of_another(prov, ollama):
+    ollama.serves[BIT2] = "e" * 64
+    ollama.cannot = {"json"}
+    assert "has changed" in _do(prov).message
+    job = _do(prov, anyway=True)
+    assert job.stage == "failed" and "JSON" in job.message and job.as_dict()["can_anyway"]
+    job = _do(prov, anyway=True)  # and now of both
+    assert job.stage == "done" and "In use although it does not answer in JSON" in job.message
+
+
+def test_a_model_that_refuses_tools_can_still_be_chosen(prov, ollama):
+    ollama.refuses_tools = True
+    job = _do(prov, what="no-tools:1b")
+    assert job.stage == "failed" and "does not use tools" in job.message and job.as_dict()["can_anyway"]
+    assert _do(prov, what="no-tools:1b", anyway=True).stage == "done"
+
+
+def test_a_model_for_the_processor_is_judged_as_one(prov, ollama):
+    """A computer with a GPU too small for any model."""
+    prov._find = lambda: Hardware("linux", "x86_64", "cpu", 8, True, 32000, 32000, 500_000,
+                                  [Gpu("nvidia", "small", 2048, 2000, None, "cuda")])
+    ollama.fits, ollama.speed = 0, 5.0
+    job = _do(prov, what="qwen3.5:4b")
+    assert job.stage == "done" and "slow" not in job.message and "GPU" not in job.message
+    assert not any("vault code" in c["messages"][0]["content"] for c in ollama.chats)
+
+
+def test_a_stalled_download_can_be_stopped(prov, ollama):
+    ollama.stalls = True
+    job = prov.submit("model", BIT2)
+    deadline = time.monotonic() + 10
+    while not job.total and time.monotonic() < deadline:
+        time.sleep(0.05)
+    t = time.monotonic()
+    prov.stop_job(job.id)
+    prov.wait(job)
+    assert job.stage == "stopped" and time.monotonic() - t < 5
+
+
+def test_the_disk_that_counts_is_the_one_models_go_to(prov, monkeypatch, tmp_path):
+    asked = []
+    monkeypatch.setattr(provision.hardware, "_disk_free", lambda p: asked.append(p) or 500_000)
+    prov.cfg.backends["ollama"].models_dir = str(tmp_path / "big")
+    _do(prov)
+    assert set(asked) == {tmp_path / "big"}
+    prov.cfg.backends["ollama"].models_dir = ""
+    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "theirs"))
+    assert prov.models_dir() == tmp_path / "theirs"
 
 
 def test_any_other_model_by_name(prov, ollama):
@@ -462,6 +520,30 @@ def test_the_command_line_without_a_gateway(prov, ollama, monkeypatch, capsys):
     assert cli.main(["install", "qwen3.5:9b"]) == 1 and "--anyway" in capsys.readouterr().err
     assert cli.main(["install", "qwen3.5:9b", "--anyway"]) == 0
     assert cli.main(["remove", BIT2]) == 0
+    assert cli.main(["install", "a b"]) == 1 and "a model's name" in capsys.readouterr().err
+    ollama.server.shutdown()
+    ollama.server.server_close()
+    monkeypatch.setattr(cli, "_ensure_ollama", lambda cfg: object())
+    assert cli.main(["remove", "x:1b"]) == 1  # said, not a traceback
+
+
+def test_the_command_line_when_the_gateway_goes_away(monkeypatch, capsys):
+    from hearth import cli
+
+    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: "hearth/9")
+    replies = [httpx.Response(200, json={"id": 5, "kind": "model", "what": "m:1b", "stage": "waiting", "message": "",
+                                         "done": 0, "total": 0})]
+
+    def request(method, url, **kw):
+        if replies:
+            return replies.pop(0)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(cli.httpx, "request", request)
+    assert cli.main(["install", "m:1b"]) == 1 and "stopped answering" in capsys.readouterr().err
+    replies[:] = [httpx.Response(200, json={"id": 5, "kind": "model", "what": "m:1b", "stage": "waiting", "message": "",
+                                            "done": 0, "total": 0}), httpx.Response(200, json={"jobs": []})]
+    assert cli.main(["install", "m:1b"]) == 1 and "restarted" in capsys.readouterr().err
 
 
 def test_what_was_measured_is_kept_whatever_is_in_the_file(prov, tmp_path):

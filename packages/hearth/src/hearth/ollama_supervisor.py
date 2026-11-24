@@ -53,7 +53,9 @@ def ollama_binary() -> str | None:
     if env and Path(env).exists():
         return env
     exe = "ollama.exe" if sys.platform == "win32" else "ollama"
-    for root in (paths.data_dir() / "ollama", paths.find_in_checkout("vendor", "ollama")):
+    version = paths.current().get("ollama")
+    installed = paths.data_dir() / "ollama" / version if version else None
+    for root in (installed, paths.find_in_checkout("vendor", "ollama")):
         for rel in ("bin", ""):  # the Linux archive has bin/, the others do not
             if root is not None and (p := root / rel / exe).is_file():
                 return str(p)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,13 @@ log = logging.getLogger("hearth.provision")
 
 CHAT_ROLES = ("primary_chat", "fast_chat", "coding")
 WHISPER_SIZE = "small"
+_WHISPER = "https://huggingface.co/Systran/faster-whisper-small/resolve/536b0662742c02347bc0e980a01041f333bce120/"
+_WHISPER_FILES = {
+    "config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
+    "tokenizer.json": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+    "vocabulary.txt": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+    "model.bin": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",  # last: it makes it present
+}
 
 
 class Problem(Exception):
@@ -38,18 +46,18 @@ class Job:
     id: int
     kind: str              # "model" | "kokoro" | "stt"
     what: str              # the model's name; "" for the others
-    anyway: bool = False   # assign it although it changed, or failed a check
+    overrule: set = field(default_factory=set)  # what the person said to go on in spite of: "changed", "checks"
+    reason: str = ""       # why it failed, if that is one of those
     stage: str = "waiting"  # waiting | download | check | assign | done | failed | stopped
     message: str = ""
     done: int = 0          # bytes
     total: int = 0
     result: dict | None = None
-    can_anyway: bool = False  # failed in a way the person may overrule
     stop: threading.Event = field(default_factory=threading.Event)
 
     def as_dict(self) -> dict:
-        return {k: getattr(self, k) for k in
-                ("id", "kind", "what", "stage", "message", "done", "total", "result", "can_anyway")}
+        return {**{k: getattr(self, k) for k in ("id", "kind", "what", "stage", "message", "done", "total", "result")},
+                "can_anyway": bool(self.reason)}
 
     @property
     def finished(self) -> bool:
@@ -119,24 +127,46 @@ def same_model(a: str, b: str) -> bool:
 def pull(base_url: str, model: str, job: Job) -> None:
     """Ollama keeps what it has of an interrupted download and goes on from it."""
     layers: dict[str, tuple[int, int]] = {}
-    with httpx.stream("POST", f"{base_url}/api/pull", json={"model": model, "stream": True},
-                      timeout=httpx.Timeout(None, connect=10.0)) as r:
+    finished = threading.Event()
+    with httpx.Client(timeout=httpx.Timeout(None, connect=10.0)) as client, \
+            client.stream("POST", f"{base_url}/api/pull", json={"model": model, "stream": True}) as r:
         if r.status_code >= 400:
             r.read()
             raise Problem(_error(r) or f"the download answered HTTP {r.status_code}")
-        for line in r.iter_lines():
+
+        def watch() -> None:  # a stalled download says nothing: stopping cannot wait for its next line
+            while not finished.wait(0.3):
+                if job.stop.is_set():
+                    sock = r.extensions["network_stream"].get_extra_info("socket")
+                    try:
+                        sock.shutdown(2)
+                    except OSError:
+                        pass
+                    return
+
+        threading.Thread(target=watch, daemon=True).start()
+        try:
+            for line in r.iter_lines():
+                if job.stop.is_set():
+                    raise Stopped
+                try:
+                    o = json.loads(line) if line else {}
+                except ValueError:
+                    continue
+                if o.get("error"):
+                    raise Problem(str(o["error"]))
+                if o.get("digest") and o.get("total"):
+                    layers[o["digest"]] = (int(o.get("completed") or 0), int(o["total"]))
+                    job.done = sum(d for d, _ in layers.values())
+                    job.total = sum(t for _, t in layers.values())
+        except httpx.HTTPError:
             if job.stop.is_set():
-                raise Stopped
-            try:
-                o = json.loads(line) if line else {}
-            except ValueError:
-                continue
-            if o.get("error"):
-                raise Problem(str(o["error"]))
-            if o.get("digest") and o.get("total"):
-                layers[o["digest"]] = (int(o.get("completed") or 0), int(o["total"]))
-                job.done = sum(d for d, _ in layers.values())
-                job.total = max(job.total, sum(t for _, t in layers.values()))
+                raise Stopped from None
+            raise
+        finally:
+            finished.set()
+    if job.stop.is_set():
+        raise Stopped
 
 
 def _error(r: httpx.Response) -> str:
@@ -166,8 +196,21 @@ class Provisioner:
     def _probe(self) -> hardware.Hardware:
         """Kept for a while: the page asks every second, and it runs programs."""
         if self._found is None or time.monotonic() - self._found[0] > 15:
-            self._found = (time.monotonic(), self._find())
+            hw = self._find()
+            hw.disk_free_mib = hardware._disk_free(self.models_dir())
+            self._found = (time.monotonic(), hw)
         return self._found[1]
+
+    def models_dir(self) -> Path:
+        """Where Ollama puts models: hearth's own folder for it, or Ollama's."""
+        try:
+            own = self.ollama().models_dir
+        except Problem:
+            own = ""
+        if own or os.environ.get("OLLAMA_MODELS"):
+            return Path(own or os.environ["OLLAMA_MODELS"])
+        shared = Path("/usr/share/ollama/.ollama/models")  # a system service's, on Linux
+        return shared if shared.is_dir() else Path.home() / ".ollama" / "models"
 
     def ollama(self) -> cfgmod.Backend:
         for b in self.cfg.backends.values():
@@ -202,7 +245,8 @@ class Provisioner:
     def state(self) -> dict:
         with self._lock:
             jobs = [j.as_dict() for j in self._jobs[-20:]]
-        return {"plan": catalog.plan(self._probe()), "installed": self.installed(), "voices": self.voices(),
+        installed = self.installed()
+        return {"plan": catalog.plan(self._probe(), [m["model"] for m in installed]), "installed": installed, "voices": self.voices(),
                 "roles": {n: {"model": r.model, "backend": r.backend, "context": r.context}
                           for n, r in self.cfg.roles.items()},
                 "jobs": jobs}
@@ -214,10 +258,15 @@ class Provisioner:
         if kind == "model" and not (what and len(what) < 200 and all(c.isprintable() and not c.isspace() for c in what)):
             raise Problem("a model's name is needed")
         with self._lock:
-            for j in self._jobs:
-                if not j.finished and (j.kind, j.what) == (kind, what):
-                    return j  # asked for twice is asked for once
-            job = Job(self._next, kind, what, anyway)
+            before = next((j for j in reversed(self._jobs) if (j.kind, j.what) == (kind, what)), None)
+            overrule: set = set()
+            if anyway:  # in spite of what they were told, and of nothing else
+                overrule = {*before.overrule, before.reason} - {""} if before and (before.reason or before.overrule) \
+                    else {"changed", "checks"}
+            if before is not None and not before.finished:
+                before.overrule |= overrule
+                return before  # asked for twice is asked for once
+            job = Job(self._next, kind, what, overrule)
             self._next += 1
             self._jobs.append(job)
             if self._thread is None or not self._thread.is_alive():
@@ -274,42 +323,47 @@ class Provisioner:
                 job.stage, job.message = "failed", f"{type(e).__name__}: {e}"
 
     # ── a model ──────────────────────────────────────────────────────────────
-    def _need_disk(self, bytes_wanted: int, job: Job) -> None:
-        free = hardware._disk_free(paths.data_dir())
+    def _need_disk(self, bytes_wanted: int, where: Path) -> None:
+        free = hardware._disk_free(where)
         if free is not None and free < bytes_wanted / (1 << 20) + catalog.DISK_SPARE_MIB:
             raise Problem(f"Not enough free disk space: it needs {bytes_wanted / 1e9:.1f} GB and some to spare, "
-                          f"and {free / 1024:.1f} GB are free.")
+                          f"and {free * (1 << 20) / 1e9:.1f} GB are free.")
 
     def _get(self, base: str, model: str, job: Job, size: int) -> dict:
+        """The model, downloaded if it is not here. One that is here is never
+        downloaded over: a role may be using it as it is."""
         have = _named(_models(base), model)
-        want = catalog.digest_of(model)
-        if have is None or (want and have.get("digest") != want):
-            if have is None:
-                self._need_disk(size, job)
+        if have is None:
+            self._need_disk(size, self.models_dir())
             job.message = f"Downloading {model}…"
             pull(base, model, job)
             have = _named(_models(base), model)
-        if have is None:
-            raise Problem(f"{model} was downloaded, and Ollama does not list it")
-        if want and have.get("digest") != want and not job.anyway:
-            job.can_anyway = True
-            raise Problem(f"{model} has changed since it was tested with hearth. Update hearth, or use it anyway.")
+            if have is None:
+                raise Problem(f"{model} was downloaded, and Ollama does not list it")
+            changed = f"{model} has changed since it was tested with hearth. Update hearth, or use it anyway."
+        else:
+            changed = (f"The {model} that is here is not the build that was tested with hearth. Use it anyway, or remove "
+                       "it and install it again.")
+        want = catalog.digest_of(model)
+        if want and have.get("digest") != want and "changed" not in job.overrule:
+            job.reason = "changed"
+            raise Problem(changed)
         return have
 
     def _model(self, job: Job) -> None:
         base = self.ollama().base_url
         hw = self._probe()
         embed = catalog.embedding()
-        offer = next((o for o in catalog.offers(hw) if o.model == job.what), None)
-        if job.what == embed["model"]:
+        if same_model(job.what, embed["model"]):
             self._embedding(base, job)
             job.message = f"{embed['title']} is ready."
             return
+        offer = next((o for o in catalog.offers(hw) if o.model == job.what), None)
         info = self._get(base, job.what, job, offer.download if offer else 0)
         self._embedding(base, job)
 
         job.stage = "check"
-        on_gpu = hw.best_gpu() is not None
+        on_gpu = offer.fit != "cpu" and hw.best_gpu() is not None if offer else catalog.verdict(hw)[0] in ("recommended", "works")
         bound = self.cfg.context_of_model(job.what)
         context = (offer.context if offer and offer.context else 0) or bound or (16384 if on_gpu else 8192)
 
@@ -325,8 +379,8 @@ class Provisioner:
         if res.error:
             raise Problem(f"{job.what} could not be run here: {res.error}")
         _remember(info.get("digest", ""), job.result)
-        if res.failed and not job.anyway:
-            job.can_anyway = True
+        if res.failed and "checks" not in job.overrule:
+            job.reason = "checks"
             raise Problem(f"{job.what} runs, but " + "; ".join(res.failed) + ". It was not chosen for chat.")
 
         job.stage = "assign"
@@ -335,6 +389,8 @@ class Provisioner:
             self.cfg.roles[role] = cfgmod.RoleBinding(model=job.what, backend=self.ollama().name, context=res.context)
         cfgmod.save(self.cfg)
         job.message = self._outcome(res, on_gpu, hw, job.what)
+        if res.failed:
+            job.message += " In use although " + "; ".join(res.failed) + "."
 
     def _outcome(self, res, on_gpu: bool, hw: hardware.Hardware, model: str) -> str:
         text = f"Ready: {res.tokens_per_second:.0f} tokens a second, {res.context} tokens of context."
@@ -347,13 +403,14 @@ class Provisioner:
         return text
 
     def _embedding(self, base: str, job: Job) -> None:
-        """Needed by every program that searches its memory. One that is bound is
-        kept: what it has embedded is of no use to another."""
+        """Needed by every program that searches its memory. One that is bound, or
+        here, is kept as it is: what it has embedded is of no use to another."""
         e = catalog.embedding()
         bound = self.cfg.roles.get("embedding")
         if bound is not None and not same_model(bound.model, e["model"]):
             return
-        self._get(base, e["model"], job, e["download"])
+        if _named(_models(base), e["model"]) is None:
+            self._get(base, e["model"], job, e["download"])
         if bound is None:
             self.cfg.roles["embedding"] = cfgmod.RoleBinding(model=e["model"], backend=self.ollama().name)
             cfgmod.save(self.cfg)
@@ -378,7 +435,7 @@ class Provisioner:
         if not kokoro_tts.package_present():
             raise Problem("This hearth was installed without natural voices — run its installer again.")
         d = kokoro_tts.override_dir() or paths.voices_dir("kokoro")
-        self._need_disk(400_000_000, job)
+        self._need_disk(400_000_000, d)
         job.message = "Downloading the natural voices…"
         for name, digest in kokoro_tts.FILES.items():
             fetch(kokoro_tts.RELEASE + name, d / name, digest, job)
@@ -387,11 +444,11 @@ class Provisioner:
     def _stt(self, job: Job) -> None:
         if not stt_possible():
             raise Problem("This hearth was installed without speech recognition — run its installer again.")
-        self._need_disk(600_000_000, job)
+        d = paths.voices_dir("whisper") / WHISPER_SIZE
+        self._need_disk(500_000_000, d)
         job.message = "Downloading speech recognition…"
-        from faster_whisper.utils import download_model
-
-        download_model(WHISPER_SIZE, cache_dir=str(paths.voices_dir("whisper")))
+        for name, digest in _WHISPER_FILES.items():
+            fetch(_WHISPER + name, d / name, digest, job)
         job.message = "Speech recognition is ready."
 
 
@@ -401,9 +458,15 @@ def stt_possible() -> bool:
     return find_spec("faster_whisper") is not None
 
 
+def whisper_model(size: str) -> str:
+    """What to load: hearth's own copy, or the size's name (a copy in Hugging
+    Face's cache, from an earlier version, or a download)."""
+    d = paths.voices_dir("whisper") / size
+    return str(d) if (d / "model.bin").is_file() else size
+
+
 def whisper_present(size: str) -> bool:
-    d = paths.voices_dir("whisper") / f"models--Systran--faster-whisper-{size}" / "snapshots"
-    return any(d.glob("*/model.bin")) if d.is_dir() else False
+    return whisper_model(size) != size
 
 
 # ── what was measured here, by the model's digest ─────────────────────────────
