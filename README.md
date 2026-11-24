@@ -141,6 +141,7 @@ host: 127.0.0.1
 port: 8765
 provider: hearth
 model: primary_chat
+web_search: true      # let hearth search the web in chats; false keeps them off it
 providers:
   hearth: { type: openai, base_url: http://127.0.0.1:11435/v1 }
 ```

@@ -43,6 +43,8 @@ class Config:
                                   # (hearth's `vision` role); "" disables routing
     tts_voice: str = ""           # voice id for read-aloud (e.g. "en_US-amy-medium");
                                   # "" lets the backend pick its default voice
+    web_search: bool = True       # ask hearth to add its web search/fetch to chats;
+                                  # false keeps a chat (and your tools' results) off the web
     providers: dict[str, Provider] = field(default_factory=lambda: {"hearth": Provider()})
     # name -> mcp_host.ServerConfig (kept as Any to avoid importing the MCP SDK
     # at config-import time; empty by default → mantel behaves as a plain chat).
@@ -92,6 +94,8 @@ def load() -> Config:
     cfg.model = data.get("model", cfg.model)
     cfg.vision_model = data.get("vision_model", cfg.vision_model)
     cfg.tts_voice = data.get("tts_voice", cfg.tts_voice)
+    # Off unless it plainly says on: a typo must not put a chat on the web.
+    cfg.web_search = data.get("web_search", cfg.web_search) is True
     provs = data.get("providers") or {}
     if isinstance(provs, dict) and provs:
         cfg.providers = {}
@@ -132,6 +136,7 @@ def save(cfg: Config) -> Path:
         "model": cfg.model,
         "vision_model": cfg.vision_model,
         "tts_voice": cfg.tts_voice,
+        "web_search": cfg.web_search,
         "providers": {
             n: {"type": pr.type, "base_url": pr.base_url,
                 **({"api_key": pr.api_key} if pr.api_key else {})}

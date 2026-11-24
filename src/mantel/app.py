@@ -401,8 +401,8 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
         data: dict = {}
         try:
             r = await _http().get(f"{prov.base_url}/audio/voices", headers=prov.headers(), timeout=10.0)
-            if r.status_code == 200:
-                data = r.json() or {}
+            if r.status_code == 200 and isinstance(body := r.json(), dict):
+                data = body
         except (httpx.HTTPError, ValueError):
             pass
         return JSONResponse({"voices": data.get("voices") or [], "default": data.get("default"),
@@ -692,6 +692,12 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
             # translate images. Vision doesn't need the deep-think toggle anyway.
             base.pop("think", None)
         tools = host.openai_tools() if (host and host.has_tools()) else None
+        # hearth's web tools are only for a request that asks. A cloud provider
+        # has no such field and may refuse it, so only hearth is asked.
+        if app.state.cfg.provider == "hearth":
+            base["web_search"] = app.state.cfg.web_search and base.get("web_search", True) is True
+        else:
+            base.pop("web_search", None)
 
         async def gen():
             try:

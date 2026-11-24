@@ -148,3 +148,80 @@ def test_hearth_engine_tools_surface_as_tool_events(monkeypatch):
     assert tools[1]["content"] == "5 results"
     # The answer itself still streams through untouched.
     assert "Debian 13." in body
+
+
+# ── web search ────────────────────────────────────────────────────────────────
+
+def _sent(monkeypatch, cfg, **body) -> dict:
+    """The request /api/chat sends to the backend."""
+    import json
+
+    from mantel import app as appmod
+
+    sent = {}
+
+    async def fake_stream(prov, req, client=None):
+        sent.update(req)
+        yield json.dumps({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(appmod, "_backend_chat_stream", fake_stream)
+    r = TestClient(create_app(cfg), base_url="http://localhost").post("/api/chat", json={
+        "model": "m", "messages": [{"role": "user", "content": "hi"}], **body})
+    assert r.status_code == 200
+    return sent
+
+
+def test_hearth_is_asked_for_its_web_tools(monkeypatch):
+    assert _sent(monkeypatch, cfgmod.Config())["web_search"] is True
+
+
+def test_web_search_off_in_config_wins_over_the_request(monkeypatch):
+    cfg = cfgmod.Config(web_search=False)
+    assert _sent(monkeypatch, cfg)["web_search"] is False
+    assert _sent(monkeypatch, cfg, web_search=True)["web_search"] is False
+    assert _sent(monkeypatch, cfgmod.Config(), web_search=False)["web_search"] is False
+
+
+def test_other_backends_never_get_the_hearth_field(monkeypatch):
+    cfg = cfgmod.Config(provider="openai", providers={
+        "openai": cfgmod.Provider(base_url="http://127.0.0.1:1/v1", api_key="k")})
+    assert "web_search" not in _sent(monkeypatch, cfg)
+    assert "web_search" not in _sent(monkeypatch, cfg, web_search=True)
+
+
+def test_web_search_setting_survives_a_save_and_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cfgmod.load().web_search is True            # no file
+    cfgmod.save(cfgmod.Config(web_search=False))
+    assert cfgmod.load().web_search is False
+    cfgmod.config_path().write_text("provider: hearth\n")
+    assert cfgmod.load().web_search is True            # a config from before the setting
+    for bad in ("'no'", "nope", "0", "1", "null"):
+        cfgmod.config_path().write_text(f"web_search: {bad}\n")
+        assert cfgmod.load().web_search is False, bad
+
+
+# ── voice choice ──────────────────────────────────────────────────────────────
+
+def test_voice_list_degrades_when_backend_down():
+    assert _client().get("/api/voices").json() == {"voices": [], "default": None, "selected": ""}
+
+
+def test_chosen_voice_is_saved_and_spoken(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    c = _client()
+    assert c.put("/api/voice", json={"voice": "kokoro:bm_george "}).json()["voice"] == "kokoro:bm_george"
+    assert c.get("/api/voices").json()["selected"] == "kokoro:bm_george"
+    assert c.get("/api/config").json()["tts_voice"] == "kokoro:bm_george"
+    assert cfgmod.load().tts_voice == "kokoro:bm_george"
+
+
+def test_voice_list_that_is_not_an_object_is_no_list(monkeypatch):
+    """A backend whose /audio/voices answers something else must not break Settings."""
+    import httpx
+
+    async def get(self, url, **kw):
+        return httpx.Response(200, json=["alloy"], request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", get)
+    assert _client().get("/api/voices").json()["voices"] == []
