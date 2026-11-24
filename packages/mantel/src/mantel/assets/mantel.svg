@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Mantel">
+  <rect width="256" height="256" rx="56" fill="#17181c"/>
+  <rect x="44" y="74" width="168" height="22" rx="9" fill="#6ea8fe"/>
+  <path d="M66 100 V176 a20 20 0 0 0 20 20 h84 a20 20 0 0 0 20-20 V100" fill="none" stroke="#6ea8fe" stroke-width="18" stroke-linejoin="round"/>
+  <circle cx="128" cy="150" r="20" fill="#9ec3ff"/>
+</svg>
