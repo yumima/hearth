@@ -3,8 +3,8 @@
 Hosted providers run their built-in tools (web search, code execution) *inside*
 the completion: the client sends one request and gets one answer, with the
 search round-trips happening invisibly in between. Hearth does the same for the
-tools defined in webtools.py, which is what lets an unmodified OpenAI SDK
-client — or finterm, or mantel — get live data with no code of its own.
+tools defined in webtools.py, so a client gets live data for one extra field
+in its request ("web_search": true) and no code of its own.
 
 The two rules that keep this safe to bolt onto a passthrough gateway:
 

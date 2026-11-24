@@ -9,7 +9,7 @@ behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
 Any `openai`-SDK client works pointed at the base URL. The full design spec
 lives in finterm's `plans/local-ai-engine.md`.
 
-## Today's commits (2026-11-23)
+## Today's commits (2026-11-24)
 
 Latest first.
 
@@ -109,7 +109,7 @@ OpenAI-compatible (point any `openai` client here):
 
 | Endpoint | Notes |
 |---|---|
-| `POST /v1/chat/completions` | streaming SSE + tool calling; optional `think: bool` (hearth extension) toggles a reasoning model's chain-of-thought via the native API |
+| `POST /v1/chat/completions` | streaming SSE + tool calling; optional `think: bool` (hearth extension) toggles a reasoning model's chain-of-thought via the native API; `web_search: true` (also an extension) adds the engine's web tools |
 | `POST /v1/embeddings` | text → vector |
 | `GET /v1/models` | concrete models **+** role aliases |
 
@@ -153,9 +153,18 @@ CPU-only boxes are sized by RAM. Precedence: built-in default
 
 ## Security
 
-Single-user, single-host, **loopback-bound by default**. Host-header guard +
-no CORS mitigates DNS-rebinding. Off-loopback needs `--unsafe-bind`, which
-forces `--api-key`.
+Single-user, single-host, **loopback-bound by default**. A Host-header guard and
+no CORS mitigate DNS-rebinding, and a request sent by another web page is refused
+(a browser names its origin; only hearth's own is accepted). Off-loopback needs
+`--unsafe-bind`, which forces `--api-key`. On a computer shared by several
+accounts, any of them can reach the loopback port.
+
+**Web search is only for requests that ask.** The engine adds `web_search` and
+`web_fetch` when the request says `"web_search": true`, never on its own: a chat
+holding private data plus tools that reach the internet is a way for a hostile
+page to get that data out. `hearth chat` and the chat window ask, unless
+`search.chat: false` is in config.yaml; `hearth code` carries the same tools
+itself; `search.enabled: false` turns all of it off.
 
 ## Develop
 

@@ -146,6 +146,7 @@
 <script>
 "use strict";
 const API = location.origin;            // same-origin: the gateway that served us
+const WEB_SEARCH = __WEB_SEARCH__;      // config search.chat, filled in as the page is served
 const $ = (id) => document.getElementById(id);
 
 let history = [];        // [{role, content}]
@@ -291,6 +292,7 @@ async function send() {
   const req = deepThink
     ? { model, messages: history, stream: true }
     : { model: "fast_chat", messages: history, stream: true, think: false };
+  req.web_search = WEB_SEARCH;  // the engine adds its web tools only when asked
 
   setSending(true);
   controller = new AbortController();

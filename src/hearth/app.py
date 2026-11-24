@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from . import __version__
 from . import backends as backends_mod
 from . import config as cfgmod
 from . import tts
@@ -59,7 +60,7 @@ def create_app(
                 for b in registry.values():
                     await b.aclose()
 
-    app = FastAPI(title="hearth", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="hearth", version=__version__, lifespan=lifespan)
     app.state.cfg = cfg
     app.state.backends = registry
     app.add_middleware(

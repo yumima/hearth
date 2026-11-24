@@ -1,6 +1,6 @@
 [project]
 name = "hearth"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Hearth — a stable, OpenAI-compatible local AI engine on loopback. Fronts Ollama (and later llama.cpp/vLLM/faster-whisper) behind one HTTP API with a role registry, hardware probe, and tool-call repair."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,7 @@ tts = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "numpy",  # the read-aloud tests run Kokoro's audio code without Kokoro (the tts extra brings it)
 ]
 
 [project.scripts]
@@ -45,6 +46,10 @@ hearth = "hearth.cli:main"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+# The one place the version is written (read without importing the package).
+version = { attr = "hearth.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

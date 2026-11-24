@@ -169,7 +169,7 @@ def test_admin_version_and_server_header():
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "hearth"
-    assert body["contract"] == "0.1"
+    assert body["contract"] == "0.2"
     assert body["engine"].startswith("hearth/")
     # Server header identifies hearth on every passed-through response.
     assert r.headers.get("server", "").startswith("hearth/")
@@ -278,3 +278,118 @@ def test_nonstreaming_chat_stops_when_the_client_hangs_up():
     assert Hangs.cancelled
     assert sent[0]["status"] == 499
 
+
+
+# ── web search: only when the request asks ────────────────────────────────────
+
+def _tool_names(backend):
+    return [t["function"]["name"] for t in backend.last_payload.get("tools") or []]
+
+
+def _chat(cfg=None, **body):
+    b = FakeBackend()
+    app = create_app(cfg or cfgmod.default_config(), backends_override={"ollama": b})
+    r = TestClient(app, base_url="http://localhost").post("/v1/chat/completions", json={
+        "model": "primary_chat", "messages": [{"role": "user", "content": "hi"}], **body})
+    assert r.status_code == 200
+    return b
+
+
+def test_web_tools_are_not_attached_unasked():
+    tool = {"type": "function", "function": {"name": "get_holdings", "parameters": {}}}
+    for body in ({}, {"tools": [tool]}, {"web_search": False}, {"web_search": None},
+                 {"web_search": "false"}, {"web_search": 1}, {"stream": True, "tools": [tool]}):
+        b = _chat(**body)
+        assert not {"web_search", "web_fetch"} & set(_tool_names(b)), body
+        assert "web_search" not in b.last_payload  # a hearth field, not the backend's
+        assert len(b.last_payload["messages"]) == 1  # nor its preamble
+
+
+def test_web_tools_join_the_clients_own_when_asked():
+    tool = {"type": "function", "function": {"name": "mine", "parameters": {}}}
+    assert _tool_names(_chat(web_search=True, tools=[tool])) == ["mine", "web_search", "web_fetch"]
+
+
+def test_asking_does_not_override_search_turned_off():
+    cfg = cfgmod.default_config()
+    cfg.search.enabled = False
+    assert _tool_names(_chat(cfg, web_search=True)) == []
+
+
+def test_a_config_from_when_search_was_automatic_attaches_nothing(monkeypatch, tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("search:\n  enabled: true\n  auto: true\n")
+    monkeypatch.setenv("HEARTH_CONFIG", str(p))
+    cfg = cfgmod.load()
+    assert _tool_names(_chat(cfg)) == []
+    assert "auto" not in cfg.to_yaml_dict()["search"]
+
+
+def test_a_think_off_stream_gets_the_tools_it_asks_for():
+    """What `hearth chat` and the window send in their fast lane."""
+    assert _tool_names(_chat(web_search=True, stream=True, think=False)) == ["web_search", "web_fetch"]
+
+
+def _loaded(monkeypatch, tmp_path, text):
+    p = tmp_path / "config.yaml"
+    p.write_text(text)
+    monkeypatch.setenv("HEARTH_CONFIG", str(p))
+    return cfgmod.load()
+
+
+def test_turning_automatic_search_off_still_keeps_our_chats_off_the_web(monkeypatch, tmp_path):
+    assert _loaded(monkeypatch, tmp_path, "search: {auto: false}\n").search.chat is False
+    assert _loaded(monkeypatch, tmp_path, "search: {auto: true}\n").search.chat is True
+    assert _loaded(monkeypatch, tmp_path, "{}\n").search.chat is True
+    cfg = _loaded(monkeypatch, tmp_path, "search: {auto: false, chat: true}\n")
+    assert cfg.search.chat is True  # the newer key wins
+    cfg.search.chat = False
+    cfgmod.save(cfg)
+    assert cfgmod.load().search.chat is False
+
+
+def test_the_chat_window_asks_as_configured():
+    for chat in (True, False):
+        cfg = cfgmod.default_config()
+        cfg.search.chat = chat
+        app = create_app(cfg, backends_override={"ollama": FakeBackend()})
+        r = TestClient(app, base_url="http://localhost").get("/app")
+        assert f"const WEB_SEARCH = {str(chat).lower()};" in r.text
+        assert "req.web_search = WEB_SEARCH" in r.text and "__WEB_SEARCH__" not in r.text
+        assert r.headers["x-frame-options"] == "DENY"
+
+
+def test_the_terminal_chat_asks_as_configured(monkeypatch, capsys):
+    import io
+
+    from hearth import cli
+
+    for chat in (True, False):
+        cfg = cfgmod.default_config()
+        cfg.search.chat = chat
+        sent = []
+
+        def stream(method, url, json=None, **kw):
+            sent.append(json)
+            raise cli.httpx.ConnectError("stop here")
+
+        monkeypatch.setattr(cli.cfgmod, "load", lambda *a, **k: cfg)
+        monkeypatch.setattr(cli.httpx, "stream", stream)
+        monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: None)
+        monkeypatch.setattr(cli, "_chat_models", lambda base: (["primary_chat"], []))
+        monkeypatch.setattr("builtins.input", iter_input("hello"))
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
+        cli.main(["chat"])
+        assert [s["web_search"] for s in sent] == [chat]
+
+
+def iter_input(*lines):
+    it = iter(lines)
+
+    def read(*_):
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError from None
+
+    return read

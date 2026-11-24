@@ -1,9 +1,8 @@
 """Live web access for the engine — search providers + page fetch.
 
 Hearth's own answer to "the model only knows what it was trained on". This is
-deliberately in the *engine*, not in a client: mantel, finterm, `hearth chat`
-and `hearth code` all talk to /v1, so putting search here means every consumer
-gets live data without shipping its own scraper.
+deliberately in the *engine*, not in a client: any consumer of /v1 can have
+live data by asking ("web_search": true) without shipping its own scraper.
 
 Provider chain (config `search.provider: auto`), in order of preference:
 

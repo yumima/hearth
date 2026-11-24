@@ -117,15 +117,17 @@ class RoleBinding:
 class SearchConfig:
     """Live web access (see websearch.py).
 
-    Off by default for nothing — the engine is loopback-only, but *search* is
-    the one feature that makes outbound requests, so it stays explicit and
-    auditable in config.yaml rather than being an invisible behaviour.
+    Search is the one feature that makes outbound requests, so nothing turns it
+    on but the request: a client asks with {"web_search": true}. It is never
+    attached to a conversation unasked — a client that puts private data in a
+    chat (finterm: the user's portfolio) would hand a model reading untrusted
+    pages a way to send that data out in a search or a URL.
     """
     enabled: bool = True
-    # Inject web_search/web_fetch into every tool-capable chat request, the way
-    # a hosted provider ships server-side tools. False → the tools exist but a
-    # client must opt in per request with {"web_search": true}.
-    auto: bool = True
+    # Do hearth's own chats (`hearth chat`, the chat window) ask? Read from the
+    # old `auto` key where there is no `chat`: `auto: false` was someone turning
+    # search off in them.
+    chat: bool = True
     provider: str = "auto"  # auto | brave | searxng | brave_html | wikipedia
     # Key stays in an env var by default so it is never written to config.yaml
     # (which is a file users paste into issues) and never committed.
@@ -246,7 +248,7 @@ class Config:
             },
             "search": {
                 "enabled": self.search.enabled,
-                "auto": self.search.auto,
+                "chat": self.search.chat,
                 "provider": self.search.provider,
                 **({"brave_api_key": self.search.brave_api_key}
                    if self.search.brave_api_key else {}),
@@ -295,7 +297,7 @@ def load(create: bool = True) -> Config:
     defaults = SearchConfig()
     search = SearchConfig(
         enabled=bool(s.get("enabled", defaults.enabled)),
-        auto=bool(s.get("auto", defaults.auto)),
+        chat=bool(s.get("chat", s.get("auto", defaults.chat))),
         provider=str(s.get("provider", defaults.provider)),
         brave_api_key=str(s.get("brave_api_key", "")),
         brave_api_key_env=str(s.get("brave_api_key_env", defaults.brave_api_key_env)),

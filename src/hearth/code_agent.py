@@ -122,12 +122,12 @@ class CodeAgent:
         self.max_rounds = max_rounds
         self.quiet = quiet
         self.search_cfg = cfgmod.load().search
-        # The engine injects web_search/web_fetch into any tool-capable request,
-        # but we send our own tool list, and a turn mixing engine tools with
-        # ours would be handed back to us unexecuted. So we opt out of the
-        # injection and carry the same tools ourselves — one implementation,
-        # and every call resolves here where the loop can see it.
-        self.tools = _FILE_TOOLS + webtools.tool_specs(self.search_cfg)
+        # We could ask the engine for web_search/web_fetch, but we send our own
+        # tool list, and a turn mixing engine tools with ours would be handed
+        # back to us unexecuted. So we carry the same tools ourselves — one
+        # implementation, and every call resolves here where the loop sees it.
+        self.tools = _FILE_TOOLS + (
+            webtools.tool_specs(self.search_cfg) if self.search_cfg.enabled else [])
         self.messages: list[dict] = [{"role": "system", "content": self._system()}]
 
     def _system(self) -> str:
@@ -143,9 +143,9 @@ class CodeAgent:
             "- Verify your work by running the project's own tests or build with run_shell. "
             "Read the output — an exit code of 0 from a script that ran no tests proves "
             "nothing. If you did not verify something, say so plainly.\n"
-            "- Use web_search/web_fetch when you need current documentation or an API you "
-            "are unsure about, rather than guessing.\n"
-            "- Keep explanations short. Report what you changed and what you verified.\n\n"
+            + ("- Use web_search/web_fetch when you need current documentation or an API you "
+               "are unsure about, rather than guessing.\n" if self.search_cfg.enabled else "")
+            + "- Keep explanations short. Report what you changed and what you verified.\n\n"
             "All tool paths are relative to the project root; you cannot touch files outside it.")
 
     # ── path safety ───────────────────────────────────────────────────────────

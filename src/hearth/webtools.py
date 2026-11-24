@@ -2,9 +2,9 @@
 
 These are *server-side* tools in the hosted-provider sense — hearth injects the
 schemas, the model calls them, and hearth executes them inside /v1 before the
-response ever reaches the client. A consumer that knows nothing about search
-(finterm, a bare OpenAI SDK script) gets live data for free; a consumer that
-sends its own tools keeps them, since ours are appended, not substituted.
+response ever reaches the client. A request gets them by asking, with
+{"web_search": true}; a consumer that sends its own tools keeps them, since
+ours are appended, not substituted.
 
 Naming matches Anthropic's server tools (``web_search``/``web_fetch``) because
 models have seen that convention far more often than any name we'd invent.

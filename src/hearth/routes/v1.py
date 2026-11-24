@@ -124,10 +124,9 @@ async def chat_completions(request: Request):
     # pop it from the OpenAI payload and route to the native path when present.
     # Absent (the common case) → byte-for-byte OpenAI passthrough, unchanged.
     think = payload.pop("think", None)
-    # `web_search` is likewise a hearth extension: an explicit per-request
-    # override of the configured default (True forces the tools on for this
-    # call, False keeps them out of an otherwise-automatic setup).
-    want_search = payload.pop("web_search", None)
+    # `web_search` is likewise a hearth extension: only a request that says
+    # True gets the engine's web tools (see SearchConfig).
+    want_search = payload.pop("web_search", None) is True
 
     # A configured per-role context window also needs the native path — see
     # OllamaBackend._to_native. Both extensions land on the same route.
@@ -140,10 +139,10 @@ async def chat_completions(request: Request):
 
     scfg = cfg.search
     search_on = bool(
-        scfg.enabled
+        want_search
+        and scfg.enabled
         and backend.capabilities.tools
         and payload.get("tool_choice") != "none"
-        and (scfg.auto if want_search is None else want_search)
     )
     if search_on:
         payload["tools"] = list(payload.get("tools") or []) + webtools.tool_specs(scfg)

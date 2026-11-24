@@ -124,3 +124,14 @@ def test_denied_when_not_auto(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *_: "n")
     assert a._exec_tool("write_file", {"path": "x.txt", "content": "y"}) == "DENIED by user"
     assert not os.path.exists(os.path.join(d, "x.txt"))
+
+
+def test_search_turned_off_means_no_web_tools(monkeypatch, tmp_path):
+    for enabled in (True, False):
+        p = tmp_path / "config.yaml"
+        p.write_text(f"search: {{enabled: {str(enabled).lower()}}}\n")
+        monkeypatch.setenv("HEARTH_CONFIG", str(p))
+        a = CodeAgent(str(tmp_path), "http://127.0.0.1:11435", "coding")
+        names = {t["function"]["name"] for t in a.tools}
+        assert ({"web_search", "web_fetch"} <= names) is enabled
+        assert ("web_search" in a.messages[0]["content"]) is enabled

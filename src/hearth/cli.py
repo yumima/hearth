@@ -1132,6 +1132,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             req = {"model": model, "messages": history, "stream": True}
         else:
             req = {"model": "fast_chat", "messages": history, "stream": True, "think": False}
+        req["web_search"] = cfg.search.chat  # the engine adds its web tools only when asked
         spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         # Instant feedback: in deep-think mode the model usually reasons for a
         # beat before the first token, so seed the spinner now instead of

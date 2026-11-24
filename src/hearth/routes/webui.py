@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from importlib import resources
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter()
@@ -27,14 +27,17 @@ def _index_html() -> str | None:
 
 
 @router.get("/app", response_class=HTMLResponse, include_in_schema=False)
-async def chat_app() -> HTMLResponse:
+async def chat_app(request: Request) -> HTMLResponse:
     html = _index_html()
     if html is None:
         return HTMLResponse(
             "<h1>Hearth</h1><p>Chat UI asset is missing from this install.</p>",
             status_code=500,
         )
-    return HTMLResponse(html)
+    asks = "true" if request.app.state.cfg.search.chat else "false"
+    return HTMLResponse(html.replace("__WEB_SEARCH__", asks), headers={
+        # Not inside another site's page: what is typed there would be ours.
+        "X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'"})
 
 
 @router.get("/", include_in_schema=False)
