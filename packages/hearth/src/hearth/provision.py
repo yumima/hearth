@@ -138,10 +138,13 @@ def pull(base_url: str, model: str, job: Job) -> None:
             while not finished.wait(0.3):
                 if job.stop.is_set():
                     sock = r.extensions["network_stream"].get_extra_info("socket")
-                    try:
-                        sock.shutdown(2)
-                    except OSError:
-                        pass
+                    # What ends a read that waits: the first on Linux and macOS,
+                    # the second on Windows.
+                    for end in (lambda: sock.shutdown(2), sock.close):
+                        try:
+                            end()
+                        except OSError:
+                            pass
                     return
 
         threading.Thread(target=watch, daemon=True).start()
@@ -159,7 +162,7 @@ def pull(base_url: str, model: str, job: Job) -> None:
                     layers[o["digest"]] = (int(o.get("completed") or 0), int(o["total"]))
                     job.done = sum(d for d, _ in layers.values())
                     job.total = sum(t for _, t in layers.values())
-        except httpx.HTTPError:
+        except (httpx.HTTPError, OSError):
             if job.stop.is_set():
                 raise Stopped from None
             raise

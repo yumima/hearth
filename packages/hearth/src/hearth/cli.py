@@ -11,6 +11,7 @@ import atexit
 import errno
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -432,6 +433,10 @@ def _ensure_piper() -> bool:
     (e.g. 3.14). Extracts to ~/.local/share/piper and symlinks onto ~/.local/bin."""
     if shutil.which("piper") or shutil.which("piper-tts"):
         return True
+    if not (sys.platform.startswith("linux") and platform.machine() == "x86_64"):
+        print("  Piper voices can be installed on 64-bit Linux only, for now; the natural voices "
+              "(hearth voice --voice kokoro) work here", file=sys.stderr)
+        return False
     pdir = Path.home() / ".local" / "share" / "piper"
     bin_ = pdir / "piper" / "piper"  # the release tars to a `piper/` dir
     if not bin_.exists():

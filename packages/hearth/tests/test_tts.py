@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import stat
+import sys
 from pathlib import Path
 
+import pytest
+
 from hearth import tts
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Piper is not installed there (cli._ensure_piper)")
 
 FAKE_PIPER = r"""#!/usr/bin/env python3
 import os, sys, itertools

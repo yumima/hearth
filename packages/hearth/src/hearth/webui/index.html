@@ -123,7 +123,7 @@ function draw() {
       have || busy || !possible ? null : button("Install", () => install(kind)), jobView(have ? null : j, () => install(kind)));
   };
   $("voices").replaceChildren(
-    voice("kokoro", "Natural voices", "350 MB · Apache-2.0 · reads text aloud", v.kokoro, v.kokoro_possible),
+    voice("kokoro", "Natural voices", "350 MB · Apache-2.0, with espeak-ng (GPL-3.0) · reads text aloud", v.kokoro, v.kokoro_possible),
     voice("stt", "Speech recognition", "480 MB · MIT · turns what you say into text", v.stt, v.stt_possible));
   const free = p.hardware.disk_free_mib;
   $("disk").textContent = state.installed.length ? `${gb(state.installed.reduce((s, m) => s + m.size, 0))} of models${free ? `, ${gb(free * 1048576)} free` : ""}.` : "No models yet.";
