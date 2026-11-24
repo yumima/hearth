@@ -118,7 +118,7 @@ def test_contexts_follow_the_card_and_each_models_ceiling():
     assert catalog.context_in(full, 32768) == 65536
     assert catalog.context_in(full, 20000) == 24576
     assert catalog.context_in(full, 12227) == 0
-    assert catalog.context_in(catalog.find("qwen3:1.7b"), 32768) == 40960  # its own limit
+    assert catalog.context_in(catalog.find("qwen3:8b"), 32768) == 40960  # its own limit
     for m in catalog.chat_models():
         steps = [catalog.context_in(m, v) for v in range(1000, 50000, 250)]
         assert steps == sorted(steps)  # more memory never means less

@@ -1,5 +1,5 @@
 {
- "comment": "Models hearth offers. Sizes are of the files; kv_kib is KiB of GPU memory per token of context at the q8_0 cache hearth starts Ollama with. digest: the model as tested here (Ollama's, the sha256 of the registry's manifest). tested: what it was tested on.",
+ "comment": "Models hearth offers, best first. Sizes are of the files; kv_kib is KiB of GPU memory per token of context at the q8_0 cache hearth starts Ollama with. digest: the model as tested (Ollama's, the sha256 of the registry's manifest). tested: what model_check found, and where; empty where nobody has run it yet. Not here because they failed it (2026-11-24): qwen3:4b (answers with its thinking instead of calling a tool), qwen3:1.7b (does not copy figures).",
  "chat": [
   {
    "model": "qwen3.8:27b",
@@ -11,7 +11,8 @@
    "max_context": 65536,
    "digest": "aaee06c39dcf2437cde036998d960e1fc1494b8191be7cc9657d01e509097813",
    "license": "Apache-2.0",
-   "vision": true
+   "vision": true,
+   "tested": ""
   },
   {
    "model": "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_S",
@@ -23,7 +24,8 @@
    "max_context": 65536,
    "digest": "b12ca91de07cb0b7a37da04709214fa33d9413ed80af0c9771542ec3ac88dad3",
    "license": "Apache-2.0",
-   "vision": true
+   "vision": true,
+   "tested": ""
   },
   {
    "model": "qwen3.5:9b",
@@ -35,7 +37,8 @@
    "max_context": 65536,
    "digest": "56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
    "license": "Apache-2.0",
-   "vision": true
+   "vision": true,
+   "tested": ""
   },
   {
    "model": "qwen3:8b",
@@ -43,11 +46,12 @@
    "quality": 60,
    "download": 5225387677,
    "weights_mib": 4988,
-   "kv_kib": 72,
+   "kv_kib": 73,
    "max_context": 40960,
    "digest": "500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41",
    "license": "Apache-2.0",
-   "vision": false
+   "vision": false,
+   "tested": "81 tokens/s, RTX 5070 Ti Laptop 12 GB"
   },
   {
    "model": "qwen3.5:4b",
@@ -59,19 +63,8 @@
    "max_context": 65536,
    "digest": "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04",
    "license": "Apache-2.0",
-   "vision": true
-  },
-  {
-   "model": "qwen3:4b",
-   "title": "Qwen 3 4B",
-   "quality": 40,
-   "download": 2497293444,
-   "weights_mib": 2382,
-   "kv_kib": 72,
-   "max_context": 40960,
-   "digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
-   "license": "Apache-2.0",
-   "vision": false
+   "vision": true,
+   "tested": "116 tokens/s, RTX 5070 Ti Laptop 12 GB"
   },
   {
    "model": "qwen3.5:2b",
@@ -79,23 +72,12 @@
    "quality": 30,
    "download": 2683396637,
    "weights_mib": 1919,
-   "kv_kib": 12,
+   "kv_kib": 10,
    "max_context": 65536,
    "digest": "0689d44085e06d165161a8a9a1731344278cfb5aade63a3c3dbdb48ab54b130a",
    "license": "Apache-2.0",
-   "vision": true
-  },
-  {
-   "model": "qwen3:1.7b",
-   "title": "Qwen 3 1.7B",
-   "quality": 20,
-   "download": 1359292957,
-   "weights_mib": 1297,
-   "kv_kib": 56,
-   "max_context": 40960,
-   "digest": "8f68893c685c3ddff2aa3fffce2aa60a30bb2da65ca488b61fff134a4d1730e7",
-   "license": "Apache-2.0",
-   "vision": false
+   "vision": true,
+   "tested": "172 tokens/s, RTX 5070 Ti Laptop 12 GB"
   }
  ],
  "embedding": {

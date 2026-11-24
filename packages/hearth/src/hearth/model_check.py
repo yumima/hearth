@@ -139,8 +139,10 @@ class Checker:
                              "Revenue was 4,817.36 million and the margin 23.45%. Earnings per share were -0.072. "
                              "Repeat the three figures exactly as given, separated by semicolons, and nothing else."}],
                            c, 80)
-        text = re.sub(r"\s", "", r.get("message", {}).get("content", ""))
-        return all(x in text for x in ("4,817.36", "23.45%", "-0.072"))
+        # (Without the thousands' comma it is the same figure; with a minus sign of
+        # another kind, too.)
+        text = re.sub(r"[\s,]", "", r.get("message", {}).get("content", "")).replace("\u2212", "-")
+        return all(x in text for x in ("4817.36", "23.45%", "-0.072"))
 
     def _long(self, c: int) -> bool:
         """A fact two thirds of the way into a text that fills most of the context."""

@@ -45,6 +45,7 @@ class Model:
     digest: str
     license: str
     vision: bool = False
+    tested: str = ""   # where model_check passed; "" where nobody has run it
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,8 @@ def offers(hw: Hardware, here: Iterable[str] = ()) -> list[Offer]:
             fit, context, note = "spills", 0, "Too large for the GPU: part would run on the processor, very slowly."
         else:
             fit, context, note = "no", 0, "Does not fit this computer."
+        if fit in ("gpu", "cpu") and not m.tested:
+            note += " Not tested with hearth yet; it is checked here before it is used."
         if not disk_ok:
             note += " Not enough free disk space."
         out.append(Offer(m.model, m.title, fit, context, m.download, m.license, m.vision, False, note, disk_ok, m.digest))

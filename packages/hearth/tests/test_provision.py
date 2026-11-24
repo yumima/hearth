@@ -557,6 +557,15 @@ def test_what_was_measured_is_kept_whatever_is_in_the_file(prov, tmp_path):
     assert provision._measured() == {"d1": {"a": 1}, "d2": {"a": 2}}
 
 
+def test_a_figure_written_another_way_is_the_same_figure(ollama, monkeypatch):
+    for text, ok in (("4817.36;23.45%;-0.072", True), ("4,817.36; 23.45 %; \u22120.072", True), ("4,817.4; 23.45%; -0.072", False),
+                     ("4.817,36; 23,45%; -0,072", False), ("Revenue; 23.45%; -0.072", False)):
+        monkeypatch.setattr(ollama, "answer", lambda body, text=text: {"content": text})
+        c = model_check.Checker(ollama.url, "m:1b")
+        assert c._figures(8192) is ok, text
+        c.close()
+
+
 def test_the_checks_know_a_wrong_answer(ollama):
     c = model_check.Checker(ollama.url, "m:1b")
     assert c.run(40960, True).failed == []
