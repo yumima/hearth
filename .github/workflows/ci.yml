@@ -57,5 +57,7 @@ jobs:
           "$BIN/hearth" hardware
           "$BIN/hearth" start --background --no-manage
           curl -sf http://127.0.0.1:11435/admin/version | grep -q '"name":"hearth"'
+          curl -sf http://127.0.0.1:11435/ | grep -q '<title>hearth setup</title>'
+          curl -sf http://127.0.0.1:11435/admin/setup | grep -q '"verdict"'
           "$BIN/hearth" stop
           ! curl -sf http://127.0.0.1:11435/admin/version

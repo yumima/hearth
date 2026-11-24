@@ -1,11 +1,17 @@
+"""What each kind of computer is found to have, from what its system reports."""
+
+from __future__ import annotations
+
 from hearth import hardware
 from hearth.hardware import Gpu, Hardware
 
 
 def test_probe_returns_shape():
     hw = hardware.probe()
+    assert hw.system in ("linux", "macos", "windows")
+    assert hw.machine in ("x86_64", "arm64")
     assert hw.cpu_cores is None or hw.cpu_cores > 0
-    assert isinstance(hw.gpus, list)
+    assert hw.ram_total_mib > 500 and hw.disk_free_mib > 0  # every system, not Linux alone
 
 
 def test_as_dict_has_inference_target():
@@ -14,72 +20,63 @@ def test_as_dict_has_inference_target():
     assert "gpus" in d and "ram_total_mib" in d
 
 
-# ── recommend_roles(): the VRAM-fit model picker ────────────────────────────
-# Pins the calibration so a tweak can't silently re-introduce the bug where a
-# model that overflows VRAM (30B on a 12 GB GPU) gets picked and runs on CPU.
-
-def _hw(vram_mib=None, ram_mib=32000) -> Hardware:
-    gpus = [Gpu("nvidia", "test-gpu", vram_mib, "550", "cuda")] if vram_mib else []
-    return Hardware(cpu_cores=8, ram_total_mib=ram_mib, ram_available_mib=ram_mib, gpus=gpus)
-
-
-def _rec(monkeypatch, vram_mib=None, ram_mib=32000):
-    monkeypatch.setattr(hardware, "probe", lambda: _hw(vram_mib, ram_mib))
-    return hardware.recommend_roles()
+def test_a_probe_that_breaks_is_left_out(monkeypatch):
+    for name in ("_nvidia", "_amd_linux", "_intel_linux", "_windows_adapters", "_apple"):
+        def broken(*a, **k):
+            raise RuntimeError("no")
+        monkeypatch.setattr(hardware, name, broken)
+    assert hardware.probe().gpus == []
 
 
-def test_12gb_gpu_picks_the_build_that_fits(monkeypatch):
-    # The headline regression: the full 27B spills on 12 GB (about 3 tok/s).
-    for vram in (11000, 12227, 16384, 19999):
-        r = _rec(monkeypatch, vram_mib=vram)
-        assert r["primary_chat"] == r["fast_chat"] == r["coding"] == hardware.QWEN38_2BIT
+def test_nvidia(monkeypatch):
+    monkeypatch.setattr(hardware, "_run", lambda cmd, **k:
+                        "NVIDIA GeForce RTX 4090, 24564, 23000, 550.54\nNVIDIA GeForce GT 1030, [N/A], [N/A], 550.54\nbroken\n")
+    assert hardware._nvidia() == [Gpu("nvidia", "NVIDIA GeForce RTX 4090", 24564, 23000, "550.54", "cuda"),
+                                  Gpu("nvidia", "NVIDIA GeForce GT 1030", None, None, "550.54", "cuda")]
+    monkeypatch.setattr(hardware, "_run", lambda cmd, **k: None)  # no driver
+    assert hardware._nvidia() == []
 
 
-def test_20gb_and_up_picks_the_full_model(monkeypatch):
-    for vram in (20000, 24576, 32768):
-        assert _rec(monkeypatch, vram_mib=vram)["primary_chat"] == "qwen3.8:27b"
+def _card(drm, n, **files):
+    d = drm / f"card{n}" / "device"
+    d.mkdir(parents=True)
+    for name, text in files.items():
+        (d / name).write_text(text + "\n")
 
 
-def test_below_11gb_still_fits_vram(monkeypatch):
-    assert _rec(monkeypatch, vram_mib=10999)["primary_chat"] == "qwen3:8b"
+def test_amd_on_linux(tmp_path):
+    _card(tmp_path, 0, vendor="0x1002", device="0x744c", mem_info_vram_total=str(24 << 30), mem_info_vram_used=str(1 << 30),
+          product_name="Radeon RX 7900 XTX")
+    _card(tmp_path, 1, vendor="0x1002", device="0x164e", mem_info_vram_total=str(512 << 20))  # a processor's own
+    _card(tmp_path, 2, vendor="0x8086", device="0x7d55")
+    (tmp_path / "card0-DP-1").mkdir()  # a connector, not a card
+    kfd = tmp_path / "kfd"
+    big, small = hardware._amd_linux(tmp_path, kfd)
+    assert (big.name, big.vram_mib, big.free_mib, big.compute) == ("Radeon RX 7900 XTX", 24576, 23552, "vulkan")
+    assert small.compute is None and small.vram_mib == 512 and "0x164e" in small.name
+    kfd.write_text("")
+    assert hardware._amd_linux(tmp_path, kfd)[0].compute == "rocm"
 
 
-def test_8gb_gpu_picks_8b(monkeypatch):
-    assert _rec(monkeypatch, vram_mib=8192)["primary_chat"] == "qwen3:8b"
+def test_windows_adapters():
+    got = hardware._from_windows([
+        (r"pci\ven_1002&dev_7550", "AMD Radeon RX 9070 XT", 16 << 30),
+        (r"pci\ven_1002&dev_7550", "AMD Radeon RX 9070 XT", 16 << 30),  # an old driver's entry
+        (r"pci\ven_1002&dev_164e", "AMD Radeon(TM) Graphics", 512 << 20),
+        (r"pci\ven_10de&dev_2684", "NVIDIA GeForce RTX 4090", 24 << 30),  # nvidia-smi's to report
+        (r"pci\ven_8086&dev_7d55", "Intel(R) Arc(TM) Graphics", 128 << 20),
+        ("root\\basicdisplay", "Microsoft Basic Display Adapter", None)])
+    assert [(g.vendor, g.vram_mib, g.compute) for g in got] == [
+        ("amd", 16384, "vulkan"), ("amd", 512, None), ("intel", 128, None)]
 
 
-def test_cpu_only_sized_by_ram(monkeypatch):
-    assert _rec(monkeypatch, vram_mib=None, ram_mib=32000)["primary_chat"] == "qwen3:8b"
-    assert _rec(monkeypatch, vram_mib=None, ram_mib=16000)["primary_chat"] == "qwen3:4b"
-    assert _rec(monkeypatch, vram_mib=None, ram_mib=8000)["primary_chat"] == "qwen3:1.7b"
+def test_apple_shares_its_memory():
+    assert hardware._apple(65536, "Apple M4 Max") == [Gpu("apple", "Apple M4 Max", 32768, None, None, "metal")]
+    assert hardware._apple(None, "") == []
 
 
-def test_embedding_and_fast_roles_stable(monkeypatch):
-    r = _rec(monkeypatch, vram_mib=12227)
-    assert r["embedding"] == "nomic-embed-text"
-    assert r["fast_chat"] == hardware.QWEN38_2BIT and r["coding"] == hardware.QWEN38_2BIT
-
-
-# ── recommend_contexts(): the largest context that stays 100% on the GPU ────
-
-def test_2bit_context_on_12gb_is_the_measured_fit():
-    # 40960 measured fully on-GPU on this card; 48k and 64k spilled to the CPU.
-    assert hardware.recommend_contexts({"primary_chat": hardware.QWEN38_2BIT}, 12227) == {"primary_chat": 40960}
-
-
-def test_qwen38_fits_a_large_card_within_its_tested_ceiling():
-    assert hardware.recommend_contexts({"primary_chat": "qwen3.8:27b"}, 32768) == {"primary_chat": 65536}
-
-
-def test_qwen38_context_is_sized_to_a_mid_card():
-    # 20 GB holds the weights, so size the context to stay on the GPU.
-    assert hardware.recommend_contexts({"primary_chat": "qwen3.8:27b"}, 20000) == {"primary_chat": 24576}
-
-
-def test_model_too_big_for_the_card_is_left_to_the_daemon():
-    assert hardware.recommend_contexts({"primary_chat": "qwen3.8:27b"}, 12227) == {}
-
-
-def test_context_ceiling_is_per_model():
-    # Opening a 64k step for Qwen 3.8 must not push Qwen3 past its 40960 limit.
-    assert hardware.recommend_contexts({"primary_chat": "qwen3:0.6b"}, 32768) == {"primary_chat": 40960}
+def test_the_gpu_to_size_by():
+    a, b = Gpu("nvidia", "a", 8192, None, None, "cuda"), Gpu("nvidia", "b", 12288, None, None, "cuda")
+    assert Hardware(gpus=[a, b, Gpu("intel", "i", 60000)]).best_gpu() is b  # not their sum, and not a built-in one
+    assert Hardware(gpus=[Gpu("nvidia", "?", None, None, None, "cuda")]).best_gpu() is None
+    assert Hardware().best_gpu() is None

@@ -118,7 +118,7 @@ def test_duplicate_start_survives_a_slow_health_probe(tmp_path, monkeypatch, cap
     died on EADDRINUSE. The probe is /admin/version, a constant handler.
     """
     monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
-    monkeypatch.setattr(cli.hardware, "recommend_roles", lambda: {})
+    monkeypatch.setattr(cli.catalog, "recommend_roles", lambda hw: {})
 
     def fake_get(url, **kw):
         if "/admin/health" in url:
@@ -151,7 +151,7 @@ def test_start_on_a_taken_port_touches_nothing(tmp_path, monkeypatch, capsys):
     no "serving" line and no pidfile — a doomed start used to write one and then
     delete the live gateway's pidfile on its way out."""
     monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
-    monkeypatch.setattr(cli.hardware, "recommend_roles", lambda: {})
+    monkeypatch.setattr(cli.catalog, "recommend_roles", lambda hw: {})
     monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: None)  # occupant isn't hearth
 
     with socket.socket() as squatter:
@@ -185,8 +185,8 @@ def test_start_tip_carries_the_recommended_context(tmp_path, monkeypatch, capsys
     """Bind clears a role's context when none is given, so a tip without one
     would land the model on the daemon's default and silently drop old messages."""
     monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
-    monkeypatch.setattr(cli.hardware, "recommend_roles", lambda: {"primary_chat": "some-model:1b"})
-    monkeypatch.setattr(cli.hardware, "recommend_contexts", lambda models: {"primary_chat": 16384})
+    monkeypatch.setattr(cli.catalog, "recommend_roles", lambda hw: {"primary_chat": "some-model:1b"})
+    monkeypatch.setattr(cli.catalog, "recommend_contexts", lambda hw, models: {"primary_chat": 16384})
     monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: None)
 
     with socket.socket() as squatter:  # stops cmd_start right after the tip

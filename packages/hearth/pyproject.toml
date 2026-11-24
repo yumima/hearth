@@ -48,6 +48,9 @@ version = { attr = "hearth.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+hearth = ["catalog.json", "webui/*.html", "assets/*.svg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

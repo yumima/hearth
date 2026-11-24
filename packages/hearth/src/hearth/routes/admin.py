@@ -7,12 +7,14 @@ hang here (design doc §1 admin endpoints, F5–F9).
 
 from __future__ import annotations
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import CONTRACT_VERSION, __version__
 from .. import config as cfgmod
 from .. import hardware
+from ..provision import Problem, Provisioner
 
 router = APIRouter()
 
@@ -149,6 +151,42 @@ async def put_role(role: str, request: Request):
             "remote": cfg.role_is_remote(role)}
 
 
+# ── setting up: models and voices (provision.py) ──────────────────────────────
+
+
+def _provisioner(request: Request) -> Provisioner:
+    return request.app.state.provisioner
+
+
+@router.get("/setup")
+def setup_state(request: Request):  # in a thread: it asks the system and Ollama
+    return _provisioner(request).state()
+
+
+@router.post("/jobs")
+async def submit_job(request: Request):
+    body = await _object(request)
+    try:
+        job = _provisioner(request).submit(str(body.get("kind") or ""), str(body.get("what") or "").strip(),
+                                           body.get("anyway") is True)
+    except Problem as e:
+        return JSONResponse({"error": str(e)}, 400)
+    return job.as_dict()
+
+
+@router.post("/jobs/{job_id}/stop")
+async def stop_job(job_id: int, request: Request):
+    return {"stopping": _provisioner(request).stop_job(job_id)}
+
+
+async def _object(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 @router.post("/models/pull")
 async def pull_model(request: Request):
     body = await request.json()
@@ -168,12 +206,11 @@ async def pull_model(request: Request):
 
 
 @router.delete("/models/{model_id:path}")
-async def delete_model(model_id: str, request: Request):
-    backend = _registry(request).get("ollama")
-    if backend is None:
-        return JSONResponse({"error": "ollama backend not running"}, 503)
+def delete_model(model_id: str, request: Request):
     try:
-        await backend.delete(model_id)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, 502)
+        _provisioner(request).remove(model_id)
+    except Problem as e:
+        return JSONResponse({"error": str(e)}, 409)
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": f"Ollama did not answer: {e}"}, 502)
     return {"deleted": model_id}

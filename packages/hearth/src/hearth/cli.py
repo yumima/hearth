@@ -21,7 +21,7 @@ from pathlib import Path
 import httpx
 
 from . import config as cfgmod
-from . import hardware, ollama_supervisor, paths, procs
+from . import catalog, hardware, ollama_supervisor, paths, procs
 from .background import gateway_identity as _gateway_identity
 
 
@@ -141,12 +141,13 @@ def cmd_start(args: argparse.Namespace) -> int:
     # A remote-bound role has no VRAM footprint on this box, so the fit advice
     # is meaningless for it (and reads as a nag to abandon a deliberate choice).
     try:
-        rec = hardware.recommend_roles().get("primary_chat")
+        hw = hardware.probe()
+        rec = catalog.recommend_roles(hw).get("primary_chat")
         cur = cfg.roles.get("primary_chat")
         if rec and cur and cur.model != rec and not cfg.role_is_remote("primary_chat"):
             # Bind drops the role's context when none is given, so the advice has
             # to carry the one that makes this model the better fit.
-            ctx = hardware.recommend_contexts({"primary_chat": rec}).get("primary_chat")
+            ctx = catalog.recommend_contexts(hw, {"primary_chat": rec}).get("primary_chat")
             flag = f" --context {ctx}" if ctx else ""
             print(f"tip: primary_chat = '{cur.model}', but '{rec}' fits your hardware "
                   f"better (full-GPU speed).\n     apply with:  hearth bind primary_chat "
@@ -483,126 +484,152 @@ def _provision_voice(voice: str) -> bool:
         return False
 
 
-_KOKORO_RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
-# Pinned: a swapped release asset must not be loaded into onnxruntime unnoticed.
-_KOKORO_FILES = {
-    "kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
-    "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
-}
-
-
-def _sha256(path: Path) -> str:
-    import hashlib
-
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def _provision_kokoro() -> bool:
-    """Provision the Kokoro engine (natural voices): the `kokoro-onnx` package
-    into THIS interpreter (the gateway imports it) + the model files, checked
-    against pinned hashes. Best-effort, like _provision_voice: never raises."""
-    from . import kokoro_tts
-
-    try:
-        import importlib.util
-
-        if importlib.util.find_spec("kokoro_onnx") is None:
-            print("  installing kokoro-onnx…")
-            # Same range as the `tts` extra in pyproject.toml; the pinned
-            # model-files-v1.0 below are what the 0.4 series loads.
-            r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "kokoro-onnx>=0.4,<0.5"])
-            if r.returncode != 0:
-                print("  pip install kokoro-onnx failed", file=sys.stderr)
-                return False
-        d = paths.voices_dir("kokoro") if not kokoro_tts.override_dir() else kokoro_tts.model_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        for name, digest in _KOKORO_FILES.items():
-            dest = d / name
-            if dest.is_file() and _sha256(dest) == digest:
-                continue
-            print(f"  downloading {name}…")
-            if not _download(_KOKORO_RELEASE + name, dest):
-                return False
-            if _sha256(dest) != digest:
-                dest.unlink(missing_ok=True)
-                print(f"  {name}: checksum mismatch — removed", file=sys.stderr)
-                return False
-        print(f"  ✓ kokoro ready: {d} (restart the gateway to pick it up)")
-        return True
-    except Exception as e:  # voice provisioning must never crash setup
-        print(f"  kokoro provisioning error: {e}", file=sys.stderr)
-        return False
-
-
 def cmd_voice(args: argparse.Namespace) -> int:
     voice = getattr(args, "voice", None) or _DEFAULT_VOICE
     print(f"provisioning local TTS voice '{voice}'…")
-    if (_provision_kokoro() if voice == "kokoro" else _provision_voice(voice)):
+    if voice == "kokoro":
+        return _run_job("kokoro")
+    if _provision_voice(voice):
         print("✓ done — finterm's read-aloud (LISTEN / 🔊) auto-discovers it, no config needed.")
         return 0
     print("voice provisioning failed.", file=sys.stderr)
     return 1
 
 
-def cmd_setup(args: argparse.Namespace) -> int:
-    """First-run wizard: probe hardware → recommend a fitting model set →
-    pull + bind. The whole point of `git clone … && hearth setup`."""
-    cfg = cfgmod.load()
-    rec = hardware.recommend_roles()
-    ctxs = hardware.recommend_contexts(rec)
-    hw = hardware.as_dict()
-    ram_gib = (hw.get("ram_total_mib") or 0) // 1024
-    print(f"hardware: {hw['inference_target']}  |  RAM {ram_gib} GiB")
-    print("recommended role bindings:")
-    for r, m in rec.items():
-        ctx = ctxs.get(r)
-        print(f"  {r:14s} -> {m}" + (f"  (context {ctx})" if ctx else ""))
+# ── models and voices: the same jobs as on the setup page ────────────────────
 
+
+class _Jobs:
+    """The running gateway's jobs, or ones of our own when there is none."""
+
+    def __init__(self, cfg: cfgmod.Config):
+        self.cfg = cfg
+        self.base = _admin_base(cfg) if _gateway_identity(cfg) else None
+        self.own = None
+        if self.base is None:
+            from .provision import Provisioner
+
+            if _ensure_ollama(cfg) is None:
+                raise RuntimeError("Ollama is not available: " + (ollama_supervisor.last_lines(3) or "no program found"))
+            self.own = Provisioner(cfg)
+
+    def _ask(self, method: str, path: str, **kw) -> dict:
+        r = httpx.request(method, self.base + path, timeout=30.0, **kw)
+        data = r.json() if r.content else {}
+        if r.status_code >= 400:
+            raise RuntimeError(data.get("error") or f"HTTP {r.status_code}")
+        return data
+
+    def state(self) -> dict:
+        return self.own.state() if self.own else self._ask("GET", "/admin/setup")
+
+    def remove(self, model: str) -> None:
+        if self.own:
+            self.own.remove(model)
+        else:
+            self._ask("DELETE", f"/admin/models/{model}")
+
+    def run(self, kind: str, what: str = "", anyway: bool = False) -> dict:
+        """Submit, show its progress, return it finished. Ctrl-C stops it."""
+        body = {"kind": kind, "what": what, "anyway": anyway}
+        job = self.own.submit(**body).as_dict() if self.own else self._ask("POST", "/admin/jobs", json=body)
+        shown = ""
+        try:
+            while job["stage"] not in ("done", "failed", "stopped"):
+                text = job["message"] or "Waiting…"
+                if job["stage"] == "download" and job["total"]:
+                    text += f"  {job['done'] / 1e9:.2f} of {job['total'] / 1e9:.2f} GB"
+                if text != shown:
+                    print("\r" + text.ljust(78)[:78], end="", flush=True)
+                    shown = text
+                time.sleep(0.5)
+                job = next(j for j in self.state()["jobs"] if j["id"] == job["id"]) if self.base else next(
+                    j for j in self.own._jobs if j.id == job["id"]).as_dict()
+        except KeyboardInterrupt:
+            if self.own:
+                self.own.stop_job(job["id"])
+            else:
+                self._ask("POST", f"/admin/jobs/{job['id']}/stop")
+            job = {**job, "stage": "stopped", "message": "Stopped. Start it again to go on."}
+        print("\r" + " " * 78 + "\r" + job["message"])
+        return job
+
+
+def _jobs() -> _Jobs | None:
+    try:
+        return _Jobs(cfgmod.load())
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        return None
+
+
+def _run_job(kind: str, what: str = "", anyway: bool = False) -> int:
+    jobs = _jobs()
+    if jobs is None:
+        return 1
+    try:
+        job = jobs.run(kind, what, anyway)
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        return 1
+    if job.get("can_anyway"):
+        print(f"to use it all the same:  hearth install {what} --anyway", file=sys.stderr)
+    return 0 if job["stage"] == "done" else 1
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    plan = catalog.plan(hardware.probe())
+    if args.json:
+        print(json.dumps(plan, indent=2))
+        return 0
+    print(plan["summary"])
+    for o in plan["offers"]:
+        mark = "★" if o["recommended"] else " "
+        print(f" {mark} {o['title']:24s} {o['download'] / 1e9:5.1f} GB  {o['note']}\n     {o['model']}")
+    return 0
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    return _run_job("model", args.model, args.anyway)
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    from .provision import Problem
+
+    jobs = _jobs()
+    if jobs is None:
+        return 1
+    try:
+        jobs.remove(args.model)
+    except (RuntimeError, Problem) as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(f"removed {args.model}")
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """What the setup page does, here: the model that suits this computer, then
+    the natural voices."""
+    plan = catalog.plan(hardware.probe())
+    print(plan["summary"])
+    best = next((o for o in plan["offers"] if o["recommended"]), None)
+    if best is None:
+        print("No model is recommended for this computer. `hearth plan` lists them all; a cloud model can be "
+              "used with `hearth backend`.")
+        return 1
+    print(f"Recommended: {best['title']} — {best['download'] / 1e9:.1f} GB, {best['license']}. {best['note']}")
     if not args.yes:
         try:
-            ans = input("\nPull these models and bind the roles? [Y/n] ").strip().lower()
+            if input("Install it? [Y/n] ").strip().lower() in ("n", "no"):
+                return 0
         except EOFError:
-            ans = "y"
-        if ans in ("n", "no"):
-            print("aborted.")
-            return 0
-
-    ollama = _ensure_ollama(cfg)
-    if not ollama:
-        print("ollama backend not available — cannot pull", file=sys.stderr)
-        return 1
-    for m in sorted(set(rec.values())):
-        if _pull_model(ollama.base_url, m) != 0:
-            print(f"pull of {m} failed — not binding roles", file=sys.stderr)
             return 1
-
-    for role, model in rec.items():
-        cfg.roles[role] = cfgmod.RoleBinding(model=model, backend="ollama",
-                                             context=ctxs.get(role, 0))
-    cfgmod.save(cfg)
-    # Hot-apply to a running gateway so no restart is needed.
-    base = _admin_base(cfg)
-    for role, model in rec.items():
-        try:
-            httpx.put(f"{base}/admin/roles/{role}",
-                      json={"model": model, "backend": "ollama", "context": ctxs.get(role, 0)}, timeout=3.0)
-        except httpx.HTTPError:
-            pass
-
-    # Speech is part of the local AI runtime — provision a TTS voice too
-    # (best-effort; skip with --no-voice). finterm read-aloud auto-discovers it.
-    if not getattr(args, "no_voice", False):
-        print("\nprovisioning a local TTS voice (Piper) for read-aloud…")
-        _provision_voice(_DEFAULT_VOICE)
-        if not getattr(args, "no_kokoro", False):
-            print("provisioning the natural-voice engine (Kokoro, ~350 MB; skip with --no-kokoro)…")
-            _provision_kokoro()
-
-    print("\n✓ setup complete — models pulled, roles bound. Try: hearth chat")
+    if (rc := _run_job("model", best["model"])) != 0:
+        return rc
+    if not (args.no_voice or args.no_kokoro):
+        _run_job("kokoro")
+    print("Done. Try: hearth chat")
     return 0
 
 
@@ -695,7 +722,7 @@ def cmd_backend(args: argparse.Namespace) -> int:
             args.name, args.type, args.base_url, args.api_key or "", args.api_key_env or "")
         cfgmod.save(cfg)
         print(f"added backend {args.name!r} ({args.type}) -> {args.base_url}")
-        print(f"next: restart the gateway to load it  →  hearth service restart")
+        print("next: restart the gateway to load it  →  hearth service restart")
         print(f"      then bind a role               →  hearth bind primary_chat <model> --backend {args.name}")
         return 0
 
@@ -1458,11 +1485,24 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("hardware", help="print hardware probe")
     s.set_defaults(func=cmd_hardware)
 
-    s = sub.add_parser("setup", help="probe hardware, pull a fitting model, bind roles")
-    s.add_argument("--yes", "-y", action="store_true", help="don't prompt; pull + bind")
-    s.add_argument("--no-voice", action="store_true", help="skip provisioning a TTS voice")
+    s = sub.add_parser("plan", help="which models suit this computer")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_plan)
+
+    s = sub.add_parser("install", help="download a model, check that it works here, and use it for chat")
+    s.add_argument("model")
+    s.add_argument("--anyway", action="store_true", help="use it although it changed, or failed a check")
+    s.set_defaults(func=cmd_install)
+
+    s = sub.add_parser("remove", help="delete a model no role uses")
+    s.add_argument("model")
+    s.set_defaults(func=cmd_remove)
+
+    s = sub.add_parser("setup", help="install the model that suits this computer, and natural voices")
+    s.add_argument("--yes", "-y", action="store_true", help="don't prompt")
+    s.add_argument("--no-voice", action="store_true", help="skip the natural voices")
     s.add_argument("--no-kokoro", action="store_true",
-                   help="keep the Piper voice but skip the natural-voice Kokoro engine (~350 MB)")
+                   help="the same")
     s.set_defaults(func=cmd_setup)
 
     s = sub.add_parser("voice", help="provision a local Piper TTS voice (read-aloud)")

@@ -109,6 +109,20 @@ def trailing_break(text: str) -> int:
     return BREAK_SECTION if n >= 2 else BREAK_PARAGRAPH if n == 1 else BREAK_NONE
 
 
+RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+# Pinned: a swapped release asset must not be loaded into onnxruntime unnoticed.
+FILES = {
+    MODEL_FILE: "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+    VOICES_FILE: "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+}
+
+
+def package_present() -> bool:
+    from importlib.util import find_spec
+
+    return find_spec("kokoro_onnx") is not None
+
+
 def override_dir() -> Path | None:
     override = os.environ.get("HEARTH_KOKORO_DIR")
     return Path(override) if override else None

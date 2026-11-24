@@ -26,6 +26,7 @@ from starlette.background import BackgroundTask
 
 from .. import comfy_supervisor, kokoro_tts, ollama_supervisor, paths, speech_text, toolloop, tts, webtools
 from ..config import ROLE_NAMES, Config
+from ..provision import WHISPER_SIZE, whisper_present
 
 router = APIRouter()
 log = logging.getLogger("hearth.tts")
@@ -402,11 +403,14 @@ def _get_whisper(size: str):
         # for voice. Construct-time CUDA errors fall back to CPU here; a transcribe
         # failure drops the model from cache (see audio_transcriptions).
         device = os.environ.get("HEARTH_WHISPER_DEVICE", "cpu")
+        # hearth's own folder; what an earlier version left in Hugging Face's
+        # cache is used from there.
+        root = str(paths.voices_dir("whisper")) if whisper_present(size) else None
         try:
-            model = WhisperModel(size, device=device,
+            model = WhisperModel(size, device=device, download_root=root,
                                  compute_type="float16" if device == "cuda" else "int8")
         except Exception:
-            model = WhisperModel(size, device="cpu", compute_type="int8")
+            model = WhisperModel(size, device="cpu", compute_type="int8", download_root=root)
         _whisper_cache[size] = model
     return model
 
@@ -423,7 +427,8 @@ async def audio_transcriptions(request: Request):
         return _err(400, "missing audio 'file'")
     size = (form.get("model") or "").strip()
     if size in ("", "whisper-1", "whisper"):  # OpenAI clients send 'whisper-1'
-        size = os.environ.get("HEARTH_WHISPER_MODEL", "base")
+        size = os.environ.get("HEARTH_WHISPER_MODEL") or (
+            WHISPER_SIZE if whisper_present(WHISPER_SIZE) else "base")
     if size not in _WHISPER_SIZES:  # reject arbitrary HF ids / local paths
         return _err(400, f"unknown whisper model {size!r}")
     # Optional ISO language hint (e.g. 'it', 'fr', 'zh') — sharply improves accuracy
@@ -464,15 +469,20 @@ async def audio_transcriptions(request: Request):
 
 _COMFY_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
 _SDXL_CKPT = os.environ.get("HEARTH_SDXL_CKPT", "sd_xl_base_1.0.safetensors")
-_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 
 
-async def _free_ollama_vram(client: httpx.AsyncClient) -> None:
+def _ollama_url(cfg) -> str:
+    """The Ollama whose models share the GPU with image generation."""
+    b = next((b for b in cfg.backends.values() if b.type == "ollama"), None)
+    return os.environ.get("OLLAMA_URL") or (b.base_url if b else "http://127.0.0.1:11434")
+
+
+async def _free_ollama_vram(client: httpx.AsyncClient, ollama: str) -> None:
     """Best-effort: unload Ollama's resident models so the image model has VRAM.
     On a 12 GB card SDXL can't coexist with a 14B chat model; the next chat
     request transparently reloads it (a few seconds). Never fail image-gen on this."""
     try:
-        ps = (await client.get(f"{_OLLAMA_URL}/api/ps", timeout=5.0)).json()
+        ps = (await client.get(f"{ollama}/api/ps", timeout=5.0)).json()
     except Exception:
         return
     for m in ps.get("models", []):
@@ -480,7 +490,7 @@ async def _free_ollama_vram(client: httpx.AsyncClient) -> None:
         if not name:
             continue
         try:
-            await client.post(f"{_OLLAMA_URL}/api/generate",
+            await client.post(f"{ollama}/api/generate",
                               json={"model": name, "keep_alive": 0}, timeout=10.0)
         except Exception:
             pass
@@ -501,7 +511,7 @@ async def _warm_chat(cfg) -> None:
         body["options"] = {"num_ctx": ctx}
     try:
         async with httpx.AsyncClient(timeout=180.0) as c:
-            await c.post(f"{_OLLAMA_URL}/api/generate", json=body)
+            await c.post(f"{_ollama_url(cfg)}/api/generate", json=body)
     except Exception:
         pass
 
@@ -562,7 +572,7 @@ async def images_generations(request: Request):
                 # ComfyUI accepted the job → now free the chat model's VRAM for SDXL.
                 # (Deferred to here so a failed/unreachable ComfyUI doesn't needlessly
                 # evict the chat model.)
-                await _free_ollama_vram(client)
+                await _free_ollama_vram(client, _ollama_url(_cfg(request)))
                 for _ in range(600):  # poll up to ~300s
                     await asyncio.sleep(0.5)
                     hist = (await client.get(f"{_COMFY_URL}/history/{pid}")).json().get(pid)

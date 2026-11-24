@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hearth setup</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f5f2;--card:#fff;--ink:#23201d;--dim:#6d665f;--line:#e2dcd5;--accent:#b4541a;--on:#fff;--good:#2f7a4d;--bad:#b3261e;--soft:#f1ece6}
+@media (prefers-color-scheme:dark){:root{--bg:#171513;--card:#201d1a;--ink:#ece7e1;--dim:#a49b92;--line:#38332e;--accent:#e08b4f;--on:#1b1512;--good:#6fbf8d;--bad:#f2867d;--soft:#2a2622}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:760px;margin:0 auto;padding:40px 16px 80px}
+h1{font-size:26px;margin:0 0 4px;letter-spacing:-.01em}
+h2{font-size:17px;margin:40px 0 4px}
+p{margin:0 0 12px}.dim{color:var(--dim)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:10px 0;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.card>div:first-child{flex:1 1 320px;min-width:0}
+.card b{font-weight:600}.card code{font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+.tag{font-size:12px;border-radius:99px;padding:1px 9px;background:var(--soft);color:var(--dim);margin-left:8px;white-space:nowrap}
+.tag.best{background:var(--accent);color:var(--on)}
+.tag.good{color:var(--good)}
+button{font:inherit;font-weight:600;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:7px 14px;cursor:pointer}
+button.main{background:var(--accent);border-color:var(--accent);color:var(--on)}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+progress{width:100%;height:8px;accent-color:var(--accent)}
+.job{flex:1 1 100%}.bad{color:var(--bad)}.good{color:var(--good)}
+input{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);flex:1 1 220px;min-width:0}
+summary{cursor:pointer;color:var(--dim);margin:8px 0}
+#offline{display:none;border-color:var(--bad)}
+</style>
+</head>
+<body>
+<main>
+  <h1>hearth</h1>
+  <p class="dim" id="summary">Looking at this computer…</p>
+  <div class="card" id="offline"><div><b>hearth is not answering.</b><br><span class="dim">Start it again; this page goes on by itself.</span></div></div>
+
+  <h2>Chat model</h2>
+  <p class="dim">It is downloaded once, then checked on this computer before it is used. Nothing is uploaded.</p>
+  <div id="offers"></div>
+  <details><summary>Another model</summary>
+    <form id="other" class="card"><div><label for="name">Any model Ollama can download, by its name. Not tested with hearth; check its licence.</label></div>
+      <input id="name" autocomplete="off" placeholder="name:tag"><button>Install</button></form>
+  </details>
+
+  <h2>Voices</h2>
+  <div id="voices"></div>
+
+  <h2>Installed</h2>
+  <p class="dim" id="disk"></p>
+  <div id="installed"></div>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.filter(k => k != null)); return e; };
+const gb = n => n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : Math.max(1, Math.round(n / 1e6)) + " MB";
+let state = null, drawn = "", problem = "";
+
+async function ask(method, path, body) {
+  const r = await fetch(path, { method, cache: "no-store", headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof d.error === "string" ? d.error : (d.error && d.error.message) || "HTTP " + r.status);
+  return d;
+}
+async function act(method, path, body) {
+  problem = "";
+  try { await ask(method, path, body); } catch (e) { problem = e.message; }
+  await refresh();
+}
+const install = (kind, what = "", anyway = false) => act("POST", "/admin/jobs", { kind, what, anyway });
+const running = j => !["done", "failed", "stopped"].includes(j.stage);
+const last = (kind, what = "") => [...state.jobs].reverse().find(j => j.kind === kind && j.what === what);
+const button = (text, go, main) => el("button", { type: "button", textContent: text, className: main ? "main" : "", onclick: e => { e.target.disabled = true; go(); } });
+const same = (a, b) => a.replace(/:latest$/, "") === b.replace(/:latest$/, "");
+
+function jobView(j, retry) {
+  if (!j) return null;
+  const box = el("div", { className: "job" });
+  box.append(el("div", { className: j.stage === "failed" ? "bad" : j.stage === "done" ? "good" : "dim", textContent: j.message || (j.stage === "waiting" ? "Waiting for the one before it…" : "Starting…") }));
+  if (running(j)) {
+    if (j.stage === "download" && j.total) {
+      box.append(el("progress", { max: j.total, value: j.done, ariaLabel: "Download" }), el("div", { className: "dim", textContent: gb(j.done) + " of " + gb(j.total) }));
+    } else box.append(el("progress", { ariaLabel: "Working" }));
+    box.append(button("Stop", () => act("POST", `/admin/jobs/${j.id}/stop`)));
+  } else if (j.can_anyway) box.append(button("Use it anyway", () => retry(true)));
+  return box;
+}
+
+function offerView(o) {
+  const inst = state.installed.find(m => same(m.model, o.model));
+  const used = inst && inst.roles.includes("primary_chat");
+  const j = last("model", o.model), busy = j && running(j);
+  const tags = [];
+  if (used) tags.push(el("span", { className: "tag good", textContent: "In use" }));
+  else if (o.recommended) tags.push(el("span", { className: "tag best", textContent: "Recommended" }));
+  const speed = inst && inst.measured && inst.measured.tokens_per_second ? ` Measured here: ${Math.round(inst.measured.tokens_per_second)} tokens a second.` : "";
+  const can = o.fit === "gpu" || o.fit === "cpu";
+  return el("div", { className: "card" },
+    el("div", {}, el("b", { textContent: o.title }), ...tags, el("br"),
+      el("span", { className: "dim", textContent: `${gb(o.download)} · ${o.license} · ${o.note}${speed}` })),
+    used || busy || (!inst && !o.disk_ok) ? null : button(inst ? "Use it" : "Install", () => install("model", o.model), o.recommended && can),
+    jobView(j && (running(j) || j.stage !== "done" || used) ? j : null, any => install("model", o.model, any)));
+}
+
+function draw() {
+  const key = JSON.stringify(state) + problem;
+  if (key === drawn) return;   // a button being used is not replaced under the pointer
+  drawn = key;
+  const p = state.plan;
+  $("summary").textContent = p.summary + (p.verdict === "no" ? " A cloud model can be used instead; what you ask then leaves this computer." : "");
+  const fits = p.offers.filter(o => o.recommended || o.fit === "gpu" || o.fit === "cpu");
+  const rest = p.offers.filter(o => !fits.includes(o));
+  $("offers").replaceChildren(...(problem ? [el("p", { className: "bad", role: "alert", textContent: problem })] : []), ...fits.map(offerView),
+    ...(rest.length ? [el("details", { open: !fits.length && $("offers").querySelector("details")?.open === true }, el("summary", { textContent: fits.length ? "Models that do not suit this computer" : "All models" }), ...rest.map(offerView))] : []));
+  const v = state.voices;
+  const voice = (kind, title, what, have, possible) => {
+    const j = last(kind), busy = j && running(j);
+    return el("div", { className: "card" }, el("div", {}, el("b", { textContent: title }), have ? el("span", { className: "tag good", textContent: "Ready" }) : null, el("br"), el("span", { className: "dim", textContent: possible ? what : "Not part of this installation — run hearth's installer again to add it." })),
+      have || busy || !possible ? null : button("Install", () => install(kind)), jobView(have ? null : j, () => install(kind)));
+  };
+  $("voices").replaceChildren(
+    voice("kokoro", "Natural voices", "350 MB · Apache-2.0 · reads text aloud", v.kokoro, v.kokoro_possible),
+    voice("stt", "Speech recognition", "480 MB · MIT · turns what you say into text", v.stt, v.stt_possible));
+  const free = p.hardware.disk_free_mib;
+  $("disk").textContent = state.installed.length ? `${gb(state.installed.reduce((s, m) => s + m.size, 0))} of models${free ? `, ${gb(free * 1048576)} free` : ""}.` : "No models yet.";
+  $("installed").replaceChildren(...state.installed.map(m => {
+    const card = el("div", { className: "card" }, el("div", {}, el("b", { textContent: m.title }), m.roles.length ? el("span", { className: "tag", textContent: m.embedding ? "memory search" : "in use" }) : null, el("br"), el("code", { textContent: m.model }), el("span", { className: "dim", textContent: " · " + gb(m.size) + (m.embedding ? " · other programs' saved memory depends on it" : "") })));
+    const other = !m.offered && !m.embedding, j = other ? last("model", m.model) : null;
+    if (other && !m.roles.includes("primary_chat") && !(j && running(j))) card.append(button("Use it", () => install("model", m.model)));
+    if (!m.roles.length) card.append(button("Remove", () => confirmRemove(card, m)));
+    if (j) card.append(jobView(j, any => install("model", m.model, any)));
+    return card;
+  }), ...state.jobs.filter(j => j.kind === "model" && j === last("model", j.what) && j.stage !== "done" && !p.offers.some(o => o.model === j.what) && !state.installed.some(m => same(m.model, j.what)))
+    .map(j => el("div", { className: "card" }, el("div", {}, el("b", { textContent: j.what })), jobView(j, any => install("model", j.what, any)))));
+}
+
+function confirmRemove(card, m) {
+  card.replaceChildren(el("div", { textContent: `Remove ${m.title}? It frees ${gb(m.size)}; using it again means downloading it again.` }),
+    button("Remove", () => act("DELETE", "/admin/models/" + m.model.split("/").map(encodeURIComponent).join("/")), true),
+    button("Keep", () => { drawn = ""; draw(); }));
+}
+
+$("other").addEventListener("submit", e => { e.preventDefault(); const n = $("name").value.trim(); if (n) { $("name").value = ""; install("model", n); } });
+
+async function refresh() {
+  try { state = await ask("GET", "/admin/setup"); $("offline").style.display = "none"; draw(); }
+  catch { $("offline").style.display = "flex"; }
+}
+(async function loop() { await refresh(); setTimeout(loop, state && state.jobs.some(running) ? 1000 : 5000); })();
+</script>
+</body>
+</html>

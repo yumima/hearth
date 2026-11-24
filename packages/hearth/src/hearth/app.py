@@ -17,7 +17,8 @@ from . import config as cfgmod
 from . import tts
 from . import kokoro_tts
 from .middleware import SecurityMiddleware
-from .routes import admin, v1
+from .provision import Provisioner
+from .routes import admin, v1, webui
 
 
 def create_app(
@@ -54,6 +55,7 @@ def create_app(
         try:
             yield
         finally:
+            app.state.provisioner.close()
             for f in app.state.at_shutdown:
                 f()
             await tts.pool.aclose()
@@ -65,6 +67,7 @@ def create_app(
     app = FastAPI(title="hearth", version=__version__, lifespan=lifespan)
     app.state.cfg = cfg
     app.state.backends = registry
+    app.state.provisioner = Provisioner(cfg)
     app.state.at_shutdown = []  # called as the server goes down, before anything else is closed
     app.state.shutdown = None  # `hearth start` sets it: /admin/shutdown ends the server
     app.add_middleware(
@@ -72,4 +75,5 @@ def create_app(
     )
     app.include_router(v1.router, prefix="/v1")
     app.include_router(admin.router, prefix="/admin")
+    app.include_router(webui.router)  # the setup page, at /
     return app
