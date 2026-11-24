@@ -225,3 +225,82 @@ def test_voice_list_that_is_not_an_object_is_no_list(monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", get)
     assert _client().get("/api/voices").json()["voices"] == []
+
+
+def _spoken(monkeypatch, cfg, **body) -> dict:
+    """The request /api/speak sends to the backend."""
+    import httpx
+
+    sent = {}
+
+    async def post(self, url, json=None, **kw):
+        sent.update(json)
+        return httpx.Response(200, content=b"RIFF", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    r = TestClient(create_app(cfg), base_url="http://localhost").post("/api/speak", json={"text": "hi", **body})
+    assert r.status_code == 200
+    return sent
+
+
+def test_the_chosen_voice_is_asked_for_with_its_engine(monkeypatch):
+    """hearth's Kokoro speaks only when it is named: with another model named, a
+    Kokoro voice came out as the default Piper one."""
+    cfg = cfgmod.Config(tts_voice="bm_george", tts_model="kokoro")
+    assert _spoken(monkeypatch, cfg) == {"input": "hi", "voice": "bm_george", "model": "kokoro"}
+    assert _spoken(monkeypatch, cfg, voice="bm_george")["model"] == "kokoro"      # named by a lesson
+    assert _spoken(monkeypatch, cfg, voice="it_IT-paola-medium")["model"] == "tts-1"  # its native voice
+    assert _spoken(monkeypatch, cfg, voice="af_bella", model="kokoro")["model"] == "kokoro"  # a preview
+    # no choice: the default hearth names, which is Kokoro's where it has it
+    assert _spoken(monkeypatch, cfgmod.Config()) == {"input": "hi", "model": "kokoro"}
+
+
+def test_another_backend_is_asked_as_openai(monkeypatch):
+    cfg = cfgmod.Config(provider="openai", tts_voice="alloy", tts_model="kokoro", providers={
+        "openai": cfgmod.Provider(base_url="https://api.example.com/v1", api_key="k")})
+    assert _spoken(monkeypatch, cfg) == {"input": "hi", "voice": "alloy", "model": "tts-1"}
+
+
+def test_voices_listed_in_another_shape(monkeypatch):
+    import httpx
+
+    for body, want in (
+            ({"voices": ["alloy", "", 3, {"id": "x", "label": 5}, {"label": "no id"}]},
+             [{"id": "alloy"}, {"id": "x"}]),
+            ({"voices": {"alloy": {}}}, []), ({"voices": "alloy", "default": "alloy"}, [])):
+        async def get(self, url, _body=body, **kw):
+            return httpx.Response(200, json=_body, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(httpx.AsyncClient, "get", get)
+        got = _client().get("/api/voices").json()
+        assert got["voices"] == want and got["default"] is None
+
+
+def test_hearth_under_another_name_is_still_hearth(monkeypatch):
+    cfg = cfgmod.Config(provider="local", web_search=False, providers={"local": cfgmod.Provider()})
+    assert _sent(monkeypatch, cfg)["web_search"] is False
+    remote = cfgmod.Config(provider="hearth", providers={"hearth": cfgmod.Provider(base_url="https://127.evil.example/v1")})
+    assert "web_search" not in _sent(monkeypatch, remote)
+
+
+def test_a_config_that_cannot_be_read_keeps_chats_off_the_web(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfgmod.config_path().parent.mkdir(parents=True)
+    for text in ("web_search: false\n\tprovider: x\n", "- a list\n"):
+        cfgmod.config_path().write_text(text)
+        assert cfgmod.load().web_search is False
+
+
+def test_the_lesson_assessment_is_never_put_on_the_web(monkeypatch):
+    import httpx
+
+    sent = {}
+
+    async def post(self, url, json=None, **kw):
+        sent.update(json)
+        return httpx.Response(500, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    turns = [{"role": "user", "content": "ciao"}, {"role": "assistant", "content": "ciao"}] * 2
+    _client().post("/api/tutor/it/assess", json={"messages": turns})
+    assert sent["web_search"] is False

@@ -405,14 +405,17 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                 data = body
         except (httpx.HTTPError, ValueError):
             pass
-        return JSONResponse({"voices": data.get("voices") or [], "default": data.get("default"),
+        default = data.get("default")
+        default = default if isinstance(default, dict) and default.get("id") else None
+        return JSONResponse({"voices": _voice_list(data.get("voices")), "default": default,
                              "selected": app.state.cfg.tts_voice})
 
     @app.put("/api/voice")
     async def api_set_voice(request: Request) -> JSONResponse:
         body = await request.json()
         voice = str(body.get("voice") or "").strip()
-        app.state.cfg.tts_voice = voice      # /api/speak reads it per request → live
+        app.state.cfg.tts_voice = voice      # /api/speak reads them per request → live
+        app.state.cfg.tts_model = str(body.get("model") or "").strip() if voice else ""
         cfgmod.save(app.state.cfg)
         return JSONResponse({"ok": True, "voice": voice})
 
@@ -583,10 +586,12 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
             return JSONResponse({"skipped": True})
         prof = await _tdb(tutor.load_profile, lang)
         review = body.get("review_items") if isinstance(body.get("review_items"), list) else []
+        prov = app.state.cfg.active()
         req = {"model": app.state.cfg.model, "think": False, "stream": False,
+               # it reads the transcript, nothing else
+               **({"web_search": False} if prov.may_be_hearth() else {}),
                "messages": tutor.assess_prompt(str(body.get("name") or lang), prof,
                                                tutor.transcript_of(messages), review)}
-        prov = app.state.cfg.active()
         try:
             r = await _http().post(f"{prov.base_url}/chat/completions", json=req,
                                    headers=prov.headers(), timeout=180.0)
@@ -658,10 +663,23 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
         if not text:
             return JSONResponse({"error": "missing 'text'"}, status_code=400)
         prov = app.state.cfg.active()
-        req = {"model": "tts-1", "input": text[:4000]}  # model ignored by hearth; valid for OpenAI
-        voice = body.get("voice") or app.state.cfg.tts_voice
+        cfg = app.state.cfg
+        voice = body.get("voice") or cfg.tts_voice
+        req = {"input": text[:4000]}
         if voice:
             req["voice"] = voice
+        # The model is which engine speaks: hearth's Kokoro only when it is
+        # named. Named here for the chosen voice, and for the one hearth has as
+        # its default; a lesson's native voice (Piper) is asked for by "tts-1",
+        # which every OpenAI-shaped backend takes.
+        if not prov.may_be_hearth():
+            req["model"] = "tts-1"
+        elif voice and voice == body.get("voice") and body.get("model"):
+            req["model"] = str(body["model"])  # a preview
+        elif voice == cfg.tts_voice and voice:
+            req["model"] = cfg.tts_model or "tts-1"
+        else:
+            req["model"] = "tts-1" if voice else "kokoro"  # without Kokoro, hearth answers with Piper
         try:
             r = await _http().post(f"{prov.base_url}/audio/speech", json=req,
                                    headers=prov.headers(), timeout=120.0)
@@ -692,9 +710,8 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
             # translate images. Vision doesn't need the deep-think toggle anyway.
             base.pop("think", None)
         tools = host.openai_tools() if (host and host.has_tools()) else None
-        # hearth's web tools are only for a request that asks. A cloud provider
-        # has no such field and may refuse it, so only hearth is asked.
-        if app.state.cfg.provider == "hearth":
+        # hearth's web tools are only for a request that asks.
+        if prov.may_be_hearth():
             base["web_search"] = app.state.cfg.web_search and base.get("web_search", True) is True
         else:
             base.pop("web_search", None)
@@ -791,6 +808,18 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
 
 
 # ── backend streaming (isolated so tests can fake the backend) ────────────────
+
+
+def _voice_list(voices) -> list[dict]:
+    """A backend's voices as [{id, label?, model?}]: hearth's are that, others
+    list bare names. What is neither is dropped."""
+    out = []
+    for v in voices if isinstance(voices, list) else []:
+        if isinstance(v, str):
+            v = {"id": v}
+        if isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"]:
+            out.append({k: v[k] for k in ("id", "label", "model") if isinstance(v.get(k), str)})
+    return out
 
 
 def _accepts_client(fn) -> bool:

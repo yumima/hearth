@@ -12,9 +12,11 @@ section. Kept deliberately small here.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
@@ -29,6 +31,17 @@ class Provider:
     base_url: str = DEFAULT_HEARTH_URL
     api_key: str = ""
 
+    def may_be_hearth(self) -> bool:
+        """An engine on this machine, by whatever name it is configured. (Told
+        apart from a cloud, which may refuse hearth's own fields, by having no
+        key; another local engine ignores them.)"""
+        try:
+            host = urlparse(self.base_url).hostname or ""
+            local = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local = False
+        return local and not self.api_key
+
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
@@ -41,6 +54,7 @@ class Config:
     model: str = "primary_chat"   # hearth role alias by default
     vision_model: str = "vision"  # model/role used when a message carries an image
                                   # (hearth's `vision` role); "" disables routing
+    tts_model: str = ""           # the engine of that voice, as /audio/voices names it
     tts_voice: str = ""           # voice id for read-aloud (e.g. "en_US-amy-medium");
                                   # "" lets the backend pick its default voice
     web_search: bool = True       # ask hearth to add its web search/fetch to chats;
@@ -83,7 +97,12 @@ def load() -> Config:
         return cfg
     try:
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            raise yaml.YAMLError("not a mapping")
     except (OSError, yaml.YAMLError):
+        # There are settings and they cannot be read: one of them may be
+        # web_search: false, so the web stays off.
+        cfg.web_search = False
         return cfg
     cfg.host = data.get("host", cfg.host)
     try:
@@ -94,6 +113,7 @@ def load() -> Config:
     cfg.model = data.get("model", cfg.model)
     cfg.vision_model = data.get("vision_model", cfg.vision_model)
     cfg.tts_voice = data.get("tts_voice", cfg.tts_voice)
+    cfg.tts_model = data.get("tts_model", cfg.tts_model)
     # Off unless it plainly says on: a typo must not put a chat on the web.
     cfg.web_search = data.get("web_search", cfg.web_search) is True
     provs = data.get("providers") or {}
@@ -135,6 +155,7 @@ def save(cfg: Config) -> Path:
         "provider": cfg.provider,
         "model": cfg.model,
         "vision_model": cfg.vision_model,
+        "tts_model": cfg.tts_model,
         "tts_voice": cfg.tts_voice,
         "web_search": cfg.web_search,
         "providers": {

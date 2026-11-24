@@ -602,8 +602,21 @@ const STOP = {
   de: "der die das und ist ich du sie ein eine nicht mit auf danke bitte sehr gut wie was wir ja auch",
   pt: "o os as é e eu você um uma não muito bem obrigado olá com para mas está sim também",
 };
-const EN_STOP = new Set("the and is are you to of that it what how this can your let's say means word we i my me it's do does with for".split(" "));
+const EN_STOP = new Set(("the and is are you to of that it what how this can your let's say means word we i my me it's do does with for " +
+  "a an was were be been being he she they them his her its our their in on at by from but not no so as or if when where who which there has have had will would could should about into than then").split(" "));
 const STOP_SETS = Object.fromEntries(Object.entries(STOP).map(([k, v]) => [k, new Set(v.split(" "))]));
+// The preset language a text is plainly in: several of its function words, more
+// than any other's, and few of English's. null when that is not plain — names
+// and loanwords are most of what a short text has, and a wrong voice is worse
+// than a plain one.
+function plainlyIn(text){
+  const words = text.toLowerCase().match(/[\p{L}']+/gu) || [];
+  const hits = (set) => words.filter(w => set.has(w)).length;
+  const en = hits(EN_STOP);
+  const scores = PRESETS.filter(l => STOP_SETS[l.code]).map(l => [hits(STOP_SETS[l.code]), l]).sort((a, b) => b[0] - a[0]);
+  const [best, next] = scores;
+  return best[0] >= 3 && best[0] > next[0] && best[0] > en * 1.5 ? best[1] : null;
+}
 function looksTarget(text, lang){
   if (!lang || !lang.code) return false;
   if (NONLATIN.has(lang.code)) return /[Ͱ-ϿЀ-ӿ֐-ۿऀ-ॿ฀-๿぀-ヿ㐀-鿿가-힯]/.test(text);
@@ -1502,7 +1515,7 @@ function veSay(text, voiceId, opts){
   VE.inflight.add(ac);
   const item = { epoch, tail: opts.tail ?? 300, onstart: opts.onstart };
   item.buf = fetch("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
-                                    body: JSON.stringify(voiceId ? { text, voice: voiceId } : { text }) })
+                                    body: JSON.stringify(voiceId ? { text, voice: voiceId, ...(opts.model ? { model: opts.model } : {}) } : { text }) })
     .then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "TTS unavailable"); return r.arrayBuffer(); })
     .then(ab => VE.ctx.decodeAudioData(ab))
     .catch(e => { item.err = e; return null; })
@@ -1573,7 +1586,7 @@ function autoSegments(text, fallback){
   const parts = /[぀-ヿ가-힯]/.test(text) ? [text] : text.split(HAN_RUN);
   return parts.map((p, i) => {
     if (i % 2) return { text: p.trim(), voice: ZH_VOICE };
-    const hit = PRESETS.find(l => l.code !== "zh" && looksTarget(p, l));
+    const hit = plainlyIn(p);
     return { text: p.trim(), voice: hit ? hit.voice : fallback };
   });
 }
@@ -2221,11 +2234,13 @@ async function renderVoicePicker(){
     html += `<optgroup label="${g}">${groups[g].map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label || x.id)}</option>`).join("")}</optgroup>`;
   if (v.selected && !(v.voices || []).some(x => x.id === v.selected)) html += `<option value="${escapeHtml(v.selected)}">${escapeHtml(v.selected)}</option>`;
   sel.innerHTML = html; sel.value = v.selected || "";
-  const preview = () => { veStopAudio(); veSay("Hi! This is how I'll sound when we talk.", sel.value, { tail: 150 }); };
+  const model = () => (v.voices || []).find(x => x.id === sel.value)?.model || "";
+  const preview = () => { veStopAudio(); veSay("Hi! This is how I'll sound when we talk.", sel.value, { tail: 150, model: model() }); };
   sel.addEventListener("change", async () => {
-    try { await fetch("/api/voice", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice: sel.value }) }); } catch {}
+    let ok = false;
+    try { ok = (await fetch("/api/voice", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice: sel.value, model: model() }) })).ok; } catch {}
     await loadConfig();
-    preview();
+    if (ok) preview(); else sel.value = cfgInfo?.tts_voice || "";
   });
   btn.addEventListener("click", preview);
 }
