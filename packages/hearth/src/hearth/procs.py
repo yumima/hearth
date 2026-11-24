@@ -18,11 +18,26 @@ def alive(pid: int) -> bool:
         return True  # there, and not ours to look at
 
 
-def command_line(pid: int) -> str:
+def argv(pid: int) -> list[str]:
     try:
-        return " ".join(psutil.Process(pid).cmdline())
+        return psutil.Process(pid).cmdline()
     except psutil.Error:
-        return ""
+        return []
+
+
+def command_line(pid: int) -> str:
+    return " ".join(argv(pid))
+
+
+def runs(args: list[str], program: str, command: str) -> bool:
+    """Is this command line `program command` — run by its name, or as
+    `python -m program`? Not merely one that mentions it: a Python in a folder of
+    that name does."""
+    for i, a in enumerate(args):
+        name = a.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe").removesuffix("-script.py")
+        if name == program and (i == 0 or args[i - 1] == "-m" or "/" in a or "\\" in a):
+            return command in args[i + 1:]
+    return False
 
 
 def started_at(pid: int) -> float:

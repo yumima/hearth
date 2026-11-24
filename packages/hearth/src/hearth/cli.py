@@ -37,8 +37,7 @@ def _pid_path() -> Path:
 def _pid_looks_like_hearth(pid: int) -> bool:
     """Is `pid` a hearth gateway? Asked before ending it: a pidfile left by a
     killed one may name another program's process by now."""
-    cl = procs.command_line(pid)
-    return "hearth" in cl or "uvicorn" in cl
+    return procs.runs(procs.argv(pid), "hearth", "start")
 
 
 def _listen_socket(host: str, port: int) -> socket.socket:

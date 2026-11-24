@@ -40,6 +40,15 @@ def test_stop_ends_it_in_order(served, capsys):
     assert cli.main(["stop"]) == 0 and "not running" in capsys.readouterr().out
 
 
+def test_which_command_lines_are_a_servers():
+    for yes in (["/v/bin/python", "/v/bin/mantel", "serve"], ["python", "-m", "mantel", "serve"],
+                ["C:\\m\\Scripts\\mantel.exe", "serve"]):
+        assert cli._is_server(yes), yes
+    for no in (["/home/u/mantel/.venv/bin/python", "-m", "pytest"], ["vim", "mantel", "serve"],
+               ["python", "-c", "mantel serve"], ["/v/bin/mantel"], []):
+        assert not cli._is_server(no), no
+
+
 def test_another_page_cannot_stop_it(served):
     p, port = served
     r = httpx.post(f"http://127.0.0.1:{port}/api/shutdown", headers={"origin": "https://evil.example"})

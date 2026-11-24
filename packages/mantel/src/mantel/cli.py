@@ -54,11 +54,21 @@ def _read_pid() -> int | None:
     # (Not os.kill(pid, 0): on Windows that ends the process.)
     try:
         p = psutil.Process(pid)
-        return pid if p.status() != psutil.STATUS_ZOMBIE and "mantel" in " ".join(p.cmdline()) else None
+        return pid if p.status() != psutil.STATUS_ZOMBIE and _is_server(p.cmdline()) else None
     except psutil.NoSuchProcess:
         return None
     except psutil.Error:
         return pid  # there, and not ours to look at
+
+
+def _is_server(args: list[str]) -> bool:
+    """Is this command line `mantel serve`, by its name or as `python -m mantel`?
+    Not merely one that mentions mantel: a Python in a folder of that name does."""
+    for i, a in enumerate(args):
+        name = a.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe").removesuffix("-script.py")
+        if name == "mantel" and (i == 0 or args[i - 1] == "-m" or "/" in a or "\\" in a):
+            return "serve" in args[i + 1:]
+    return False
 
 
 def _open_server_log():

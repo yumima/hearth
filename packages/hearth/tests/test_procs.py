@@ -49,6 +49,18 @@ def test_alive_and_asking_does_not_end_it():
     assert not procs.alive(p.pid) and procs.started_at(p.pid) == 0 and procs.command_line(p.pid) == ""
 
 
+def test_which_command_lines_are_a_gateways():
+    yes = (["/v/bin/python3", "/v/bin/hearth", "start"], ["python", "-m", "hearth", "start", "--bind", "x"],
+           ["python", "-P", "-m", "hearth", "start"], ["C:\\h\\Scripts\\hearth.exe", "start"], ["hearth", "start"],
+           ["C:\\py\\python.exe", "C:\\h\\Scripts\\hearth.exe", "start"],
+           ["/home/hearth/.venv/bin/python", "-m", "hearth", "start"])
+    no = (["/home/u/hearth/.venv/bin/python", "-m", "pytest"], ["/v/bin/python", "/v/bin/hearth", "chat"],
+          ["python", "-c", "hearth start"], ["vim", "hearth", "start"], ["/src/hearth/run.sh", "start"],
+          ["grep", "-r", "hearth", "start"], ["python", "-m", "uvicorn", "hearth.app"], [], ["/usr/bin/hearth"])
+    assert [a for a in yes if not procs.runs(a, "hearth", "start")] == []
+    assert [a for a in no if procs.runs(a, "hearth", "start")] == []
+
+
 def test_a_tree_ends_with_its_top():
     code = ("import subprocess, sys, time; c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
             "print(c.pid, flush=True); time.sleep(60)")
