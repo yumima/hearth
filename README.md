@@ -1,18 +1,19 @@
 # hearth
 
-A stable, **OpenAI-compatible local AI engine** on loopback. Hearth fronts
-[Ollama](https://ollama.com) (and, later, llama.cpp / vLLM / faster-whisper)
-behind one HTTP API with a **role registry**, **hardware probe**, and (M2)
-**tool-call repair**.
+**AI models on your own computer.** hearth picks a model that suits the machine,
+checks that it works there, and serves it to your programs on one local address —
+the API they already speak, OpenAI's. **mantel** is its chat window.
 
-**finterm** is its first consumer — but the design has zero finance knowledge.
-Any `openai`-SDK client works pointed at the base URL. The full design spec
-lives in finterm's `plans/local-ai-engine.md`.
+This repository is both: `packages/hearth` (the engine) and `packages/mantel` (the
+[chat client](packages/mantel/README.md)). Two programs, installed together, that
+speak over HTTP. [finterm](https://github.com/yumima/finterm) is one of hearth's
+users; hearth knows nothing of finance.
 
 ## Today's commits (2026-11-24)
 
 Latest first.
 
+- [`5095592`](https://github.com/yumima/hearth/commit/5095592) Windows: stopping a stalled download; what is installed, and its licences
 - [`684cff7`](https://github.com/yumima/hearth/commit/684cff7) catalog: what was measured here; two models that failed leave it
 - [`1252e78`](https://github.com/yumima/hearth/commit/1252e78) Install, update, go back, remove — tested with the scripts themselves
 - [`23e1c91`](https://github.com/yumima/hearth/commit/23e1c91) Windows: a port in use is not shared
@@ -34,93 +35,61 @@ Latest first.
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
-## Why
+## Install
 
-Consumers integrate once against the OpenAI contract; the engine swaps model
-backends underneath. You don't hand-manage Ollama, pick concrete model names,
-or write backend-specific code — you ask for a *role* (`primary_chat`,
-`fast_chat`, `embedding`, …) and hearth resolves it.
-
-## Quick start
+Linux (x86-64) and macOS (Apple Silicon):
 
 ```bash
-cd hearth
-make build            # python venv + editable install
-make install-cli      # symlink `hearth` into ~/.local/bin so it's on PATH
-                      # (open a new shell afterwards, or `hash -r`)
-
-hearth start          # bring up the bundled Ollama + the gateway on :11435
-                      #   (leave running; Ctrl-C stops it)
-
-# …then in a second shell:
-hearth setup          # probe hardware → pull a model that fits → bind roles
-hearth chat           # interactive chat in the terminal (ChatGPT-style)
-hearth client install # …or install the clickable desktop chat app (app-menu icon)
+curl -fsSL https://yumima.github.io/hearth/install.sh | sh
 ```
 
-`make build` is `python3 -m venv .venv && .venv/bin/pip install -e .` — you can
-also run `.venv/bin/hearth …` directly without `install-cli`.
+Windows (PowerShell):
 
-The bundled Ollama binary lives under `vendor/` (downloaded, not committed). It
-ships its own CUDA runtime, so on an NVIDIA box it uses the GPU with no system
-CUDA toolkit. Keep it current: Qwen 3.8 is tested on Ollama 0.40.14.
+```powershell
+irm https://yumima.github.io/hearth/install.ps1 | iex
+```
+
+For one user, without administrator rights, into one folder. An Ollama, Python or
+hearth that is already there is not touched. The script fetches exactly the files
+whose hashes it carries. Then the setup page opens: it says what the computer can
+do, and lists the models that suit it. Options: `--no-mantel`, `--no-autostart`,
+`--no-open`.
+
+| | |
+|---|---|
+| `hearth update` | to the newest release; one that does not start is taken back by itself |
+| `hearth update --rollback` | to the version before, with the settings and chats of then |
+| `hearth uninstall` | removes it (`--keep-models`, `--keep-settings`) |
+
+**What it runs on.** An NVIDIA or AMD card, or Apple Silicon; without one, a small
+model on the processor, slowly. Run by us on NVIDIA under Linux; the others are
+**experimental** until somebody has told us how they do. See
+[what is installed, and its licences](THIRD_PARTY.md).
+
+## The setup page
+
+<http://127.0.0.1:11435/> — which models suit this computer, in order; install, use,
+remove; natural voices and speech recognition. A model is downloaded, compared with
+the build that was tested, loaded with as much context as stays on the GPU,
+measured, and checked (JSON, tools, figures, long texts) before any program gets
+it. What was in use stays in use if that fails.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `hearth start` | bring up Ollama + serve the gateway (foreground) |
-| `hearth start --background` | the same, returning once it answers; it keeps running (the service, where one is installed) |
-| `hearth stop` | stop the running gateway (found by pidfile, else by its port) |
-| `hearth status` | is the gateway up? show role bindings |
-| `hearth setup` | **first-run wizard** — probe hardware, pull a fitting model, bind roles |
-| `hearth` / `hearth chat` | streaming chat — **bare `hearth` launches it** (like `claude`). Live thinking spinner + deep-think toggle. `/help` lists in-chat commands: `/model` (picker), `/think on\|off`, `/system`, `/status`, `/retry`, `/save`, `/clear`, … Flags `--model` `--system` `--no-think` `--show-thinking` |
-| `hearth pull <model>` | pull a model via Ollama |
-| `hearth bind <role> <model>` | rebind a role (persisted + hot-applied to a running gateway) |
-| `hearth roles` / `models` | show role bindings / servable models |
-| `hearth hardware` | GPU / VRAM / RAM probe |
-| `hearth client …` | **desktop chat app** — bare `hearth client` opens the window; `hearth client install` / `uninstall` manage the clickable launcher (app menu / Launchpad / Start menu), cross-platform via the OS's native webview |
-| `hearth service …` | control a background systemd --user gateway service: `start` `stop` `restart` `status` `logs` `autostart on\|off` |
-
-Equivalent `make` targets exist (`make start|stop|status|chat|test`).
-
-### Desktop chat app
-
-The clickable counterpart to the terminal client — a standalone chat window,
-like the ChatGPT / Claude desktop apps. The gateway serves the UI at `/app`
-(same-origin, so streaming + the localhost-only security model both just work),
-and the window is a chrome-less native frame via each OS's own webview
-(WebView2 / WKWebView / WebKitGTK — no bundled browser).
-
-```bash
-hearth client install     # add it to your menu — Linux .desktop / macOS .app / Windows .lnk
-hearth client             # open the window now (starts the engine if it isn't running)
-hearth client uninstall   # remove the launcher
-# or: make install-client / make uninstall-client
-```
-
-Clicking the launcher starts the engine on demand if needed, then opens the
-window. For the most native window, `pip install 'hearth[gui]'` (pywebview);
-otherwise it falls back to a Chromium/Edge `--app` window, then your browser.
-The UI is also reachable at <http://localhost:11435/app> in any browser.
-
-### Always-on engine (optional)
-
-`hearth client` (the desktop app) and `hearth start` launch the engine on demand,
-which covers normal use. To keep it **always** up in the background — e.g. for
-finterm or an OpenAI-SDK client when no window is open — run `hearth start` from
-your login autostart, or a **systemd --user** unit that runs it. `hearth
-service` drives such a unit once it exists:
-
-```bash
-hearth service start | stop | restart | status
-hearth service logs -f               # follow logs (journal)
-hearth service autostart on --boot   # start on login / at boot (linger)
-```
-
-(hearth no longer installs the unit itself — the desktop app + on-demand start
-replaced `service install`; create a unit with your init system if you want it
-always-on.)
+| `hearth plan` | which models suit this computer |
+| `hearth setup` | install the recommended one, and natural voices |
+| `hearth install <model>` · `remove <model>` | what the setup page does, here |
+| `hearth start` · `start --background` · `stop` · `status` | the gateway (the service, where one is installed) |
+| `hearth` · `hearth chat` | chat in the terminal (`/help`) |
+| `hearth client` | mantel's window, with the engine started |
+| `hearth code` | a coding agent for a folder |
+| `hearth bind <role> <model>` · `roles` · `models` | which model answers for what |
+| `hearth backend …` | add a cloud or other OpenAI-compatible server |
+| `hearth voice --voice kokoro` | natural voices |
+| `hearth service autostart on\|off` | start at login |
+| `hearth update` · `uninstall` | see above |
 
 ## API
 
@@ -140,7 +109,9 @@ Admin (off `/v1` so OpenAI clients never see it):
 | `GET /admin/hardware` | GPU type, VRAM, RAM, best inference target |
 | `GET /admin/backends` | installed backends + capability flags |
 | `GET /admin/roles` · `PUT /admin/roles/{role}` | view / hot-rebind a role |
-| `POST /admin/models/pull` · `DELETE /admin/models/{id}` | lifecycle |
+| `GET /admin/setup` · `POST /admin/jobs` · `POST /admin/jobs/{id}/stop` | the setup page's: the plan, what is installed; install a model or voices |
+| `DELETE /admin/models/{id}` | remove a model no role uses |
+| `POST /admin/shutdown` | end the gateway in order |
 
 ### Role registry
 
@@ -151,24 +122,15 @@ run); rebind with `hearth bind <role> <model> --context <tokens>` (persisted +
 hot-applied). Omitting `--context` matches other roles on that model, or else
 clears the role's context.
 
-Built-in defaults; `hearth setup` overrides them per your hardware:
+`hearth setup` and the setup page bind the chat roles to one model, so a hop from
+one role to another does not swap models, and `embedding` to `nomic-embed-text` —
+which they never change again: what other programs have embedded depends on it.
 
-| Role | Built-in default | `setup` picks (largest that fits VRAM) |
-|---|---|---|
-| `primary_chat` | 2-bit Qwen 3.8 27B | 20 GB+ → `qwen3.8:27b` · 11–20 GB → 2-bit Qwen 3.8 27B · 7–11 GB → `qwen3:8b` |
-| `fast_chat` / `coding` | 2-bit Qwen 3.8 27B | 20 GB+ → `qwen3.8:27b` · 11–20 GB → 2-bit Qwen 3.8 27B · 7–11 GB → `qwen3:4b` |
-| `embedding` | `nomic-embed-text` | `nomic-embed-text` |
-| `stt` | `faster-whisper:medium` *(M2)* | — |
-
-**Model fit (`hearth setup`).** The wizard probes GPU VRAM + system RAM and picks
-the **largest model that fits entirely in VRAM**. A model that overflows runs its
-spillover layers on the CPU, leaving the GPU mostly idle waiting on them. On a
-12 GB GPU the full `qwen3.8:27b` managed only about 3 tok/s that way, so 11–20 GB
-cards get `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_S`, a 2-bit community build that
-fits fully at a 40960 context and trades some accuracy for usable speed. 20 GB+
-cards get the full model.
-CPU-only boxes are sized by RAM. Precedence: built-in default
-→ `~/.hearth/config.yaml` (`setup`/`bind`) → per-request `model`.
+**Model fit.** The governing rule is to fit the model entirely in the GPU's memory.
+One that spills runs its overflow layers on the processor and leaves the GPU
+waiting: the full 27B managed 3 tokens a second on a 12 GB card, its 2-bit build
+27. What is offered, with measured sizes, is in
+[`catalog.json`](packages/hearth/src/hearth/catalog.json).
 
 ## Security
 
@@ -187,17 +149,22 @@ itself; `search.enabled: false` turns all of it off.
 
 ## Develop
 
+With [uv](https://docs.astral.sh/uv):
+
 ```bash
-pip install -e ".[dev]"
-pytest                       # unit tests (no Ollama needed)
-python tests/smoke_live.py   # live smoke (needs the stack up + models pulled)
+make build     # hearth in .venv, mantel in .venv-mantel
+make test      # both, as CI runs them
+make start     # the gateway; Ollama from vendor/ollama, or on PATH
+HEARTH_E2E=1 .venv/bin/python -m pytest tests/test_install.py   # the install scripts, with real environments
+python3 tools/release.py OUT                                    # a release's files
 ```
 
-## Status
+Dependencies are locked with hashes (`uv.lock`); `make lock` after changing one.
+An installed hearth and a checkout do not replace each other: the installer steps
+aside for a hearth it did not make.
 
-M1 (gateway + Ollama adapter + role registry + CLI + hardware probe) and the
-first-run **hardware-fit `setup` wizard** are done. Roadmap (STT via
-faster-whisper, tool-call repair, concurrency limits, a second backend) is in
-the design doc §5.
+The consumer contract (what finterm and mantel rely on) is versioned:
+`GET /admin/version` says `contract`. Its major number rises when a consumer has
+to change; additions raise the minor one.
 
 License: Apache-2.0.

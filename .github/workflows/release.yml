@@ -1,0 +1,43 @@
+name: release
+
+# A tag v<version> makes a DRAFT release with its files. Publishing it is a
+# person's step, and puts the install scripts on the website (site.yml).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  tested:
+    runs-on: ubuntu-latest
+    steps:
+      - name: CI passed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ok=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success" -q .total_count)
+          [ "$ok" -gt 0 ] || { echo "::error::no successful CI run for ${{ github.sha }}"; exit 1; }
+
+  draft:
+    needs: tested
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build
+        run: |
+          python3 tools/release.py out
+          v=$(python3 -c "import json; print(json.load(open('out/manifest.json'))['version'])")
+          [ "v$v" = "${{ github.ref_name }}" ] || { echo "::error::the tag is ${{ github.ref_name }}, the version $v"; exit 1; }
+          rm -f out/.gitignore
+          cat out/SHA256SUMS
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "hearth ${GITHUB_REF_NAME#v}" \
+            --notes "Install: see https://yumima.github.io/hearth/ — or \`hearth update\`." out/*
