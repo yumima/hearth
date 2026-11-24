@@ -33,12 +33,12 @@
    "quality": 70,
    "download": 6550825373,
    "weights_mib": 5369,
-   "kv_kib": 24,
+   "kv_kib": 16,
    "max_context": 65536,
    "digest": "56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
    "license": "Apache-2.0",
    "vision": true,
-   "tested": ""
+   "tested": "66 tokens/s, RTX 5070 Ti Laptop 12 GB"
   },
   {
    "model": "qwen3:8b",
