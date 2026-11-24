@@ -93,3 +93,23 @@ jobs:
         run: |
           uv sync --frozen --package hearth --extra dev
           uv run --frozen --package hearth --extra dev pytest -v -x --durations=5 tests/test_install.py
+
+  # The release's real Ollama, and a model small enough for a computer without a GPU.
+  engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      HEARTH_E2E_OLLAMA: "1"
+      PYTHONUTF8: "1"
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install with Ollama, get a model, ask it, remove everything
+        run: |
+          uv sync --frozen --package hearth --extra dev
+          uv run --frozen --package hearth --extra dev pytest -v -s -x tests/test_engine.py
