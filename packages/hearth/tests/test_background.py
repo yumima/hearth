@@ -210,14 +210,15 @@ def test_one_that_is_already_coming_up_is_waited_for(home):
 def test_relative_paths_still_name_the_same_files(home, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HEARTH_HOME", "./h")
-    monkeypatch.setenv("PYTHONPATH", "src" + os.pathsep + "/abs")
+    elsewhere = str(tmp_path / "abs")
+    monkeypatch.setenv("PYTHONPATH", "src" + os.pathsep + elsewhere)
     (tmp_path / "h").mkdir()
     (tmp_path / "h" / "queue.py").write_text("raise RuntimeError('a stray file was imported')")
     proc, _ = background.spawn([sys.executable, "-P", "-c",
                                 "import os, queue; print(os.environ['HEARTH_HOME'], os.environ['PYTHONPATH'])"])
     assert proc.wait(20) == 0
     assert background.log_path().read_text().split() == [
-        str(tmp_path / "h"), str(tmp_path / "src") + os.pathsep + "/abs"]
+        str(tmp_path / "h"), str(tmp_path / "src") + os.pathsep + elsewhere]
 
 
 def test_stop_ends_it_in_order(home, tmp_path):

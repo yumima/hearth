@@ -62,7 +62,11 @@ def _listen_socket(host: str, port: int) -> socket.socket:
     family, socktype, proto, _canon, addr = infos[0]
     sock = socket.socket(family, socktype, proto)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if sys.platform == "win32":
+            # There SO_REUSEADDR lets two programs listen on one port at once.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(addr)
         # Listen now, not when uvicorn gets to it: with SO_REUSEADDR a bound
         # but non-listening port can still be bound by a racing second start.
