@@ -23,13 +23,12 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 import webbrowser
 from importlib import resources
 from pathlib import Path
 
-import httpx
 
+from . import background
 from . import config as cfgmod
 
 # ── URLs / gateway lifecycle ──────────────────────────────────────────────────
@@ -38,43 +37,6 @@ from . import config as cfgmod
 def app_url(cfg: cfgmod.Config | None = None) -> str:
     cfg = cfg or cfgmod.load()
     return f"http://{cfg.bind_host}:{cfg.bind_port}/app"
-
-
-def _health_url(cfg: cfgmod.Config) -> str:
-    return f"http://{cfg.bind_host}:{cfg.bind_port}/admin/health"
-
-
-def gateway_up(cfg: cfgmod.Config) -> bool:
-    try:
-        # 503 = up but a backend is degraded; the UI still loads, so treat as up.
-        return httpx.get(_health_url(cfg), timeout=1.5).status_code in (200, 503)
-    except httpx.HTTPError:
-        return False
-
-
-def ensure_gateway_up(cfg: cfgmod.Config, hearth_exec: list[str], timeout: float = 25.0) -> bool:
-    """Return True if the gateway is serving; if not, start it DETACHED (so the
-    engine outlives this launcher and the window) and wait until it's healthy."""
-    if gateway_up(cfg):
-        return True
-    if not hearth_exec:
-        return False
-    kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    if os.name == "posix":
-        kwargs["start_new_session"] = True  # detach: survives window/launcher exit
-    else:
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        kwargs["creationflags"] = 0x00000008 | 0x00000200
-    try:
-        subprocess.Popen([*hearth_exec, "start"], **kwargs)
-    except OSError:
-        return False
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if gateway_up(cfg):
-            return True
-        time.sleep(0.5)
-    return False
 
 
 # ── the window ────────────────────────────────────────────────────────────────
@@ -112,9 +74,10 @@ def _window_icon() -> str | None:
 def open_window(cfg: cfgmod.Config | None = None, hearth_exec: list[str] | None = None) -> int:
     cfg = cfg or cfgmod.load()
     url = app_url(cfg)
-    if not ensure_gateway_up(cfg, hearth_exec or []):
-        print("warning: the hearth gateway is not responding; the window may show "
-              "'no engine' until it starts (run `hearth start`).", file=sys.stderr)
+    ok, message = background.start(cfg, hearth_exec or [])
+    if not ok:
+        print(f"warning: {message}\nthe window may show 'no engine' until it starts "
+              "(run `hearth start`).", file=sys.stderr)
 
     # 1) pywebview — a real chrome-less native window using the OS webview.
     try:

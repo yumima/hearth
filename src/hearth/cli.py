@@ -24,6 +24,7 @@ import httpx
 
 from . import config as cfgmod
 from . import hardware, ollama_supervisor
+from .background import gateway_identity as _gateway_identity
 
 
 def _admin_base(cfg: cfgmod.Config) -> str:
@@ -87,31 +88,6 @@ def _pid_cmdline(pid: int) -> str:
     return cl.decode("utf-8", "ignore").strip()[:90]
 
 
-def _gateway_identity(cfg: cfgmod.Config) -> str | None:
-    """`Server:` identity of a hearth gateway already serving cfg's port, else None.
-
-    Probes /admin/version — a constant handler — and deliberately NOT
-    /admin/health: health awaits every configured backend, remote providers
-    included, so one slow round-trip over the internet times the probe out. A
-    duplicate `hearth start` then concludes the port is free, announces itself,
-    and dies on EADDRINUSE.
-    """
-    try:
-        r = httpx.get(f"{_admin_base(cfg)}/admin/version", timeout=2.0)
-    except httpx.HTTPError:
-        return None
-    ident = r.headers.get("server", "")
-    if ident.startswith("hearth"):
-        return ident
-    try:
-        body = r.json()
-    except ValueError:
-        return None
-    if isinstance(body, dict) and body.get("name") == "hearth":
-        return f"hearth/{body.get('version', '?')}"
-    return None
-
-
 def _listen_socket(host: str, port: int) -> socket.socket:
     """Claim the gateway's port before we announce anything.
 
@@ -143,11 +119,34 @@ def _listen_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
+def _start_in_background(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
+    from . import background
+
+    extra = []
+    if args.bind:
+        extra += ["--bind", args.bind]
+    if args.no_manage:
+        extra.append("--no-manage")
+    if args.unsafe_bind:
+        extra.append("--unsafe-bind")
+    if args.api_key:
+        extra += ["--api-key", args.api_key]
+    if args.log_level != "info":
+        extra += ["--log-level", args.log_level]
+    # The service serves the configured address: anything asked for here is a
+    # gateway of its own.
+    service = None
+    if not extra and _unit_path().exists() and shutil.which("systemctl"):
+        def service() -> int:
+            return _systemctl("start", _UNIT_NAME)
+    # This interpreter, as it was called: not _hearth_exec_argv(), which keeps
+    # the launcher link — starting the engine must not change what is installed.
+    ok, message = background.start(cfg, [sys.executable, "-m", "hearth"], extra, service)
+    print(f"[hearth] {message}", file=sys.stdout if ok else sys.stderr)
+    return 0 if ok else 1
+
+
 def cmd_start(args: argparse.Namespace) -> int:
-    import uvicorn
-
-    from .app import create_app
-
     cfg = cfgmod.load()
     if args.bind:
         host, _, port = args.bind.rpartition(":")
@@ -158,6 +157,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     if allow_any_host and not api_key:
         print("--unsafe-bind requires --api-key (off-loopback exposure)", file=sys.stderr)
         return 2
+    if args.background:
+        return _start_in_background(cfg, args)
+
+    import uvicorn
+
+    from .app import create_app
 
     # If hearth is installed as a service, a bare `hearth start` at a terminal is
     # a FOREGROUND instance — not the daemon. Nudge the user toward the service.
@@ -1309,7 +1314,7 @@ def _launcher() -> str:
             return str(link)
         except OSError:
             return real
-    return f"{os.path.realpath(sys.executable)} -m hearth"
+    return f"{os.path.abspath(sys.executable)} -m hearth"
 
 
 def _service_autostart(on: bool, boot: bool) -> int:
@@ -1388,7 +1393,7 @@ def _hearth_exec_argv() -> list[str]:
     (POSIX shell, PowerShell, or XDG Exec)."""
     if _real_hearth_bin():
         return [_launcher()]  # stable symlink path (and points it at the real bin)
-    return [os.path.realpath(sys.executable), "-m", "hearth"]
+    return [os.path.abspath(sys.executable), "-m", "hearth"]
 
 
 def cmd_client(args: argparse.Namespace) -> int:
@@ -1414,6 +1419,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("start", help="serve the gateway (brings up Ollama)")
+    s.add_argument("--background", action="store_true",
+                   help="return once it serves; it keeps running (the service, where one is installed)")
     s.add_argument("--bind", help="host:port override (default from config)")
     s.add_argument("--no-manage", action="store_true", help="don't start/stop Ollama")
     s.add_argument("--unsafe-bind", action="store_true", help="allow non-loopback Host (requires --api-key)")

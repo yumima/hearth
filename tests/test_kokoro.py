@@ -97,8 +97,12 @@ def test_is_voice_id(vid, ok):
     assert kokoro_tts.engine.is_voice_id(vid) is ok
 
 
+_MODELS = kokoro_tts.model_dir()  # the machine's own, read before a test has another home
+
+
 @pytest.mark.skipif(not kokoro_tts.installed(), reason="kokoro not provisioned")
-def test_real_synthesis_is_a_wav():
+def test_real_synthesis_is_a_wav(monkeypatch):
+    monkeypatch.setenv("HEARTH_KOKORO_DIR", str(_MODELS))
     eng = kokoro_tts.KokoroEngine()
     data = asyncio.run(eng.synth("Markets were steady.", "af_heart"))
     with wave.open(io.BytesIO(data)) as w:

@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`efbb107`](https://github.com/yumima/hearth/commit/efbb107) 0.2.0: web search only for a request that asks; other web pages are refused
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
@@ -52,6 +53,7 @@ CUDA toolkit. Keep it current: Qwen 3.8 is tested on Ollama 0.40.14.
 | Command | What it does |
 |---|---|
 | `hearth start` | bring up Ollama + serve the gateway (foreground) |
+| `hearth start --background` | the same, returning once it answers; it keeps running (the service, where one is installed) |
 | `hearth stop` | stop the running gateway (found by pidfile, else by its port) |
 | `hearth status` | is the gateway up? show role bindings |
 | `hearth setup` | **first-run wizard** — probe hardware, pull a fitting model, bind roles |
