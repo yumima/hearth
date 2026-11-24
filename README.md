@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`23e1c91`](https://github.com/yumima/hearth/commit/23e1c91) Windows: a port in use is not shared
 - [`c98309d`](https://github.com/yumima/hearth/commit/c98309d) Models: what the review found; the installer's first parts
 - [`f22d302`](https://github.com/yumima/hearth/commit/f22d302) Models that suit this computer: found, ranked, checked here, then used
 - [`498a50c`](https://github.com/yumima/hearth/commit/498a50c) Ollama's owner, the stop, and the client: what the review found

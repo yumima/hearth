@@ -81,14 +81,26 @@
         if (-not (Test-Path -LiteralPath $Complete)) {
             if (Test-Path -LiteralPath $Environment) { Remove-Item -Recurse -Force -LiteralPath $Environment }
             Write-Output 'Installing Python...'
-            Invoke-Step 'Installing Python' $Uv @('python', 'install', '--quiet', '--no-bin', $Python)
+            Invoke-Step 'Installing Python' $Uv @('python', 'install', '--quiet', $Python)
             Invoke-Step 'Making the environment' $Uv @('venv', '--quiet', '--python', $Python, $Environment)
             Write-Output 'Installing hearth...'
             Invoke-Step 'Installing what hearth needs' $Uv @('pip', 'install', '--quiet', '--python', $Environment, '--require-hashes', '--only-binary', ':all:', '-r', $Requirements)
             Invoke-Step 'Installing hearth' $Uv @('pip', 'install', '--quiet', '--python', $Environment, '--no-deps', '--no-index', $WheelFile)
             New-Item -ItemType File -Force -Path $Complete | Out-Null
         }
-        Invoke-Step 'Installing hearth' (Join-Path $Environment 'Scripts\python.exe') (@('-I', '-m', 'hearth.install', 'finish', '--release', $ManifestUrl, '--sha256', $ManifestSha256) + $args)
+        try {
+            Invoke-Step 'Installing hearth' (Join-Path $Environment 'Scripts\python.exe') (@('-I', '-m', 'hearth.install', 'finish', '--release', $ManifestUrl, '--sha256', $ManifestSha256) + $args)
+        } catch {
+            if ($LASTEXITCODE -eq 3 -and -not (Test-Path -LiteralPath (Join-Path $Root 'current.json'))) {
+                # It stepped aside for something that is here: so does what was brought for it.
+                foreach ($Part in 'bin', 'versions', 'python', 'cache', 'downloads', '.hearth-install') {
+                    $Path = Join-Path $Root $Part
+                    if (Test-Path -LiteralPath $Path) { Remove-Item -Recurse -Force -LiteralPath $Path -ErrorAction SilentlyContinue }
+                }
+                if (-not (Get-ChildItem -Force -LiteralPath $Root)) { Remove-Item -Force -LiteralPath $Root }
+            }
+            throw
+        }
     } finally {
         foreach ($Name in $Saved.Keys) { [Environment]::SetEnvironmentVariable($Name, $Saved[$Name]) }
     }

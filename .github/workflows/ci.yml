@@ -61,3 +61,23 @@ jobs:
           curl -sf http://127.0.0.1:11435/admin/setup | grep -q '"verdict"'
           "$BIN/hearth" stop
           ! curl -sf http://127.0.0.1:11435/admin/version
+
+  # The scripts themselves, on a computer with nothing on it.
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      HEARTH_E2E: "1"
+      PYTHONUTF8: "1"
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install, update, go back, remove
+        run: |
+          uv sync --frozen --package hearth --extra dev
+          uv run --frozen --package hearth --extra dev pytest -v -x --durations=5 tests/test_install.py

@@ -215,7 +215,7 @@ def build_env(rel: Release, name: str, say: Say) -> Path:
         files[kind] = downloads / url.rsplit("/", 1)[-1]
         fetch(url, files[kind], digest)
     uv, env_vars = _uv(), _uv_env()
-    _run([uv, "python", "install", "--no-bin", rel.data["python"]], "Installing Python", env_vars)
+    _run([uv, "python", "install", "--quiet", rel.data["python"]], "Installing Python", env_vars)
     _run([uv, "venv", "--quiet", "--python", rel.data["python"], str(env)], f"Making {name}'s environment", env_vars)
     _run([uv, "pip", "install", "--quiet", "--python", str(env), "--require-hashes", "--only-binary", ":all:",
           "-r", str(files["requirements"])], f"Installing what {name} needs", env_vars)

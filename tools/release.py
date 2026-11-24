@@ -47,7 +47,11 @@ def main() -> None:
     a = argparse.ArgumentParser()
     a.add_argument("out", type=Path)
     a.add_argument("--base-url", default="")
+    a.add_argument("--pins", type=Path, default=ROOT / "installer/pins.json")
+    a.add_argument("--no-extras", action="store_true", help="without voices and the window: for tests")
     args = a.parse_args()
+    if args.no_extras:
+        EXTRAS.update({k: [] for k in EXTRAS})
     out, v = args.out.resolve(), version()
     out.mkdir(parents=True, exist_ok=True)
     base = args.base_url or f"https://github.com/yumima/hearth/releases/download/v{v}/"
@@ -59,7 +63,7 @@ def main() -> None:
         wheel = out / f"{name}-{v}-py3-none-any.whl"
         for kind, p in (("wheel", wheel), ("requirements", out / f"{name}-requirements.txt")):
             files[f"{name}-{kind}"] = {"name": p.name, "sha256": digest(p), "size": p.stat().st_size}
-    pins = json.loads((ROOT / "installer/pins.json").read_text(encoding="utf-8"))
+    pins = json.loads(args.pins.read_text(encoding="utf-8"))
     manifest = {"schema": 1, "version": v, "python": PYTHON, "files": files, "ollama": pins["ollama"]}
     m = out / "manifest.json"
     m.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8", newline="\n")

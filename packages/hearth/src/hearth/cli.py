@@ -176,7 +176,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         sock = _listen_socket(cfg.bind_host, cfg.bind_port)
     except OSError as exc:
         where = f"http://{cfg.bind_host}:{cfg.bind_port}"
-        if exc.errno == errno.EADDRINUSE:
+        if exc.errno == errno.EADDRINUSE or (sys.platform == "win32" and exc.errno == errno.EACCES):
             pid = procs.listening_on(cfg.bind_port)
             who = f" by pid {pid}" if pid else ""
             cl = procs.command_line(pid)[:90] if pid else ""

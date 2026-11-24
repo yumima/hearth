@@ -60,6 +60,17 @@ main() {
         done
     fi
 
+    # (hearth looks for more of these itself; this one saves the download.)
+    for name in hearth mantel; do
+        link="$HOME/.local/bin/$name"
+        if [ -h "$link" ]; then
+            case "$(readlink "$link")" in
+                "$ROOT"/*) ;;
+                *) fail "$link is another $name ($(readlink "$link")); hearth was not installed, so as not to disturb it" ;;
+            esac
+        fi
+    done
+
     say "Installing hearth $VERSION in $ROOT"
     DOWN="$ROOT/downloads/$VERSION"
     mkdir -p "$ROOT/bin" "$DOWN"
@@ -80,7 +91,7 @@ main() {
     if [ ! -f "$ENV/.complete" ]; then
         rm -rf "$ENV"
         say "Installing Python…"
-        "$ROOT/bin/uv" python install --quiet --no-bin "$PYTHON" || fail "Python could not be installed"
+        "$ROOT/bin/uv" python install --quiet "$PYTHON" || fail "Python could not be installed"
         "$ROOT/bin/uv" venv --quiet --python "$PYTHON" "$ENV" || fail "the environment could not be made"
         say "Installing hearth…"
         "$ROOT/bin/uv" pip install --quiet --python "$ENV" --require-hashes --only-binary :all: -r "$DOWN/hearth-requirements.txt" \
@@ -88,7 +99,14 @@ main() {
         "$ROOT/bin/uv" pip install --quiet --python "$ENV" --no-deps --no-index "$DOWN/$WHEEL" || fail "hearth could not be installed"
         : > "$ENV/.complete"
     fi
-    exec "$ENV/bin/python" -I -m hearth.install finish --release "$MANIFEST_URL" --sha256 "$MANIFEST_SHA256" "$@"
+    status=0
+    "$ENV/bin/python" -I -m hearth.install finish --release "$MANIFEST_URL" --sha256 "$MANIFEST_SHA256" "$@" || status=$?
+    if [ "$status" = 3 ] && [ ! -e "$ROOT/current.json" ]; then
+        # It stepped aside for something that is here: so does what was brought for it.
+        for part in bin versions python cache downloads .hearth-install; do rm -rf "${ROOT:?}/$part"; done
+        rmdir "$ROOT" 2>/dev/null || true
+    fi
+    return "$status"
 }
 
 main "$@"
