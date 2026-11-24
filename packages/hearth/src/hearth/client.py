@@ -76,6 +76,14 @@ def remove(say: install.Say) -> None:
         say(f"removed {link}")
 
 
+def _works(env: Path) -> bool:
+    try:
+        return subprocess.run([str(install.env_bin(env, "python")), "-c", "import mantel.app"],
+                              capture_output=True, timeout=120).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _build_from(tree: Path, again: bool, say: install.Say) -> None:
     env = tree / ".venv-mantel"
     say(f"Building mantel in {env}…")
@@ -83,7 +91,7 @@ def _build_from(tree: Path, again: bool, say: install.Say) -> None:
         install._run([uv, "sync", "--quiet", "--frozen", "--inexact", *(["--reinstall"] if again else []),
                       "--project", str(tree), "--package", "mantel", "--extra", "gui"],
                      "Building mantel", {"UV_PROJECT_ENVIRONMENT": str(env), "VIRTUAL_ENV": ""})
-    else:
+    elif again or not _works(env):
         # Without uv the versions are not the locked ones; pip takes what is newest in their ranges.
         install._run([sys.executable, "-m", "venv", str(env)], "Making mantel's environment")
         install._run([str(install.env_bin(env, "python")), "-m", "pip", "install", "--quiet",

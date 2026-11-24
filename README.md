@@ -13,6 +13,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`dc193dc`](https://github.com/yumima/hearth/commit/dc193dc) client install always puts mantel right, and needs no marker of its own; put_back is one function
 - [`6a22d58`](https://github.com/yumima/hearth/commit/6a22d58) Installer, client: a build cut short at any point leaves the one that works
 - [`a022eb0`](https://github.com/yumima/hearth/commit/a022eb0) Installer, client: what the review found
 - [`7938097`](https://github.com/yumima/hearth/commit/7938097) Windows: programs that are running do not stop mantel from being added

@@ -63,6 +63,14 @@ def test_without_uv_it_is_built_with_pip(tree, monkeypatch):
     monkeypatch.setattr(client.shutil, "which", lambda n: None)
     assert cli.main(["client", "install"]) == 0
     assert tree.built[0][0][1:3] == ["-m", "venv"] and tree.built[1][0][-1] == f"{tree.root / 'packages' / 'mantel'}[gui]"
+    # one that works is not asked of the network again
+    py = tree.root / ".venv-mantel" / "bin" / "python"
+    py.write_text("#!/bin/sh\n")
+    py.chmod(0o755)
+    n = len(tree.built)
+    assert cli.main(["client", "install"]) == 0 and len(tree.built) == n
+    py.write_text("#!/bin/sh\nexit 1\n")  # cut short
+    assert cli.main(["client", "install"]) == 0 and len(tree.built) == n + 2
 
 
 def test_another_mantel_is_left_unless_asked(tree, tmp_path, capsys):
