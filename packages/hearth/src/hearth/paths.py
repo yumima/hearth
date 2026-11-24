@@ -20,7 +20,11 @@ def home() -> Path:
 
 def data_dir() -> Path:
     """finterm's HearthService::install_dir() is this folder, too: it finds
-    hearth's program in bin/ there."""
+    hearth's program in bin/ there. An installed hearth is in it, wherever it was
+    put, and needs no variable to know."""
+    prefix = Path(sys.prefix)
+    if prefix.parent.parent.name == "versions" and (prefix.parents[2] / ".hearth-install").is_file():
+        return prefix.parents[2]
     if env := os.environ.get("HEARTH_DATA"):
         return Path(env).expanduser()
     if sys.platform == "win32":

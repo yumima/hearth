@@ -46,6 +46,8 @@ RELEASES = "https://github.com/yumima/hearth/releases"
 MARKER = ".hearth-install"
 OLLAMA_PORT = 11436  # its own, beside an Ollama the person may have on 11434
 _WIN = sys.platform == "win32"
+# What can go wrong on a person's computer, said in a line rather than a traceback.
+ERRORS = (OSError, ValueError, KeyError, sqlite3.Error, tarfile.TarError, zipfile.BadZipFile, subprocess.SubprocessError)
 
 
 def root() -> Path:
@@ -105,10 +107,10 @@ def release(url: str = "", digest: str = "") -> Release:
     if digest and hashlib.sha256(r.content).hexdigest() != digest:
         raise Problem("The release is not the one this installer is for.")
     data = r.json()
-    # "latest" redirects to a tag: its other files are there, whatever becomes latest since
-    base = str(r.history[0].headers.get("location") or r.url) if r.history else str(r.url)
-    if "/releases/latest/" in url and "/releases/download/" not in base:
-        base = f"{RELEASES}/download/v{data['version']}/"
+    # Its other files are beside it. Not where the download was redirected to
+    # (GitHub keeps each file elsewhere), and for "latest", under its own tag: what
+    # is latest may be another by the next request.
+    base = url.replace("/releases/latest/download/", f"/releases/download/v{data.get('version')}/")
     if data.get("schema") != 1:
         raise Problem("This release needs a newer installer — get hearth again from its page.")
     return Release(data, base)
@@ -309,8 +311,8 @@ class _Progress:
 def link_programs(version: str, mantel: bool) -> None:
     bin_dir = root() / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("hearth", "mantel"):
-        target = env_bin(root() / "versions" / version / name, name)
+    for name in ("hearth", "mantel", *(("hearthw",) if _WIN else ())):
+        target = env_bin(root() / "versions" / version / name.removesuffix("w"), name)
         link = bin_dir / exe(name)
         if name == "mantel" and not mantel:
             link.unlink(missing_ok=True)
@@ -350,27 +352,57 @@ def first_config() -> None:
     cfgmod.save(cfg)
 
 
+def _own_processes() -> list:
+    """Programs running from here, without the one that asks (and its launcher)."""
+    import psutil
+
+    me = {os.getpid(), *(p.pid for p in psutil.Process().parents())}
+    versions = os.path.realpath(root() / "versions")
+    out = []
+    for p in psutil.process_iter():
+        if p.pid in me:
+            continue
+        try:
+            paths_of = [p.exe(), *p.cmdline()[:3]]
+        except psutil.Error:
+            continue
+        if any(os.path.isabs(a) and os.path.realpath(a).startswith(versions + os.sep) for a in paths_of if a):
+            out.append(p)
+    return out
+
+
 def _stop_everything() -> None:
-    cfg = cfgmod.load(create=False)
-    if not _WIN and service.unit_path().exists():
+    """The gateway in order (its Ollama with it), then whatever is left of ours —
+    asked of the processes, not of a version that may not be able to answer."""
+    if not _WIN and service.unit_path().exists() and not service.foreign():
         service.systemctl("stop", service.UNIT_NAME)
-    for name in ("mantel", "hearth"):
-        p = root() / "bin" / exe(name)
-        if p.exists():
-            subprocess.run([str(p), "stop"], capture_output=True, check=False, timeout=60)
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline and background.gateway_identity(cfg) is not None:
-        time.sleep(0.2)
+    cfg = cfgmod.load(create=False)
+    pid = procs.listening_on(cfg.bind_port)
+    ours = {p.pid for p in _own_processes()}
+    if pid in ours:
+        try:
+            httpx.post(f"http://{cfg.bind_host}:{cfg.bind_port}/admin/shutdown", timeout=3.0)
+        except httpx.HTTPError:
+            pass
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and procs.alive(pid):
+            time.sleep(0.2)
+    for p in _own_processes():
+        procs.end_tree(p.pid)
 
 
-def _start() -> tuple[bool, str]:
+def _start(version: str) -> tuple[bool, str]:
+    """Started, and it is this version that answers."""
     cfg = cfgmod.load(create=False)
     program = str(root() / "bin" / exe("hearth"))
     svc = None
-    if sys.platform.startswith("linux") and service.unit_path().exists() and service.has_systemd():
+    if sys.platform.startswith("linux") and service.unit_path().exists() and not service.foreign() and service.has_systemd():
         svc = background.Service(lambda: service.systemctl("start", service.UNIT_NAME),
                                  lambda: service.systemctl("is-active", "--quiet", service.UNIT_NAME) in (0, 3))
-    return background.start(cfg, [program, "start"], svc)
+    ok, message = background.start(cfg, [program, "start"], svc)
+    if ok and not _serving(version):
+        return False, "another version answers"
+    return ok, message
 
 
 def _serving(version: str) -> bool:
@@ -383,31 +415,35 @@ def _serving(version: str) -> bool:
 
 
 def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: bool, say: Say) -> None:
-    """The rest of a first installation, run from its own new environment."""
+    """The rest of an installation, run from its own new environment. Over an
+    earlier one it is an update; over the same version, a repair."""
     (root() / MARKER).write_text("hearth's installer made this folder, and removing hearth removes it.\n")
+    old = current()
+    if old:
+        _stop_everything()  # what is repaired may be in use
     build_env(rel, "hearth", say)
     if mantel:
         build_env(rel, "mantel", say)
-    hw = hardware.probe()
-    ollama = get_ollama(rel, hw, say)
-    before = current()
-    _set_current({"version": rel.version, "ollama": ollama, "mantel": mantel,
-                  "previous": before if before and before.get("version") != rel.version else before.get("previous")})
-    link_programs(rel.version, mantel)
+    ollama = get_ollama(rel, hardware.probe(), say)
+    new = {"version": rel.version, "ollama": ollama, "mantel": mantel}
     first_config()
-    if mantel:
-        _mantel("install")
+    if old and old.get("version") != rel.version:
+        _switch(new, old, True, say)
+    else:
+        _set_current({**new, "previous": old.get("previous")})
+        link_programs(rel.version, mantel)
+    _mantel("install" if mantel else "uninstall")
     if autostart:
         try:
-            service.enable(str(root() / "bin" / exe("hearth")))
+            service.enable(str(root() / "bin" / exe("hearthw" if _WIN else "hearth")))
         except (service.Foreign, OSError) as e:
             say(f"hearth will not start at login: {e}")
-    _tidy(keep={rel.version})
+    _tidy()
     if start:
-        ok, message = _start()
-        say(f"hearth is {message}" if ok else f"hearth did not start: {message}")
+        ok, message = _start(rel.version)
         if not ok:
-            raise Problem("It is installed; `hearth start` says why it does not run.")
+            raise Problem(f"hearth is installed, and did not start: {message}")
+        say(f"hearth is {message}")
         cfg = cfgmod.load(create=False)
         url = f"http://{cfg.bind_host}:{cfg.bind_port}/"
         say(f"Choose a model at {url}")
@@ -422,11 +458,11 @@ def _mantel(action: str) -> None:
                        env={**os.environ, "MANTEL_PROGRAM": str(p)})
 
 
-def _tidy(keep: set[str]) -> None:
+def _tidy() -> None:
     """Versions, engines and downloads nothing needs any more."""
     cur = current()
     prev = cur.get("previous") or {}
-    versions = keep | {cur.get("version", ""), prev.get("version", "")}
+    versions = {cur.get("version", ""), prev.get("version", "")}
     engines = {cur.get("ollama", ""), prev.get("ollama", "")}
     for folder, wanted in (("versions", versions), ("ollama", engines)):
         d = root() / folder
@@ -436,8 +472,9 @@ def _tidy(keep: set[str]) -> None:
     for name in ("downloads", "cache"):
         shutil.rmtree(root() / name, ignore_errors=True)
     backups = sorted((root() / "backups").iterdir()) if (root() / "backups").is_dir() else []
-    for p in backups[:-3]:
-        shutil.rmtree(p, ignore_errors=True)
+    for p in backups[:-5]:
+        if p.name != prev.get("backup"):
+            shutil.rmtree(p, ignore_errors=True)
 
 
 # ── update, and back ──────────────────────────────────────────────────────────
@@ -451,8 +488,14 @@ def _mantel_files() -> list[Path]:
 def backup() -> Path:
     """Settings and chats as they are, for a version that cannot read what a newer
     one wrote. A database is copied as its own program would, not as a file."""
-    dest = root() / "backups" / time.strftime("%Y%m%d-%H%M%S")
-    dest.mkdir(parents=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for n in range(100):
+        dest = root() / "backups" / (stamp + (f"-{n}" if n else ""))
+        try:
+            dest.mkdir(parents=True)
+            break
+        except FileExistsError:
+            continue
     files = [cfgmod.config_path(), paths.home() / "measured.json", *_mantel_files()]
     index = {}
     for i, f in enumerate(f for f in files if f.is_file()):
@@ -485,6 +528,39 @@ def available() -> Release | None:
     return rel if version_tuple(rel.version) > version_tuple(current().get("version") or __version__) else None
 
 
+def _switch(new: dict, old: dict, run: bool, say: Say) -> None:
+    """From one version to another, or — whatever goes wrong — not at all."""
+    _stop_everything()
+    saved = None
+    try:
+        saved = backup()
+        _set_current({**new, "previous": {**{k: old[k] for k in ("version", "ollama")}, "mantel": bool(old.get("mantel")),
+                                          "backup": saved.name}})
+        link_programs(new["version"], bool(new.get("mantel")))
+        say("Starting it…")
+        ok, message = _start(new["version"])
+        if not ok:
+            raise Problem(f"{new['version']} did not start ({message})")
+    except BaseException as e:
+        say(f"{e or type(e).__name__}. Going back to {old['version']}…")
+        ok, message = _back(old, saved, run)
+        if not isinstance(e, Exception):
+            raise
+        raise Problem(f"The update did not work. {old['version']} is " + (
+            f"back, but did not start: {message}" if not ok else "running again." if run else "back.")) from e
+    if not run:
+        _stop_everything()
+
+
+def _back(old: dict, saved: Path | None, run: bool) -> tuple[bool, str]:
+    _set_current(old)
+    _stop_everything()
+    link_programs(old["version"], bool(old.get("mantel")))
+    if saved is not None and (saved / "index.json").is_file():
+        restore(saved)
+    return _start(old["version"]) if run else (True, "")
+
+
 def update(rel: Release, say: Say) -> None:
     if not managed():
         raise Problem("This hearth was not made by its installer (a source checkout?): update it where it came from.")
@@ -494,49 +570,43 @@ def update(rel: Release, say: Say) -> None:
     if mantel:
         build_env(rel, "mantel", say)
     ollama = get_ollama(rel, hardware.probe(), say)
-    running = background.gateway_identity(cfgmod.load(create=False)) is not None
-    _stop_everything()
-    saved = backup()
-    _set_current({"version": rel.version, "ollama": ollama, "mantel": mantel,
-                  "previous": {"version": old["version"], "ollama": old["ollama"], "mantel": mantel, "backup": saved.name}})
-    link_programs(rel.version, mantel)
-    say("Starting it…")
-    ok, message = _start()
-    if not (ok and _serving(rel.version)):
-        say(f"{rel.version} did not start ({message}). Going back to {old['version']}…")
-        _back(old, saved)
-        raise Problem(f"The update did not work, and {old['version']} is running again." if running else
-                      f"The update did not work, and {old['version']} is back.")
-    if not running:
-        _stop_everything()
-    _tidy(keep={rel.version})
+    run = background.gateway_identity(cfgmod.load(create=False)) is not None
+    _switch({"version": rel.version, "ollama": ollama, "mantel": mantel}, old, run, say)
+    _tidy()
     say(f"hearth {rel.version} is ready.")
 
 
-def _back(old: dict, saved: Path | None) -> None:
-    _stop_everything()
-    if saved is not None and (saved / "index.json").is_file():
-        restore(saved)
-    _set_current(old)
-    link_programs(old["version"], bool(old.get("mantel")))
-    _start()
-
-
-def rollback(say: Say) -> None:
-    cur = current()
-    prev = cur.get("previous")
+def rollback_to() -> dict:
+    """The version before, if it can be gone back to."""
+    prev = current().get("previous")
     if not managed() or not prev:
         raise Problem("There is no earlier version to go back to.")
     if not (root() / "versions" / prev["version"] / "hearth" / ".complete").is_file():
         raise Problem(f"{prev['version']} is no longer here.")
+    return prev
+
+
+def rollback(say: Say) -> None:
+    """The version before, with the settings and chats of then: those of now are
+    put aside, not lost."""
+    prev, cur = rollback_to(), current()
+    run = background.gateway_identity(cfgmod.load(create=False)) is not None
     say(f"Going back to {prev['version']}…")
+    _stop_everything()
+    now = backup()
     saved = root() / "backups" / prev.get("backup", "-")
-    keep = {k: v for k, v in prev.items() if k != "backup"}
-    _back(keep, saved if saved.is_dir() else None)
-    say(f"hearth {prev['version']} is current. Settings and chats are as they were before the update.")
+    ok, message = _back({k: v for k, v in prev.items() if k != "backup"}, saved if saved.is_dir() else None, run)
+    if not ok:
+        _back(cur, now, run)
+        raise Problem(f"{prev['version']} did not start ({message}); {cur['version']} is back.")
+    say(f"hearth {prev['version']} is current. The settings and chats of {cur['version']} are kept in {now}.")
 
 
 # ── removing ──────────────────────────────────────────────────────────────────
+
+# What the installer makes. Nothing else in the folder is removed.
+_PARTS = ("bin", "versions", "python", "ollama", "downloads", "cache", "backups", "current.json", "current.tmp")
+
 
 def uninstall(keep_models: bool, keep_settings: bool, say: Say) -> None:
     base = root()
@@ -559,20 +629,48 @@ def uninstall(keep_models: bool, keep_settings: bool, say: Say) -> None:
             paths.home().rmdir()  # only if nothing else is in it
         except OSError:
             pass
-    stay = {"models", "voices"} if keep_models else set()
-    doomed = [p for p in base.iterdir() if p.name not in stay]
+    doomed = [base / p for p in (*_PARTS, *(() if keep_models else ("models", "voices"))) if (base / p).exists()]
+    kept = (f" Models and voices are kept in {base}." if keep_models else "") \
+        + " mantel's chats and settings are kept where they were."
     if _WIN:
-        # This program is in there: the rest is done when it has ended.
-        cmds = " & ".join((f'rmdir /s /q "{p}"' if p.is_dir() else f'del /f /q "{p}"') for p in doomed)
-        subprocess.Popen(f'cmd /d /c "ping -n 4 127.0.0.1 >nul & {cmds} & rmdir "{base}""',
-                         creationflags=0x08000000 | 0x00000008, cwd=str(Path.home()))
-    else:
-        for p in doomed:
+        _remove_later(base, doomed)
+        say("hearth is being removed; that takes a few seconds." + kept)
+        return
+    left = []
+    for p in doomed:
+        try:
             shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
-        if not stay:
-            base.rmdir()
-    say("hearth is removed." + (f" Models and voices are kept in {base}." if keep_models else "")
-        + " mantel's chats and settings are kept where they were.")
+        except OSError as e:
+            left.append(f"{p} ({e.strerror or e})")
+    if left:  # the marker stays: it can be run again
+        raise Problem("Not all of it could be removed: " + "; ".join(left))
+    (base / MARKER).unlink()
+    try:
+        base.rmdir()
+    except OSError:
+        pass  # what was kept, or somebody's own
+    say("hearth is removed." + kept)
+
+
+def _remove_later(base: Path, doomed: list[Path]) -> None:
+    """On Windows the program that removes is one of the things removed: a script
+    does it once this has ended, trying for a while, the marker last and only when
+    the rest is gone."""
+    import tempfile
+
+    q = [str(p).replace("%", "%%") for p in doomed]
+    b = str(base).replace("%", "%%")
+    lines = ["@echo off", "chcp 65001 >nul", "set n=0", ":again", "ping -n 2 127.0.0.1 >nul", "set /a n+=1"]
+    for p in q:
+        lines += [f'if exist "{p}\\" rmdir /s /q "{p}" 2>nul', f'if exist "{p}" del /f /q "{p}" 2>nul']
+    for p in q:
+        lines += [f'if exist "{p}" if %n% lss 30 goto again', f'if exist "{p}" goto end']
+    lines += [f'del /f /q "{b}\\{MARKER}"', f'rmdir "{b}" 2>nul', ":end", '(goto) 2>nul & del "%~f0"']
+    fd, name = tempfile.mkstemp(prefix="hearth-remove-", suffix=".cmd")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write("\n".join(lines) + "\n")
+    subprocess.Popen(["cmd", "/d", "/c", name], cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=0x08000000 | 0x01000000)
 
 
 # ── command line (for the install scripts) ────────────────────────────────────
@@ -604,6 +702,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except httpx.HTTPError as e:
         print(f"The connection failed ({e or type(e).__name__}). Run the installer again to go on.", file=sys.stderr)
+        return 1
+    except ERRORS as e:
+        print(f"{type(e).__name__}: {e}. Run the installer again to go on.", file=sys.stderr)
         return 1
 
 

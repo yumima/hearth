@@ -13,6 +13,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`0d99546`](https://github.com/yumima/hearth/commit/0d99546) README, release and site workflows (a tag makes a draft), the site
 - [`5095592`](https://github.com/yumima/hearth/commit/5095592) Windows: stopping a stalled download; what is installed, and its licences
 - [`684cff7`](https://github.com/yumima/hearth/commit/684cff7) catalog: what was measured here; two models that failed leave it
 - [`1252e78`](https://github.com/yumima/hearth/commit/1252e78) Install, update, go back, remove — tested with the scripts themselves

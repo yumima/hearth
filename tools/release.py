@@ -15,11 +15,14 @@ import hashlib
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = "3.12.11"
-EXTRAS = {"hearth": ["tts", "stt"], "mantel": ["gui"]}
+# Not mantel's "gui": it needs a package that has no wheel, and nothing is built on
+# the user's computer. Its window is a browser's, without the browser around it.
+EXTRAS = {"hearth": ["tts", "stt"], "mantel": []}
 
 
 def sh(*cmd: str) -> str:
@@ -40,6 +43,9 @@ def requirements(name: str) -> str:
     text = sh("uv", "export", "--quiet", "--frozen", "--package", name, "--no-emit-project", "--no-emit-workspace",
               "--no-dev", "--no-header", "--no-annotate", *extras)
     assert "-e " not in text and "file:" not in text, "something is not from the index"
+    lock = {p["name"]: p for p in tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))["package"]}
+    for line in re.findall(r"^([a-z0-9-]+)==", text, re.M):
+        assert lock[line].get("wheels"), f"{line} has no wheel: it would be built on the user's computer"
     return text
 
 

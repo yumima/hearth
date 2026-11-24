@@ -289,19 +289,41 @@ def test_06_back_to_the_version_before(world):
     conf = world.home / ".hearth" / "config.yaml"
     before = conf.read_text()
     conf.write_text(before + "\n# what a newer version wrote\n")
-    world.hearth("update", "--rollback")
+    world.hearth("update", "--rollback", "--yes")
     assert world.version() == "0.2.0" and "newer version" not in conf.read_text()
     assert json.loads((world.data / "current.json").read_text())["version"] == "0.2.0"
-    assert "no earlier version" in world.hearth("update", "--rollback", ok=False).stderr
+    kept = [p for p in (world.data / "backups").glob("*/*config.yaml") if "newer version" in p.read_text()]
+    assert kept  # those of then are put aside, not lost
+    assert "no earlier version" in world.hearth("update", "--rollback", "--yes", ok=False).stderr
+
+
+def test_06b_a_newer_script_over_a_running_one_is_an_update(world):
+    world.install("0.3.0", "--no-open")
+    assert world.version() == "0.3.0"
+    prev = json.loads((world.data / "current.json").read_text())["previous"]
+    assert prev["version"] == "0.2.0" and (world.data / "backups" / prev["backup"]).is_dir()
+    # and one that does not start is taken back, as by `hearth update`
+    r = world.install("0.4.0", "--no-open", ok=False)
+    assert "0.3.0 is running again" in r.stderr + r.stdout and world.version() == "0.3.0"
+
+
+def test_06c_it_knows_where_it_is_without_being_told(world):
+    """At login there are no variables of the shell it was installed from."""
+    py = world.data / "versions" / "0.3.0" / "hearth" / ("Scripts/python.exe" if WIN else "bin/python")
+    r = _run([py, "-I", "-c", "from hearth import paths, install; print(paths.data_dir()); print(install.managed())"],
+             env={**world.env, "HEARTH_DATA": str(world.tmp / "elsewhere")})
+    assert r.stdout.split("\n")[0].strip() == str(world.data) and "True" in r.stdout
 
 
 def test_07_removing_keeps_what_was_asked_for(world):
+    (world.data / "somebody-elses.txt").write_text("not the installer's")
     (world.data / "models").mkdir(exist_ok=True)
     (world.data / "models" / "a-model").write_text("x")
     mine = world.home / "mine.txt"
     mine.write_text("not hearth's")
     world.hearth("uninstall", "--yes", "--keep-models", "--keep-settings")
-    assert _until(lambda: sorted(p.name for p in world.data.iterdir()) == ["models"])
+    assert _until(lambda: sorted(p.name for p in world.data.iterdir()) == ["models", "somebody-elses.txt"], 60)
+    (world.data / "somebody-elses.txt").unlink()
     assert (world.home / ".hearth" / "config.yaml").exists() and mine.exists()
     assert not world.autostart() and world.version() == ""
     assert _until(lambda: world.processes() == []), world.processes()
@@ -317,7 +339,7 @@ def test_08_installing_beside_kept_models_and_without_mantel(world):
 
 def test_09_removing_leaves_nothing(world):
     world.hearth("uninstall", "--yes")
-    assert _until(lambda: not world.data.exists()), list(world.data.rglob("*"))[:10]
+    assert _until(lambda: not world.data.exists(), 60), list(world.data.rglob("*"))[:10]
     assert not (world.home / ".hearth").exists()
     assert not any((world.home / ".local" / "bin" / n).is_symlink() for n in ("hearth", "mantel"))
     assert _until(lambda: world.processes() == []), world.processes()
@@ -367,8 +389,10 @@ def _answers(port: int) -> bool:
 
 def test_11_a_folder_that_is_not_ours_is_not_used(world):
     shutil.rmtree(world.data, ignore_errors=True)
-    world.data.mkdir(parents=True)
-    (world.data / "thesis.txt").write_text("mine")
-    r = world.install("0.2.0", "--no-open", ok=False)
-    assert "was not made by this installer" in r.stderr + r.stdout
-    assert [p.name for p in world.data.iterdir()] == ["thesis.txt"]
+    for name in ("thesis.txt", ".hidden", "versions"):
+        world.data.mkdir(parents=True)
+        (world.data / name).mkdir() if name == "versions" else (world.data / name).write_text("mine")
+        r = world.install("0.2.0", "--no-open", ok=False)
+        assert "was not made by this installer" in r.stderr + r.stdout
+        assert [p.name for p in world.data.iterdir()] == [name]
+        shutil.rmtree(world.data)

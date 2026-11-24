@@ -53,9 +53,11 @@ main() {
         *) fail "there is no hearth for $(uname -s) on $(uname -m) yet" ;;
     esac
     ROOT="${HEARTH_DATA:-$ROOT}"
-    if [ -e "$ROOT" ] && [ ! -e "$ROOT/.hearth-install" ] && [ -n "$(ls -A "$ROOT" 2>/dev/null)" ] && [ ! -d "$ROOT/versions" ]; then
+    case "$ROOT" in /*) ;; *) fail "HEARTH_DATA must be a full path" ;; esac
+    if [ -e "$ROOT" ] && [ ! -e "$ROOT/.hearth-install" ]; then
         # models and voices an uninstall was asked to keep are fine; anything else is not ours
-        for f in "$ROOT"/* ; do
+        for f in "$ROOT"/* "$ROOT"/.[!.]* ; do
+            [ -e "$f" ] || continue
             case "${f##*/}" in models|voices) ;; *) fail "$ROOT is there already and was not made by this installer" ;; esac
         done
     fi
@@ -103,7 +105,7 @@ main() {
     "$ENV/bin/python" -I -m hearth.install finish --release "$MANIFEST_URL" --sha256 "$MANIFEST_SHA256" "$@" || status=$?
     if [ "$status" = 3 ] && [ ! -e "$ROOT/current.json" ]; then
         # It stepped aside for something that is here: so does what was brought for it.
-        for part in bin versions python cache downloads .hearth-install; do rm -rf "${ROOT:?}/$part"; done
+        for part in bin versions python ollama cache downloads .hearth-install; do rm -rf "${ROOT:?}/$part"; done
         rmdir "$ROOT" 2>/dev/null || true
     fi
     return "$status"

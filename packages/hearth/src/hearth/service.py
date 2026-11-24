@@ -100,8 +100,11 @@ def enable(program: str) -> None:
     if sys.platform == "win32":
         import winreg
 
+        if f := foreign():
+            raise Foreign(f"{f} was not made by hearth's installer; it is left as it is")
+        # hearthw: the same without a console window, which would be there all day.
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
-            winreg.SetValueEx(k, "hearth", 0, winreg.REG_SZ, f'"{program}" start')
+            winreg.SetValueEx(k, "hearth", 0, winreg.REG_SZ, f'"{program}" start --background')
     elif sys.platform == "darwin":
         p = _agent_path()
         if p.exists() and not _agent_ours(p):
@@ -134,11 +137,12 @@ def disable(remove: bool = False) -> None:
     if sys.platform == "win32":
         import winreg
 
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
-                winreg.DeleteValue(k, "hearth")
-        except OSError:
-            pass
+        if not foreign():
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+                    winreg.DeleteValue(k, "hearth")
+            except OSError:
+                pass
     elif sys.platform == "darwin":
         p = _agent_path()
         if _agent_ours(p):
@@ -156,20 +160,28 @@ def disable(remove: bool = False) -> None:
 
 def enabled() -> bool:
     if sys.platform == "win32":
-        import winreg
-
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
-                return bool(winreg.QueryValueEx(k, "hearth")[0])
-        except OSError:
-            return False
+        return bool(_run_value())
     if sys.platform == "darwin":
         return _agent_path().exists()
     return (unit_path().exists() and systemctl("is-enabled", UNIT_NAME) == 0) or _autostart_path().exists()
 
 
+def _run_value() -> str:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
+            return str(winreg.QueryValueEx(k, "hearth")[0])
+    except OSError:
+        return ""
+
+
 def foreign() -> str:
     """The path of one that is not ours, "" if there is none."""
+    if sys.platform == "win32":
+        value = _run_value()
+        ours = str(paths.data_dir() / "bin").lower()
+        return f"the login entry {value}" if value and ours not in value.lower() else ""
     candidates = {"win32": [], "darwin": [_agent_path()]}.get(sys.platform, [unit_path(), _autostart_path()])
     for p in candidates:
         if p.exists() and not (_agent_ours(p) if sys.platform == "darwin" else _ours(p)):

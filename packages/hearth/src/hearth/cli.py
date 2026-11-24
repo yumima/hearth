@@ -1367,7 +1367,7 @@ def _service_autostart(on: bool, boot: bool) -> int:
             return 1
         print("hearth starts at login")
     else:
-        program = install.root() / "bin" / install.exe("hearth")
+        program = install.root() / "bin" / install.exe("hearthw" if sys.platform == "win32" else "hearth")
         if not install.managed() or not program.exists():
             print("only an installed hearth can be started at login (or a hearth.service of your own)", file=sys.stderr)
             return 1
@@ -1440,6 +1440,15 @@ def cmd_update(args: argparse.Namespace) -> int:
     say = lambda t: print(t, flush=True)  # noqa: E731
     try:
         if args.rollback:
+            prev = install.rollback_to()
+            print(f"This goes back to hearth {prev['version']}, with the settings and chats from before the update. "
+                  "Those of now are kept in a folder.")
+            if not args.yes:
+                try:
+                    if input("Go back? [y/N] ").strip().lower() not in ("y", "yes"):
+                        return 0
+                except EOFError:
+                    return 1
             install.rollback(say)
             return 0
         rel = install.available()
@@ -1462,6 +1471,9 @@ def cmd_update(args: argparse.Namespace) -> int:
         return 1
     except httpx.HTTPError as e:
         print(f"The connection failed ({e or type(e).__name__}).", file=sys.stderr)
+        return 1
+    except install.ERRORS as e:
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
         return 1
 
 
