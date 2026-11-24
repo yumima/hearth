@@ -380,6 +380,9 @@ def test_08b_mantel_can_be_added_later(world):
         assert str(world.data / "bin" / "mantel") in entry
     world.hearth("client", "uninstall")
     world.hearth("client", "install", HEARTH_RELEASE_URL=f"{world.url}/nothing")  # it is here: nothing is fetched
+    world.hearth("client", "install", "--build", HEARTH_RELEASE_URL=url)  # with hearth running
+    assert world.version() == "0.2.0"
+    assert _run([world.data / "bin" / ("mantel.exe" if WIN else "mantel"), "--help"], env=world.env).returncode == 0
 
 
 def test_09_removing_leaves_nothing(world):

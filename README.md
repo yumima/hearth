@@ -13,6 +13,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`7938097`](https://github.com/yumima/hearth/commit/7938097) Windows: programs that are running do not stop mantel from being added
 - [`1531fc1`](https://github.com/yumima/hearth/commit/1531fc1) CI: the release's real Ollama and a small model, from download to removal
 - [`9ef6dbe`](https://github.com/yumima/hearth/commit/9ef6dbe) Installer: asked to end in the middle, it goes back; a closed window stops nothing
 - [`ccca8d7`](https://github.com/yumima/hearth/commit/ccca8d7) hearth client install; the installer recognises what is its own

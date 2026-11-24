@@ -201,33 +201,43 @@ def _uv_env() -> dict:
             "UV_DEFAULT_INDEX": "https://pypi.org/simple"}
 
 
-def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] = lambda: None) -> Path:
+def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] = lambda: None, again: bool = False) -> Path:
     """versions/V/name, complete, or it is made again. `replacing` is called before
-    something that is there, and may be in use, is taken away."""
+    something that is there, and may be in use, is moved away; if making it fails,
+    that is put back."""
     env = root() / "versions" / rel.version / name
     done = env / ".complete"
-    if done.is_file():
+    if done.is_file() and not again:
         return env
     say(f"Installing {name} {rel.version}…")
-    if env.exists():
-        replacing()
-        shutil.rmtree(env)
     downloads = root() / "downloads" / rel.version
     files = {}
     for kind in ("wheel", "requirements"):
         url, digest = rel.file(f"{name}-{kind}")
         files[kind] = downloads / url.rsplit("/", 1)[-1]
         fetch(url, files[kind], digest)
+    before = env.with_name(name + ".before")
+    shutil.rmtree(before, ignore_errors=True)
+    if env.exists():
+        replacing()
+        env.rename(before) if done.is_file() else shutil.rmtree(env)
     uv, env_vars = _uv(), _uv_env()
-    _run([uv, "python", "install", "--quiet", rel.data["python"]], "Installing Python", env_vars)
-    _run([uv, "venv", "--quiet", "--python", rel.data["python"], str(env)], f"Making {name}'s environment", env_vars)
-    _run([uv, "pip", "install", "--quiet", "--python", str(env), "--require-hashes", "--only-binary", ":all:",
-          "-r", str(files["requirements"])], f"Installing what {name} needs", env_vars)
-    _run([uv, "pip", "install", "--quiet", "--python", str(env), "--no-deps", "--no-index", str(files["wheel"])],
-         f"Installing {name}", env_vars)
-    _run([str(env_bin(env, "python")), "-I", "-c",
-          f"import {name}; assert {name}.__version__ == {rel.version!r}, {name}.__version__"], f"Starting {name}")
+    try:
+        _run([uv, "python", "install", "--quiet", rel.data["python"]], "Installing Python", env_vars)
+        _run([uv, "venv", "--quiet", "--python", rel.data["python"], str(env)], f"Making {name}'s environment", env_vars)
+        _run([uv, "pip", "install", "--quiet", "--python", str(env), "--require-hashes", "--only-binary", ":all:",
+              "-r", str(files["requirements"])], f"Installing what {name} needs", env_vars)
+        _run([uv, "pip", "install", "--quiet", "--python", str(env), "--no-deps", "--no-index", str(files["wheel"])],
+             f"Installing {name}", env_vars)
+        _run([str(env_bin(env, "python")), "-I", "-c",
+              f"import {name}; assert {name}.__version__ == {rel.version!r}, {name}.__version__"], f"Starting {name}")
+    except BaseException:
+        if before.exists():
+            shutil.rmtree(env, ignore_errors=True)
+            before.rename(env)
+        raise
     done.write_text("")
+    shutil.rmtree(before, ignore_errors=True)
     return env
 
 
@@ -325,6 +335,7 @@ def link_programs(version: str, mantel: bool) -> None:
                 user.unlink()
             link.unlink(missing_ok=True)
             continue
+        new = not link.exists()
         tmp = bin_dir / (exe(name) + ".tmp")
         tmp.unlink(missing_ok=True)
         if _WIN:
@@ -351,6 +362,8 @@ def link_programs(version: str, mantel: bool) -> None:
                 user.unlink()
             if not (user.exists() or user.is_symlink()):
                 user.symlink_to(link)
+        if name == "mantel" and new:
+            _mantel("install")  # (a version without it took it out)
 
 
 def first_config() -> None:
@@ -398,7 +411,10 @@ def _stop_everything() -> None:
         cfg = cfgmod.load(create=False)
         pid = procs.listening_on(cfg.bind_port)
         if pid in {p.pid for p in _own_processes()}:
-            httpx.post(f"http://{cfg.bind_host}:{cfg.bind_port}/admin/shutdown", timeout=3.0)
+            try:
+                httpx.post(f"http://{cfg.bind_host}:{cfg.bind_port}/admin/shutdown", timeout=3.0)
+            except httpx.HTTPError:
+                pass  # busy: it may have heard
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline and procs.alive(pid):
                 time.sleep(0.2)
@@ -459,28 +475,29 @@ def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: 
                 replacing()
             _set_current({**new, "previous": old.get("previous")})
             link_programs(rel.version, mantel)
-    except BaseException:
-        if stopped and run:
-            _start(old["version"])  # as it was, as far as it goes
-        raise
-    if mantel:
-        _mantel("install")
-    if autostart:
-        try:
-            service.enable(str(root() / "bin" / exe("hearthw" if _WIN else "hearth")))
-        except (service.Foreign, OSError) as e:
-            say(f"hearth will not start at login: {e}")
-    _tidy()
-    if start or run:
+        if mantel:
+            _mantel("install")
+        if autostart:
+            try:
+                service.enable(str(root() / "bin" / exe("hearthw" if _WIN else "hearth")))
+            except (service.Foreign, *ERRORS) as e:
+                say(f"hearth will not start at login: {e}")
+        _tidy()
+        if not (start or run):
+            return
         ok, message = _start(rel.version)
         if not ok:
             raise Problem(f"hearth is installed, and did not start: {message}")
-        say(f"hearth is {message}")
-        cfg = cfgmod.load(create=False)
-        url = f"http://{cfg.bind_host}:{cfg.bind_port}/"
-        say(f"Choose a model at {url}")
-        if open_page:
-            webbrowser.open(url)
+    except BaseException:
+        if stopped and run:
+            _start(current()["version"])  # it was running
+        raise
+    say(f"hearth is {message}")
+    cfg = cfgmod.load(create=False)
+    url = f"http://{cfg.bind_host}:{cfg.bind_port}/"
+    say(f"Choose a model at {url}")
+    if open_page and start:
+        webbrowser.open(url)
 
 
 def add_mantel(rebuild: bool, say: Say) -> None:
@@ -490,10 +507,21 @@ def add_mantel(rebuild: bool, say: Say) -> None:
     rel = release(os.environ.get("HEARTH_RELEASE_URL") or f"{RELEASES}/download/v{version}/manifest.json")
     if rel.version != version:
         raise Problem(f"That release is {rel.version}, and hearth here is {version}: update hearth first.")
-    if rebuild:
-        (root() / "versions" / version / "mantel" / ".complete").unlink(missing_ok=True)
-    build_env(rel, "mantel", say, lambda: [procs.end_tree(p.pid) for p in _own_processes()
-                                           if os.sep + "mantel" + os.sep in " ".join(p.cmdline()[:2])])
+    env = os.path.realpath(root() / "versions" / version / "mantel") + os.sep
+
+    def running() -> list[int]:
+        import psutil
+
+        out = []
+        for p in _own_processes():
+            try:
+                if any(env in a or os.path.abspath(a).startswith(env) for a in (p.exe(), *p.cmdline()[:2]) if a):
+                    out.append(p.pid)
+            except psutil.Error:
+                continue
+        return out
+
+    build_env(rel, "mantel", say, lambda: [procs.end_tree(pid) for pid in running()] and None, again=rebuild)
     _set_current({**cur, "mantel": True})
     link_programs(version, True)
     shutil.rmtree(root() / "downloads", ignore_errors=True)
@@ -501,10 +529,14 @@ def add_mantel(rebuild: bool, say: Say) -> None:
 
 
 def _mantel(action: str) -> None:
+    """Its entry in the app menu. Nothing that goes wrong there stops an installation."""
     p = root() / "bin" / exe("mantel")
     if p.exists():
-        subprocess.run([str(p), action], capture_output=True, check=False, timeout=60,
-                       env={**os.environ, "MANTEL_PROGRAM": str(p)})
+        try:
+            subprocess.run([str(p), action], capture_output=True, check=False, timeout=60,
+                           env={**os.environ, "MANTEL_PROGRAM": str(p)})
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 def _tidy() -> None:
@@ -773,12 +805,16 @@ def ended_in_order() -> None:
     """Asked to end, or the terminal closed: as with Ctrl-C, a switch is taken back."""
     import signal
 
+    asked = [getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n)]
+    asked = [n for n in asked if signal.getsignal(n) != signal.SIG_IGN]  # nohup
+
     def stop(signum, frame) -> None:
+        for n in (*asked, signal.SIGINT):  # once is enough: going back is not ended, too
+            signal.signal(n, signal.SIG_IGN)
         raise SystemExit(128 + signum)
 
-    for name in ("SIGTERM", "SIGHUP"):
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), stop)
+    for n in asked:
+        signal.signal(n, stop)
 
 
 def main(argv: list[str] | None = None) -> int:

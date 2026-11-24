@@ -40,19 +40,33 @@ def tree(tmp_path, monkeypatch):
 def test_it_is_built_linked_and_added_to_the_menu(tree):
     assert cli.main(["client", "install"]) == 0
     cmd, env = tree.built[0]
-    assert cmd[:3] == ["/usr/bin/uv", "sync", "--quiet"] and "--frozen" in cmd and cmd[-2:] == ["--package", "mantel"]
+    assert cmd[:3] == ["/usr/bin/uv", "sync", "--quiet"] and "--frozen" in cmd and "--inexact" in cmd and cmd[-4:] == ["--package", "mantel", "--extra", "gui"]
     assert env["UV_PROJECT_ENVIRONMENT"] == str(tree.root / ".venv-mantel")  # not hearth's own
     assert os.readlink(tree.link) == str(tree.program)
     assert tree.calls() == [f"install {tree.link}"]  # the menu entry is for the name that stays
     # again: nothing is built, and it is in the menu once more
     assert cli.main(["client", "install"]) == 0 and len(tree.built) == 1
-    assert cli.main(["client", "install", "--build"]) == 0 and len(tree.built) == 2
+    assert cli.main(["client", "install", "--build"]) == 0 and len(tree.built) == 2 and "--reinstall" in tree.built[1][0]
+    # one that was interrupted, and another lock file: built once more
+    (tree.root / ".venv-mantel" / ".complete").unlink()
+    assert cli.main(["client", "install"]) == 0 and len(tree.built) == 3
+    (tree.root / "uv.lock").write_text("newer")
+    assert cli.main(["client", "install"]) == 0 and len(tree.built) == 4
+
+
+def test_a_checkout_opens_its_own_although_one_is_installed(tree, tmp_path):
+    installed = tmp_path / "data" / "bin" / "mantel"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("")
+    assert client.program() == str(installed)
+    cli.main(["client", "install"])
+    assert client.program() == str(tree.program)
 
 
 def test_without_uv_it_is_built_with_pip(tree, monkeypatch):
     monkeypatch.setattr(client.shutil, "which", lambda n: None)
     assert cli.main(["client", "install"]) == 0
-    assert tree.built[0][0][1:3] == ["-m", "venv"] and tree.built[1][0][-1] == str(tree.root / "packages" / "mantel")
+    assert tree.built[0][0][1:3] == ["-m", "venv"] and tree.built[1][0][-1] == f"{tree.root / 'packages' / 'mantel'}[gui]"
 
 
 def test_another_mantel_is_left_unless_asked(tree, tmp_path, capsys):

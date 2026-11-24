@@ -10,6 +10,7 @@ checkout from packages/mantel, in an environment of its own (.venv-mantel).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -33,10 +34,10 @@ def _checkout_program(tree: Path) -> Path:
 
 
 def program() -> str | None:
-    """Where the installer puts it, this checkout's own, beside this program, or on PATH."""
+    """This checkout's own, where the installer puts it, beside this program, or on PATH."""
     tree = checkout()
     beside = Path(os.path.abspath(sys.executable)).with_name(install.exe("mantel"))
-    for p in (paths.data_dir() / "bin" / install.exe("mantel"), *([_checkout_program(tree)] if tree else []), beside):
+    for p in (*([_checkout_program(tree)] if tree else []), paths.data_dir() / "bin" / install.exe("mantel"), beside):
         if p.is_file():
             return str(p)
     return shutil.which("mantel")
@@ -47,12 +48,13 @@ def add(rebuild: bool, replace: bool, say: install.Say) -> None:
     tree = checkout()
     if tree is not None:
         p = _checkout_program(tree)
-        if rebuild or not p.is_file():
-            _build_from(tree, say)
+        if rebuild or not p.is_file() or _built(tree) != _locked(tree):
+            _build_from(tree, rebuild, say)
         shown = _link(p, replace, say)
     elif install.managed():
         p = install.root() / "bin" / install.exe("mantel")
-        if rebuild or not p.exists():
+        if rebuild or not (install.root() / "versions" / install.current()["version"] / "mantel" / ".complete").is_file() \
+                or not p.exists():
             install.add_mantel(rebuild, say)
         shown = p
     else:
@@ -78,17 +80,34 @@ def remove(say: install.Say) -> None:
         say(f"removed {link}")
 
 
-def _build_from(tree: Path, say: install.Say) -> None:
+def _locked(tree: Path) -> str:
+    """What mantel is made of: another lock file is another mantel."""
+    p = tree / "uv.lock"
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "-"
+
+
+def _built(tree: Path) -> str:
+    """Of the last build that was finished."""
+    try:
+        return (tree / ".venv-mantel" / ".complete").read_text()
+    except OSError:
+        return ""
+
+
+def _build_from(tree: Path, again: bool, say: install.Say) -> None:
     env = tree / ".venv-mantel"
     say(f"Building mantel in {env}…")
-    if uv := shutil.which("uv"):
-        install._run([uv, "sync", "--quiet", "--frozen", "--project", str(tree), "--package", "mantel"],
+    if uv := shutil.which("uv"):  # (--inexact: the tests' packages of `make build` stay)
+        install._run([uv, "sync", "--quiet", "--frozen", "--inexact", *(["--reinstall"] if again else []),
+                      "--project", str(tree), "--package", "mantel", "--extra", "gui"],
                      "Building mantel", {"UV_PROJECT_ENVIRONMENT": str(env), "VIRTUAL_ENV": ""})
-        return
-    # Without uv the versions are not the locked ones; pip takes what is newest in their ranges.
-    install._run([sys.executable, "-m", "venv", str(env)], "Making mantel's environment")
-    install._run([str(install.env_bin(env, "python")), "-m", "pip", "install", "--quiet", "-e", str(tree / "packages" / "mantel")],
-                 "Building mantel")
+    else:
+        # Without uv the versions are not the locked ones; pip takes what is newest in their ranges.
+        install._run([sys.executable, "-m", "venv", str(env)], "Making mantel's environment")
+        install._run([str(install.env_bin(env, "python")), "-m", "pip", "install", "--quiet",
+                      *(["--force-reinstall"] if again else []), "-e", f"{tree / 'packages' / 'mantel'}[gui]"],
+                     "Building mantel")
+    (env / ".complete").write_text(_locked(tree))
 
 
 def _link(p: Path, replace: bool, say: install.Say) -> Path:

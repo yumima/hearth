@@ -212,12 +212,11 @@ def test_asked_to_end_in_the_middle_it_goes_back(monkeypatch, tmp_path, name):
 
     def start(v):
         started.append(v)
-        if v == "2":
-            os.kill(os.getpid(), getattr(signal, name))
+        os.kill(os.getpid(), getattr(signal, name))  # (again while it goes back, as at logout)
         return True, "running"
 
     monkeypatch.setattr(install, "_start", start)
-    before = {n: signal.getsignal(getattr(signal, n)) for n in ("SIGTERM", "SIGHUP")}
+    before = {n: signal.getsignal(getattr(signal, n)) for n in ("SIGTERM", "SIGHUP", "SIGINT")}
     install.ended_in_order()
     try:
         install._set_current(old)
@@ -239,3 +238,44 @@ def test_nobody_reading_stops_nothing(monkeypatch):
 
     monkeypatch.setattr(sys, "stdout", Closed())
     install.say("still going")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="signals")
+def test_nohup_stays():
+    import signal
+
+    before = {n: signal.getsignal(n) for n in (signal.SIGHUP, signal.SIGTERM)}
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        install.ended_in_order()
+        assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN and signal.getsignal(signal.SIGTERM) != before[signal.SIGTERM]
+    finally:
+        for n, h in before.items():
+            signal.signal(n, h)
+
+
+def test_one_that_cannot_be_made_again_is_put_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
+    env = tmp_path / "d" / "versions" / "1.2.3" / "mantel"
+    env.mkdir(parents=True)
+    (env / ".complete").write_text("")
+    (env / "it").write_text("works")
+    rel = install.Release({**MANIFEST, "files": {f"mantel-{k}": {"name": k, "sha256": ""} for k in ("wheel", "requirements")}}, "")
+    monkeypatch.setattr(install, "fetch", lambda *a: None)
+    monkeypatch.setattr(install, "_uv", lambda: "uv")
+    stopped = []
+
+    def run(cmd, what, env_vars=None):
+        if "venv" in cmd:
+            env.mkdir(parents=True)  # half of it
+            raise Problem("no disk")
+
+    monkeypatch.setattr(install, "_run", run)
+    with pytest.raises(Problem, match="no disk"):
+        install.build_env(rel, "mantel", lambda t: None, lambda: stopped.append(1), again=True)
+    assert (env / "it").read_text() == "works" and stopped == [1]
+    # what cannot be fetched is not even stopped for
+    monkeypatch.setattr(install, "fetch", lambda *a: (_ for _ in ()).throw(Problem("no network")))
+    with pytest.raises(Problem, match="no network"):
+        install.build_env(rel, "mantel", lambda t: None, lambda: stopped.append(1), again=True)
+    assert (env / "it").exists() and stopped == [1]
