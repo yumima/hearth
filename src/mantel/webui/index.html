@@ -574,7 +574,8 @@ const CTX_MIN_TURNS = 4;
 // ── languages ────────────────────────────────────────────────────────────────
 // Presets have a native Piper voice; any other language can be added by name
 // (whisper gets an ISO hint when we know it; its speech falls back to English).
-const EN_VOICE = "en_US-amy-medium";
+const EN_VOICE_DEFAULT = "en_US-amy-medium";
+const enVoice = () => cfgInfo?.tts_voice || EN_VOICE_DEFAULT;   // English voice chosen in Settings → Voice
 const PRESETS = [
   { code: "it", name: "Italian",  voice: "it_IT-paola-medium" },
   { code: "fr", name: "French",   voice: "fr_FR-siwis-medium" },
@@ -1561,17 +1562,39 @@ function speakable(s){
 // Split one chunk of reply text into [{text, voice}] — {{…}} goes to the
 // target-language voice, the rest to English (or the target voice when it is
 // plainly written in the target language without markup).
+// Untagged text → [{text, voice}] using a voice that can actually pronounce it:
+// runs of Chinese characters go to the Mandarin voice (an English voice spells
+// each one out as "chinese letter"), a run plainly in another preset language
+// goes to that language's voice, and everything else to `fallback`.
+const ZH_VOICE = PRESETS.find(p => p.code === "zh").voice;
+const HAN_RUN = /([㐀-鿿豈-﫿][㐀-鿿豈-﫿　-〿＀-￯\d\s]*)/u;
+function autoSegments(text, fallback){
+  // Kana/Hangul mean Japanese/Korean — a Mandarin reading of their kanji would be wrong.
+  const parts = /[぀-ヿ가-힯]/.test(text) ? [text] : text.split(HAN_RUN);
+  return parts.map((p, i) => {
+    if (i % 2) return { text: p.trim(), voice: ZH_VOICE };
+    const hit = PRESETS.find(l => l.code !== "zh" && looksTarget(p, l));
+    return { text: p.trim(), voice: hit ? hit.voice : fallback };
+  });
+}
 function voiceSegments(chunk, lang){
   const lines = normBraces(chunk.split("\n").filter(l => !/^\s*✏/.test(l)).join(" "));
-  if (!lang) { const t = speakable(lines.replace(/\{\{([^{}]+)\}\}/g, "$1")); return t ? [{ text: t, voice: "" }] : []; }
-  const target = lang.voice || EN_VOICE, segs = [];
+  const segs = [];
+  const push = (text, voice) => {
+    if (!text || !/[\p{L}\p{N}]/u.test(text)) return;
+    const last = segs[segs.length - 1];
+    if (last && last.voice === voice) last.text += " " + text; else segs.push({ text, voice });
+  };
+  if (!lang) {
+    for (const s of autoSegments(speakable(lines.replace(/\{\{([^{}]+)\}\}/g, "$1")), "")) push(s.text, s.voice);
+    return segs;
+  }
+  const target = lang.voice || enVoice();
   lines.split(/(\{\{[^{}]+\}\})/g).forEach(part => {
     const inner = part.match(/^\{\{([^{}]+)\}\}$/);
     const text = speakable(inner ? inner[1] : part);
-    if (!text || !/[\p{L}\p{N}]/u.test(text)) return;
-    const v = inner || looksTarget(text, lang) ? target : EN_VOICE;
-    const last = segs[segs.length - 1];
-    if (last && last.voice === v) last.text += " " + text; else segs.push({ text, voice: v });
+    if (inner || (lang.code !== "zh" && looksTarget(text, lang))) push(text, target);
+    else for (const s of autoSegments(text, enVoice())) push(s.text, s.voice);
   });
   return segs;
 }
@@ -1616,7 +1639,8 @@ async function readAloud(btn, text){
 function sayPhrase(text, el){
   const lang = lesson?.lang || learnLang;
   veStopAudio();
-  veSay(speakable(text), lang?.voice || "", { tail: 200 });
+  if (lang?.voice) veSay(speakable(text), lang.voice, { tail: 200 });
+  else voiceSegments(text, null).forEach((s, i, a) => veSay(s.text, s.voice, { tail: i === a.length - 1 ? 200 : 90 }));
   if (el && lang && !el.classList.contains("saved")) {
     // Hearing it is a strong signal the learner wants it: save to their words.
     el.classList.add("saved");
@@ -2104,7 +2128,7 @@ function renderCard(){
   const lv = drill.lang.voice || "";
   veStopAudio();
   if (spec.say) veSay(spec.say, lv, { tail: 150 });
-  else if (spec.ask) veSay(spec.ask, EN_VOICE, { tail: 150 });
+  else if (spec.ask) veSay(spec.ask, enVoice(), { tail: 150 });
   $("dhear")?.addEventListener("click", () => { veStopAudio(); veSay(spec.say, lv, { tail: 150 }); });
   $("dreveal").addEventListener("click", () => grade(spec, null));
   $("dtype").addEventListener("submit", (e) => { e.preventDefault(); const v = e.target.querySelector("input").value.trim(); if (v) grade(spec, v); });
@@ -2181,6 +2205,30 @@ $("settingsScrim").addEventListener("click", (e) => { if (e.target === $("settin
 $("settingsTabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; settingsTab = b.dataset.tab; renderSettings(); });
 function segHtml(id, opts, val){ return `<div class="seg" id="${id}">${opts.map(([v, l]) => `<button data-v="${v}" class="${v === val ? "on" : ""}">${l}</button>`).join("")}</div>`; }
 function bindSeg(id, fn){ $(id)?.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; fn(b.dataset.v); renderSettings(); }); }
+// Voice picker: hearth lists its voices with labels like "George — male (UK)";
+// group them by accent so US/UK and male/female are easy to compare.
+async function renderVoicePicker(){
+  const sel = $("setVoice"), btn = $("setVoiceTry"); if (!sel) return;
+  let v = { voices: [], default: null, selected: "" };
+  try { v = await (await fetch("/api/voices")).json(); } catch {}
+  if (!sel.isConnected) return;
+  const accent = (x) => /\(UK\)|en_GB/.test(x.label || x.id) ? "British English" : /\(US\)|en_US/.test(x.label || x.id) ? "American English" : "Other";
+  const groups = {};
+  for (const x of v.voices || []) (groups[accent(x)] ||= []).push(x);
+  const def = v.default?.id ? ` (${(v.voices.find(x => x.id === v.default.id)?.label || v.default.id).split(" —")[0]})` : "";
+  let html = `<option value="">Backend default${escapeHtml(def)}</option>`;
+  for (const g of ["American English", "British English", "Other"]) if (groups[g])
+    html += `<optgroup label="${g}">${groups[g].map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label || x.id)}</option>`).join("")}</optgroup>`;
+  if (v.selected && !(v.voices || []).some(x => x.id === v.selected)) html += `<option value="${escapeHtml(v.selected)}">${escapeHtml(v.selected)}</option>`;
+  sel.innerHTML = html; sel.value = v.selected || "";
+  const preview = () => { veStopAudio(); veSay("Hi! This is how I'll sound when we talk.", sel.value, { tail: 150 }); };
+  sel.addEventListener("change", async () => {
+    try { await fetch("/api/voice", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice: sel.value }) }); } catch {}
+    await loadConfig();
+    preview();
+  });
+  btn.addEventListener("click", preview);
+}
 async function renderSettings(){
   document.querySelectorAll("#settingsTabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === settingsTab));
   const el = $("settingsBody");
@@ -2188,12 +2236,14 @@ async function renderSettings(){
     el.innerHTML = `<div class="setrow"><div class="lbl"><div class="t">Appearance</div></div>${segHtml("setTheme", [["system", "System"], ["light", "Light"], ["dark", "Dark"]], prefs.theme)}</div>`;
     bindSeg("setTheme", v => { prefs.theme = v; savePrefs(); applyTheme(); });
   } else if (settingsTab === "voice") {
-    el.innerHTML = `<div class="setrow"><div class="lbl"><div class="t">Taking turns</div><div class="s">Hands-free answers when you pause; hold-to-talk records only while Space or the orb is held.</div></div>${segHtml("setTurn", [["auto", "Hands-free"], ["hold", "Hold to talk"]], prefs.turn)}</div>
+    el.innerHTML = `<div class="setrow"><div class="lbl"><div class="t">Voice</div><div class="s">Who speaks English replies. Lessons still use a native voice for the language you're learning.</div></div><select class="lvlsel" id="setVoice" aria-label="Voice"><option>Loading…</option></select><button class="ghostbtn" id="setVoiceTry" aria-label="Preview voice">${icon("speak")}Preview</button></div>
+      <div class="setrow"><div class="lbl"><div class="t">Taking turns</div><div class="s">Hands-free answers when you pause; hold-to-talk records only while Space or the orb is held.</div></div>${segHtml("setTurn", [["auto", "Hands-free"], ["hold", "Hold to talk"]], prefs.turn)}</div>
       <div class="setrow"><div class="lbl"><div class="t">Pause before replying</div><div class="s">How long a silence ends your turn. Lessons add half a second — learners need time to think.</div></div>${segHtml("setPat", [["quick", "Quick"], ["normal", "Normal"], ["patient", "Patient"]], prefs.patience)}</div>
       <div class="setrow"><div class="lbl"><div class="t">Interrupt by speaking</div><div class="s">Start talking to cut in. Turn off if it interrupts itself on loud speakers — tapping the orb always works.</div></div><button class="sw${prefs.barge ? " on" : ""}" id="setBarge" role="switch" aria-checked="${prefs.barge}"></button></div>`;
     bindSeg("setTurn", v => setTurnMode(v));
     bindSeg("setPat", v => { prefs.patience = v; savePrefs(); });
     $("setBarge").addEventListener("click", () => { prefs.barge = !prefs.barge; savePrefs(); renderSettings(); });
+    renderVoicePicker();
   } else if (settingsTab === "backend") {
     el.innerHTML = `<div class="muted">Loading…</div>`;
     try {

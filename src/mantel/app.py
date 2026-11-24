@@ -346,7 +346,7 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
         c = app.state.cfg
         h = app.state.host
         return {"provider": c.provider, "model": c.model, "backend": c.active().base_url,
-                "providers": list(c.providers.keys()),
+                "providers": list(c.providers.keys()), "tts_voice": c.tts_voice,
                 "tools": len(h.openai_tools()) if h else 0}
 
     @app.get("/api/tools")
@@ -392,6 +392,29 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
         c.provider = name                    # the chat loop reads active() per request → live
         cfgmod.save(c)
         return JSONResponse({"ok": True, "provider": name, "backend": c.active().base_url})
+
+    @app.get("/api/voices")
+    async def api_voices() -> JSONResponse:
+        """English voices the backend offers (hearth's /audio/voices), plus the
+        one chosen in config. A backend without the route just yields []."""
+        prov = app.state.cfg.active()
+        data: dict = {}
+        try:
+            r = await _http().get(f"{prov.base_url}/audio/voices", headers=prov.headers(), timeout=10.0)
+            if r.status_code == 200:
+                data = r.json() or {}
+        except (httpx.HTTPError, ValueError):
+            pass
+        return JSONResponse({"voices": data.get("voices") or [], "default": data.get("default"),
+                             "selected": app.state.cfg.tts_voice})
+
+    @app.put("/api/voice")
+    async def api_set_voice(request: Request) -> JSONResponse:
+        body = await request.json()
+        voice = str(body.get("voice") or "").strip()
+        app.state.cfg.tts_voice = voice      # /api/speak reads it per request → live
+        cfgmod.save(app.state.cfg)
+        return JSONResponse({"ok": True, "voice": voice})
 
     @app.get("/api/models")
     async def api_models() -> JSONResponse:
