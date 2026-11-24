@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -26,6 +25,7 @@ import time
 from pathlib import Path
 
 import httpx
+import psutil
 
 from . import config as cfgmod
 
@@ -46,30 +46,19 @@ def _server_up(cfg: cfgmod.Config, timeout: float = 0.5) -> bool:
 
 def _read_pid() -> int | None:
     """The PID of a live mantel server from the pidfile, or None if the file is
-    absent/garbage or the process is gone (stale pidfile)."""
+    absent/garbage, the process is gone, or it is another program's by now."""
     try:
         pid = int(cfgmod.pid_path().read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
+    # (Not os.kill(pid, 0): on Windows that ends the process.)
     try:
-        os.kill(pid, 0)  # signal 0 = existence check, doesn't actually signal
-    except ProcessLookupError:
-        return None  # stale
-    except PermissionError:
-        return pid  # exists but not ours (shouldn't happen on loopback/same user)
-    return pid
-
-
-def _pid_is_mantel(pid: int) -> bool:
-    """Best-effort check that `pid` really is a mantel process, so a stale pidfile
-    whose PID the OS has since recycled can't make `stop` signal an unrelated
-    process. A hung mantel still matches (its cmdline is unchanged), so this
-    doesn't block killing one. On platforms without /proc we can't tell — assume
-    yes and fall back to the pidfile's word."""
-    try:
-        return b"mantel" in Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return True
+        p = psutil.Process(pid)
+        return pid if p.status() != psutil.STATUS_ZOMBIE and "mantel" in " ".join(p.cmdline()) else None
+    except psutil.NoSuchProcess:
+        return None
+    except psutil.Error:
+        return pid  # there, and not ours to look at
 
 
 def _open_server_log():
@@ -106,8 +95,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         pid_file = None  # non-fatal: serve anyway, just not stoppable via pidfile
 
     try:
-        uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port,
-                    log_level=getattr(args, "log_level", "info"))
+        app = create_app(cfg)
+        server = uvicorn.Server(uvicorn.Config(app, host=cfg.host, port=cfg.port,
+                                               log_level=getattr(args, "log_level", "info")))
+        app.state.shutdown = lambda: setattr(server, "should_exit", True)
+        server.run()
     finally:
         if pid_file is not None:
             try:
@@ -135,8 +127,11 @@ def _ensure_server(cfg: cfgmod.Config) -> bool:
     log = _open_server_log()
     out = log or subprocess.DEVNULL
     try:
-        subprocess.Popen([sys.executable, "-m", "mantel", "serve"],
-                         start_new_session=True,
+        if sys.platform == "win32":
+            detached = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+        else:
+            detached = {"start_new_session": True}
+        subprocess.Popen([sys.executable, "-m", "mantel", "serve"], **detached,
                          stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
     finally:
         if log is not None:
@@ -172,29 +167,25 @@ def cmd_stop(args: argparse.Namespace) -> int:
             return 1
         print("mantel is not running.")
         return 0
-    if not _pid_is_mantel(pid):
-        cfgmod.pid_path().unlink(missing_ok=True)  # PID was recycled — not our server
-        print("mantel is not running (cleared a stale pid file).")
-        return 0
+    # Asked first, so it ends in order; then made to.
     try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        cfgmod.pid_path().unlink(missing_ok=True)
-        print("mantel is not running.")
-        return 0
-    # Wait for graceful shutdown; escalate to SIGKILL if it won't go.
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
+        httpx.post(f"{_server_url(cfg)}api/shutdown", timeout=3.0)
+    except httpx.HTTPError:
+        pass
+    p = None
+    try:
+        p = psutil.Process(pid)
+        p.wait(5)
+    except psutil.TimeoutExpired:
         try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.2)
-    else:
-        try:
-            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))  # SIGKILL is POSIX-only
-        except ProcessLookupError:
+            p.terminate()
+            p.wait(5)
+        except psutil.TimeoutExpired:
+            p.kill()
+        except psutil.Error:
             pass
+    except psutil.Error:
+        pass
     cfgmod.pid_path().unlink(missing_ok=True)
     print(f"stopped mantel (pid {pid}).")
     return 0

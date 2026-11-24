@@ -8,30 +8,48 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.14"]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12"]
+        include:
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.14" }
+    runs-on: ${{ matrix.os }}
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install
-        run: pip install -e ".[dev]"
-      - name: Test
-        run: pytest -q
-      - name: The built wheel starts and names its version
+          enable-cache: true
+      - name: The lock file is current
+        run: uv lock --check
+      # Each in an environment of its own, as they are installed.
+      - name: hearth
         run: |
-          pip wheel --no-deps -w dist .
-          python -m venv /tmp/wheel && /tmp/wheel/bin/pip install -q dist/*.whl
-          cd /tmp && /tmp/wheel/bin/python -c "import hearth, importlib.metadata as m; assert m.version('hearth') == hearth.__version__, m.version('hearth')"
-          /tmp/wheel/bin/hearth hardware
-          HEARTH_HOME=/tmp/hearth-home /tmp/wheel/bin/hearth start --no-manage & PID=$!
-          for i in $(seq 30); do curl -sf localhost:11435/admin/version && break; sleep 1; done
-          curl -sf localhost:11435/admin/version | grep -q '"name":"hearth"'
-          curl -sf localhost:11435/app | grep -qi '<html'
-          kill $PID
+          uv sync --frozen --package hearth --extra dev
+          uv run --frozen --package hearth --extra dev pytest -q packages/hearth tests
+      - name: mantel
+        run: |
+          uv sync --frozen --package mantel --extra dev
+          uv run --frozen --package mantel --extra dev pytest -q packages/mantel
+      - name: The built hearth starts, answers and stops
+        run: |
+          uv build --wheel --package hearth -o dist
+          uv venv -q wheel && uv pip install -q --python wheel dist/hearth-*.whl
+          BIN=wheel/bin; [ -d wheel/Scripts ] && BIN=wheel/Scripts
+          export HEARTH_HOME="$PWD/hearth-home"
+          "$BIN/hearth" hardware
+          "$BIN/hearth" start --background --no-manage
+          curl -sf http://127.0.0.1:11435/admin/version | grep -q '"name":"hearth"'
+          "$BIN/hearth" stop
+          ! curl -sf http://127.0.0.1:11435/admin/version

@@ -1,6 +1,6 @@
 [project]
 name = "mantel"
-version = "0.2.0"
+dynamic = ["version"]
 description = "A universal, MCP-native desktop chat client — defaults to a local hearth engine, talks to any OpenAI-compatible or cloud backend."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "pyyaml>=6.0",
+    "psutil>=6.0",              # its own server's process, on every system
     "mcp>=1.20,<2",  # 2.x renamed FastMCP and more; the built-in servers are written for 1.x
     "python-multipart>=0.0.9",  # FastAPI file uploads (/api/extract)
     "pypdf>=4.0",               # PDF → text for document attachments
@@ -30,6 +31,9 @@ mantel = "mantel.cli:main"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "mantel.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

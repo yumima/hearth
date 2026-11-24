@@ -1,0 +1,14 @@
+# The workspace: hearth (the engine) and mantel (its chat client), locked and
+# released together. Two packages, two environments (installer/), two processes;
+# neither imports the other.
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv]
+package = false
+# Every system a release is for gets its wheels locked.
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]

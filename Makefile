@@ -1,50 +1,40 @@
-# hearth — build / run / manage the local AI engine.
+# hearth + mantel — work on both from a checkout (uv: https://docs.astral.sh/uv).
 #
-#   make build         set up the venv + install hearth (editable)
-#   make start         start the gateway (foreground; Ctrl-C to stop)
-#   make stop          stop a running gateway
-#   make status        is it up? show roles
-#   make chat          interactive terminal chat with the local engine
-#   make models        list servable models
-#   make hardware      GPU / VRAM / RAM probe
-#   make test          run unit tests
-#   make install-client   install the clickable Hearth chat desktop app
-#   make uninstall-client remove the desktop app launcher
+#   make build     both, each in an environment of its own
+#   make test      both packages' tests, as CI runs them
+#   make start     the gateway (foreground; Ctrl-C to stop)      make stop
+#   make status    is it up? show roles
+#   make chat      terminal chat                                 make client   mantel's window
+#   make lock      after changing a dependency
 #
-# Ollama (the inference backend) is fetched into vendor/ separately — see
-# README.md. `make start` brings up whatever Ollama it finds.
+# Ollama (the inference backend) is fetched into vendor/ separately — see README.md.
 
-VENV   := .venv
-PIP    := $(VENV)/bin/pip
-HEARTH := $(VENV)/bin/hearth
-PYTEST := $(VENV)/bin/python -m pytest
+HEARTH := .venv/bin/hearth
+MANTEL := .venv-mantel/bin/mantel
 
-.PHONY: build start stop status chat models hardware test install-client uninstall-client
+.PHONY: build test start stop status chat client models hardware lock install-cli uninstall-cli
 
 build:
-	python3 -m venv $(VENV)
-	$(PIP) install -q --upgrade pip
-	$(PIP) install -q -e ".[dev]"
-	@git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks \
-		&& echo "✓ pre-commit changelog hook wired (.githooks)" || true
-	@echo "✓ built. Next: 'make start' (then 'make chat' in another shell)."
+	uv sync --frozen --package hearth --extra dev --extra tts --extra stt
+	UV_PROJECT_ENVIRONMENT=.venv-mantel uv sync --frozen --package mantel --extra dev --extra gui
+	@git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true
 
+test:
+	.venv/bin/python -m pytest -q packages/hearth tests
+	.venv-mantel/bin/python -m pytest -q packages/mantel
+
+lock:    ; uv lock
 start:   ; $(HEARTH) start
 stop:    ; $(HEARTH) stop
 status:  ; $(HEARTH) status
 chat:    ; $(HEARTH) chat
+client:  ; $(MANTEL)
 models:  ; $(HEARTH) models
 hardware:; $(HEARTH) hardware
-test:    ; $(PYTEST) -q
 
-install-client:   ; $(HEARTH) client install
-uninstall-client: ; $(HEARTH) client uninstall
-
-# Put `hearth` on PATH (symlink into ~/.local/bin) so you can run it from any
-# shell without activating the venv. (~/.local/bin is on PATH on most distros.)
+# Both commands on PATH (symlinks in ~/.local/bin).
 install-cli:
 	mkdir -p $$HOME/.local/bin
 	ln -sf $(abspath $(HEARTH)) $$HOME/.local/bin/hearth
-	@echo "✓ linked $$HOME/.local/bin/hearth -> $(abspath $(HEARTH))  (open a new shell or 'hash -r')"
-uninstall-cli: ; rm -f $$HOME/.local/bin/hearth; @echo "✓ removed ~/.local/bin/hearth"
-.PHONY: install-cli uninstall-cli
+	ln -sf $(abspath $(MANTEL)) $$HOME/.local/bin/mantel
+uninstall-cli: ; rm -f $$HOME/.local/bin/hearth $$HOME/.local/bin/mantel

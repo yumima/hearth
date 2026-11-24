@@ -26,6 +26,15 @@ def test_local_guard_blocks_rebinding_and_csrf():
     assert ok.get("/api/health").status_code == 200
     # cross-origin (CSRF) POST is refused even with a localhost Host
     assert ok.post("/api/provider/hearth", headers={"origin": "http://evil.example.com"}).status_code == 403
+    # nor another local page, which a development server may serve
+    assert ok.post("/api/provider/hearth", headers={"origin": "http://localhost:3000"}).status_code == 403
+    assert ok.post("/api/provider/hearth", headers={"origin": "null"}).status_code == 403
+    r = ok.post("/api/provider/hearth", headers={"origin": "http://localhost"})
+    assert r.status_code == 200 and r.headers["x-frame-options"] == "DENY"
+    assert ok.get("/api/health", headers={"sec-fetch-site": "cross-site", "sec-fetch-dest": "image",
+                                          "sec-fetch-mode": "no-cors"}).status_code == 403
+    assert ok.get("/", headers={"sec-fetch-site": "cross-site", "sec-fetch-dest": "document",
+                                "sec-fetch-mode": "navigate"}).status_code == 200
 
 
 def test_index_serves_ui():

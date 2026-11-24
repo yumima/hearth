@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`0b702ff`](https://github.com/yumima/hearth/commit/0b702ff) Ollama kept running, one way to handle processes everywhere; the chat window is mantel
 - [`fccccf8`](https://github.com/yumima/hearth/commit/fccccf8) layout: hearth under packages/
 - [`279c827`](https://github.com/yumima/hearth/commit/279c827) start --background: what the review found
 - [`6d22b0c`](https://github.com/yumima/hearth/commit/6d22b0c) **ci:** the engine branch too

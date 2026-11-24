@@ -1,5 +1,6 @@
 # Python
 .venv/
+.venv-mantel/
 __pycache__/
 *.pyc
 *.egg-info/

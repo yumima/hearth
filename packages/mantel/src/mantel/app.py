@@ -31,6 +31,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from . import __version__
 from . import config as cfgmod
 from . import tutor
 
@@ -40,7 +41,8 @@ _STOP = object()  # sentinel: tell the host runner to stop
 # mantel binds loopback, but loopback alone doesn't stop a malicious web page in
 # the user's browser from POSTing to 127.0.0.1 (DNS-rebinding / CSRF). Since the
 # server hosts MCP tools and mutates config, guard it: require a localhost Host
-# (defeats rebinding) and reject any cross-origin Origin (defeats CSRF).
+# (defeats rebinding) and refuse what another page sent (defeats CSRF) — another
+# local page too: a development server on another port is somebody else's page.
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
 
@@ -51,14 +53,26 @@ def _host_only(value: str) -> str:
     return value.rsplit(":", 1)[0] if ":" in value else value
 
 
+def _same_origin(origin: str, host: str) -> bool:
+    try:
+        return bool(host) and urlparse(origin).netloc.lower() == host.lower()
+    except ValueError:
+        return False
+
+
 class _LocalGuard(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if _host_only(request.headers.get("host", "")) not in _ALLOWED_HOSTS:
             return JSONResponse({"error": "host not allowed"}, status_code=403)
-        origin = request.headers.get("origin")
-        if origin and (urlparse(origin).hostname or "") not in _ALLOWED_HOSTS:
+        h = request.headers
+        followed_link = (request.method == "GET" and h.get("sec-fetch-mode") == "navigate"
+                         and h.get("sec-fetch-dest") == "document")
+        if any(not _same_origin(o, h.get("host", "")) for o in h.getlist("origin")) or (
+                h.get("sec-fetch-site") in ("cross-site", "same-site") and not followed_link):
             return JSONResponse({"error": "cross-origin request refused"}, status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"  # not inside another site's page
+        return response
 
 
 async def _reload(app: FastAPI) -> int | None:
@@ -298,10 +312,11 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                 task.cancel()
             await _shutdown_shared(app)
 
-    app = FastAPI(title="mantel", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="mantel", version=__version__, lifespan=lifespan)
     app.add_middleware(_LocalGuard)
     app.state.cfg = cfg
     app.state.host = None
+    app.state.shutdown = None  # cmd_serve sets it
     # Shared resources are created in the lifespan; default to None so the lazy
     # accessors below can fill them in on first use under tests that skip it.
     app.state.http = None
@@ -335,11 +350,20 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                                 status_code=500)
         return HTMLResponse(html)
 
+    @app.post("/api/shutdown", include_in_schema=False)
+    async def shutdown() -> JSONResponse:
+        """End this server as `mantel stop` means it (Windows has no signal for it)."""
+        end = app.state.shutdown
+        if end is None:
+            return JSONResponse({"error": "not run by `mantel serve`"}, status_code=409)
+        end()
+        return JSONResponse({"stopping": True})
+
     @app.get("/api/health", include_in_schema=False)
     async def health() -> dict:
         h = app.state.host
         n = len(h.openai_tools()) if h else 0
-        return {"ok": True, "app": "mantel", "version": "0.2.0", "tools": n}
+        return {"ok": True, "app": "mantel", "version": __version__, "tools": n}
 
     @app.get("/api/config")
     async def api_config() -> dict:
