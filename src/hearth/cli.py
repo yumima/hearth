@@ -122,28 +122,38 @@ def _listen_socket(host: str, port: int) -> socket.socket:
 def _start_in_background(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
     from . import background
 
+    if args.unsafe_bind or args.api_key or cfg.bind_host not in ("127.0.0.1", "localhost", "::1"):
+        print("--background is for the gateway of this computer: not with --unsafe-bind, "
+              "--api-key or an address others can reach", file=sys.stderr)
+        return 2
     extra = []
     if args.bind:
         extra += ["--bind", args.bind]
     if args.no_manage:
         extra.append("--no-manage")
-    if args.unsafe_bind:
-        extra.append("--unsafe-bind")
-    if args.api_key:
-        extra += ["--api-key", args.api_key]
     if args.log_level != "info":
         extra += ["--log-level", args.log_level]
-    # The service serves the configured address: anything asked for here is a
-    # gateway of its own.
+    # The service serves its own config at its own address: anything asked for
+    # here, in the command or the environment, is a gateway of its own.
+    own = extra or os.environ.get("HEARTH_HOME") or os.environ.get("HEARTH_CONFIG")
     service = None
-    if not extra and _unit_path().exists() and shutil.which("systemctl"):
-        def service() -> int:
-            return _systemctl("start", _UNIT_NAME)
+    if not own and _unit_path().exists() and shutil.which("systemctl"):
+        # Type=simple: started means forked, so what became of it is asked again.
+        service = background.Service(lambda: _systemctl("start", _UNIT_NAME),
+                                     lambda: _systemctl("is-active", "--quiet", _UNIT_NAME) == 0
+                                     or _unit_is("activating"))
     # This interpreter, as it was called: not _hearth_exec_argv(), which keeps
     # the launcher link — starting the engine must not change what is installed.
-    ok, message = background.start(cfg, [sys.executable, "-m", "hearth"], extra, service)
+    # -P: the folder it runs in is no place to import from.
+    ok, message = background.start(cfg, [sys.executable, "-P", "-m", "hearth", "start", *extra], service)
     print(f"[hearth] {message}", file=sys.stdout if ok else sys.stderr)
     return 0 if ok else 1
+
+
+def _unit_is(state: str) -> bool:
+    r = subprocess.run([shutil.which("systemctl") or "systemctl", "--user", "show", "-p", "ActiveState", "--value",
+                        _UNIT_NAME], env=_sc_env(), capture_output=True, text=True, check=False)
+    return r.stdout.strip() == state
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -1285,7 +1295,8 @@ def _real_hearth_bin() -> str | None:
     if found:
         return os.path.realpath(found)
     # The console-script normally sits next to the interpreter in the venv.
-    cand = Path(sys.executable).resolve().with_name("hearth")
+    # (Beside it as it was called: a venv's python, resolved, is the base one.)
+    cand = Path(os.path.abspath(sys.executable)).with_name("hearth")
     if cand.exists():
         return str(cand)
     argv0 = Path(sys.argv[0]).resolve()

@@ -74,7 +74,7 @@ def _window_icon() -> str | None:
 def open_window(cfg: cfgmod.Config | None = None, hearth_exec: list[str] | None = None) -> int:
     cfg = cfg or cfgmod.load()
     url = app_url(cfg)
-    ok, message = background.start(cfg, hearth_exec or [])
+    ok, message = background.start(cfg, [*(hearth_exec or []), "start"])
     if not ok:
         print(f"warning: {message}\nthe window may show 'no engine' until it starts "
               "(run `hearth start`).", file=sys.stderr)
