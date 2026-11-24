@@ -26,6 +26,7 @@ def served(monkeypatch):
     while time.monotonic() < deadline and not cli._server_up(cfgmod.load()):
         time.sleep(0.2)
     yield p, port
+    monkeypatch.undo()  # a test may have made killing impossible
     for q in [*psutil.Process(p.pid).children(recursive=True), p] if p.poll() is None else []:
         q.kill()
 

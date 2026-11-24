@@ -194,3 +194,48 @@ def test_whatever_fails_the_old_version_is_tried_for(monkeypatch, tmp_path):
             with pytest.raises(Problem, match="running again" if run else "is back"):
                 install._switch(new, old, run, lambda t: None)
             assert started == (["2", "1"] if run else ["2"]) and install.current() == old
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="signals")
+@pytest.mark.parametrize("name", ["SIGTERM", "SIGHUP"])
+def test_asked_to_end_in_the_middle_it_goes_back(monkeypatch, tmp_path, name):
+    """finterm closed during Get hearth, or the terminal it ran in."""
+    import os
+    import signal
+
+    monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path / "h"))
+    (tmp_path / "d").mkdir()
+    old, started = {"version": "1", "ollama": "a", "mantel": True}, []
+    monkeypatch.setattr(install, "_stop_everything", lambda: None)
+    monkeypatch.setattr(install, "link_programs", lambda *a: None)
+
+    def start(v):
+        started.append(v)
+        if v == "2":
+            os.kill(os.getpid(), getattr(signal, name))
+        return True, "running"
+
+    monkeypatch.setattr(install, "_start", start)
+    before = {n: signal.getsignal(getattr(signal, n)) for n in ("SIGTERM", "SIGHUP")}
+    install.ended_in_order()
+    try:
+        install._set_current(old)
+        with pytest.raises(SystemExit):
+            install._switch({**old, "version": "2"}, old, True, lambda t: None)
+    finally:
+        for n, h in before.items():
+            signal.signal(getattr(signal, n), h)
+    assert started == ["2", "1"] and install.current() == old
+
+
+def test_nobody_reading_stops_nothing(monkeypatch):
+    class Closed:
+        def write(self, t):
+            raise BrokenPipeError
+
+        def flush(self):
+            raise BrokenPipeError
+
+    monkeypatch.setattr(sys, "stdout", Closed())
+    install.say("still going")

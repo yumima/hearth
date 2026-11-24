@@ -1456,7 +1456,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     from . import install
     from .provision import Problem
 
-    say = lambda t: print(t, flush=True)  # noqa: E731
+    say = install.say
+    install.ended_in_order()
     try:
         if args.rollback:
             prev = install.rollback_to()

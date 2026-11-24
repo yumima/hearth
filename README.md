@@ -13,6 +13,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`ccca8d7`](https://github.com/yumima/hearth/commit/ccca8d7) hearth client install; the installer recognises what is its own
 - [`d5778de`](https://github.com/yumima/hearth/commit/d5778de) catalog: the 9B, measured
 - [`5f4a48a`](https://github.com/yumima/hearth/commit/5f4a48a) Installer: what the review found
 - [`0d99546`](https://github.com/yumima/hearth/commit/0d99546) README, release and site workflows (a tag makes a draft), the site

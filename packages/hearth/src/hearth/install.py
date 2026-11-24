@@ -758,6 +758,26 @@ def _remove_later(base: Path, doomed: list[Path]) -> None:
 
 # ── command line (for the install scripts) ────────────────────────────────────
 
+def say(text: str) -> None:
+    """Nobody reading (a window that was closed) does not stop what is being done."""
+    try:
+        print(text, flush=True)
+    except OSError:
+        pass
+
+
+def ended_in_order() -> None:
+    """Asked to end, or the terminal closed: as with Ctrl-C, a switch is taken back."""
+    import signal
+
+    def stop(signum, frame) -> None:
+        raise SystemExit(128 + signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), stop)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="hearth.install")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -770,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--no-start", action="store_true")
     s.add_argument("--no-open", action="store_true")
     a = p.parse_args(argv)
+    ended_in_order()
     try:
         found = conflicts()
         if found:
@@ -778,7 +799,7 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         if a.cmd == "finish":
             finish(release(a.release, a.sha256), not a.no_mantel, not a.no_autostart, not a.no_start, not a.no_open,
-                   lambda t: print(t, flush=True))
+                   say)
         return 0
     except Problem as e:
         print(e, file=sys.stderr)
