@@ -17,7 +17,6 @@ MANTEL := .venv-mantel/bin/mantel
 build:
 	uv sync --frozen --package hearth --extra dev --extra tts --extra stt
 	UV_PROJECT_ENVIRONMENT=.venv-mantel uv sync --frozen --package mantel --extra dev --extra gui
-	.venv/bin/python -c "from pathlib import Path; from hearth import client; Path('.venv-mantel/.complete').write_text(client._locked(Path('.')))"
 	@git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true
 
 test:

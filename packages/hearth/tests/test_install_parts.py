@@ -282,9 +282,27 @@ def test_one_that_cannot_be_made_again_is_put_back(monkeypatch, tmp_path):
     assert (env / "it").read_text() == "works" and not env.with_name("mantel.before").exists()
     env.rename(env.with_name("mantel.before"))
     assert install.build_env(rel, "mantel", lambda t: None) == env and (env / "it").exists()
+    # a leftover that is not complete is nobody's copy
+    (env.with_name("mantel.before")).mkdir()
+    assert install.build_env(rel, "mantel", lambda t: None) == env and (env / "it").exists()
     stopped[:] = [1]
     # what cannot be fetched is not even stopped for
     monkeypatch.setattr(install, "fetch", lambda *a: (_ for _ in ()).throw(Problem("no network")))
     with pytest.raises(Problem, match="no network"):
         install.build_env(rel, "mantel", lambda t: None, lambda: stopped.append(1), again=True)
     assert (env / "it").exists() and stopped == [1]
+
+
+def test_a_leftover_that_cannot_be_removed_costs_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
+    env = tmp_path / "d" / "versions" / "1.2.3" / "mantel"
+    for p in (env, env.with_name("mantel.before")):
+        p.mkdir(parents=True)
+    (env / ".complete").write_text("")
+    rel = install.Release({**MANIFEST, "files": {f"mantel-{k}": {"name": k, "sha256": ""} for k in ("wheel", "requirements")}}, "")
+    monkeypatch.setattr(install, "fetch", lambda *a: None)
+    monkeypatch.setattr(install, "_uv", lambda: "uv")
+    monkeypatch.setattr(install.shutil, "rmtree", lambda *a, **k: None)
+    with pytest.raises(Problem, match="could not be removed"):
+        install.build_env(rel, "mantel", lambda t: None, again=True)
+    assert (env / ".complete").is_file()

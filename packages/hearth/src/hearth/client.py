@@ -1,7 +1,7 @@
 """mantel, the chat window, from hearth's side: where it is, and putting it there.
 
     hearth client            open it
-    hearth client install    build it if it is not here, and add it to the app menu
+    hearth client install    build it, and add it to the app menu
     hearth client uninstall  take it out of the app menu
 
 In an installed hearth it is built from the release hearth is of; in a source
@@ -10,7 +10,6 @@ checkout from packages/mantel, in an environment of its own (.venv-mantel).
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import subprocess
@@ -37,8 +36,7 @@ def program() -> str | None:
     """This checkout's own, where the installer puts it, beside this program, or on PATH."""
     tree = checkout()
     beside = Path(os.path.abspath(sys.executable)).with_name(install.exe("mantel"))
-    built = [_checkout_program(tree)] if tree and _built(tree) else []  # (not one that was cut short)
-    for p in (*built, paths.data_dir() / "bin" / install.exe("mantel"), beside):
+    for p in (*([_checkout_program(tree)] if tree else []), paths.data_dir() / "bin" / install.exe("mantel"), beside):
         if p.is_file():
             return str(p)
     return shutil.which("mantel")
@@ -49,14 +47,11 @@ def add(rebuild: bool, replace: bool, say: install.Say) -> None:
     tree = checkout()
     if tree is not None:
         p = _checkout_program(tree)
-        if rebuild or not p.is_file() or _built(tree) != _locked(tree):
-            _build_from(tree, rebuild, say)
+        _build_from(tree, rebuild, say)  # (nothing to do, if it is as it should be)
         shown = _link(p, replace, say)
     elif install.managed():
         p = install.root() / "bin" / install.exe("mantel")
-        if rebuild or not (install.root() / "versions" / install.current()["version"] / "mantel" / ".complete").is_file() \
-                or not p.exists():
-            install.add_mantel(rebuild, say)
+        install.add_mantel(rebuild, say)
         shown = p
     else:
         found = program()
@@ -81,24 +76,9 @@ def remove(say: install.Say) -> None:
         say(f"removed {link}")
 
 
-def _locked(tree: Path) -> str:
-    """What mantel is made of: another lock file is another mantel."""
-    p = tree / "uv.lock"
-    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "-"
-
-
-def _built(tree: Path) -> str:
-    """Of the last build that was finished."""
-    try:
-        return (tree / ".venv-mantel" / ".complete").read_text()
-    except OSError:
-        return ""
-
-
 def _build_from(tree: Path, again: bool, say: install.Say) -> None:
     env = tree / ".venv-mantel"
     say(f"Building mantel in {env}…")
-    (env / ".complete").unlink(missing_ok=True)
     if uv := shutil.which("uv"):  # (--inexact: the tests' packages of `make build` stay)
         install._run([uv, "sync", "--quiet", "--frozen", "--inexact", *(["--reinstall"] if again else []),
                       "--project", str(tree), "--package", "mantel", "--extra", "gui"],
@@ -109,7 +89,6 @@ def _build_from(tree: Path, again: bool, say: install.Say) -> None:
         install._run([str(install.env_bin(env, "python")), "-m", "pip", "install", "--quiet",
                       *(["--force-reinstall"] if again else []), "--upgrade", "--upgrade-strategy", "eager", "-e", f"{tree / 'packages' / 'mantel'}[gui]"],
                      "Building mantel")
-    (env / ".complete").write_text(_locked(tree))
 
 
 def _link(p: Path, replace: bool, say: install.Say) -> Path:

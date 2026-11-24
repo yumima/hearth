@@ -13,6 +13,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`6a22d58`](https://github.com/yumima/hearth/commit/6a22d58) Installer, client: a build cut short at any point leaves the one that works
 - [`a022eb0`](https://github.com/yumima/hearth/commit/a022eb0) Installer, client: what the review found
 - [`7938097`](https://github.com/yumima/hearth/commit/7938097) Windows: programs that are running do not stop mantel from being added
 - [`1531fc1`](https://github.com/yumima/hearth/commit/1531fc1) CI: the release's real Ollama and a small model, from download to removal
@@ -92,7 +93,7 @@ it. What was in use stays in use if that fails.
 | `hearth start` · `start --background` · `stop` · `status` | the gateway (the service, where one is installed) |
 | `hearth` · `hearth chat` | chat in the terminal (`/help`) |
 | `hearth client` | mantel's window, with the engine started |
-| `hearth client install` | build mantel if it is not here (from this source tree, or the release), and add it to the app menu; `--build` to build it again, `--replace` to take over `~/.local/bin/mantel` |
+| `hearth client install` | build mantel (from this source tree, or the release) and add it to the app menu; `--build` to make it anew, `--replace` to take over `~/.local/bin/mantel` |
 | `hearth client uninstall` | take it out of the app menu |
 | `hearth code` | a coding agent for a folder |
 | `hearth bind <role> <model>` · `roles` · `models` | which model answers for what |

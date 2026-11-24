@@ -206,7 +206,8 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
     something that is there, and may be in use, is moved away; if making it fails,
     that is put back."""
     env = root() / "versions" / rel.version / name
-    done = env / ".complete"
+    done, before = env / ".complete", env.with_name(name + ".before")
+    put_back(env, replacing)
     if done.is_file() and not again:
         return env
     say(f"Installing {name} {rel.version}…")
@@ -216,14 +217,10 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
         url, digest = rel.file(f"{name}-{kind}")
         files[kind] = downloads / url.rsplit("/", 1)[-1]
         fetch(url, files[kind], digest)
-    before = env.with_name(name + ".before")
-    if before.exists() and not done.is_file():  # the last time was cut short: that is the one that works
-        shutil.rmtree(env, ignore_errors=True)
-        before.rename(env)
-        if not again:
-            return env
-    shutil.rmtree(before, ignore_errors=True)
     uv, env_vars = _uv(), _uv_env()
+    shutil.rmtree(before, ignore_errors=True)
+    if before.exists():
+        raise Problem(f"{before} could not be removed: is something using it?")
     if env.exists():
         replacing()
     try:
@@ -241,25 +238,29 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
               f"import {name}; assert {name}.__version__ == {rel.version!r}, {name}.__version__"], f"Starting {name}")
         done.write_text("")
     except BaseException:
-        _put_back(before, env)
+        try:
+            put_back(env)
+        except Problem as e:  # (by the next build_env, then)
+            say(str(e))
         raise
     shutil.rmtree(before, ignore_errors=True)
     return env
 
 
-def _put_back(before: Path, env: Path) -> None:
-    """(What cannot be put back now — a file held open — is, by the next build_env.)"""
-    if not before.exists():
+def put_back(env: Path, replacing: Callable[[], None] = lambda: None) -> None:
+    """After a build that was cut short: the complete one that had been moved away."""
+    before = env.with_name(env.name + ".before")
+    if (env / ".complete").is_file() or not (before / ".complete").is_file():
         return
+    replacing()
     try:
         if env.exists():
-            shutil.rmtree(env, ignore_errors=True)
-        if env.exists():
-            (env / ".complete").unlink(missing_ok=True)
             env.rename(env.with_name(f"{env.name}.{time.time_ns()}.failed"))
         before.rename(env)
-    except OSError:
-        pass
+    except OSError as e:
+        raise Problem(f"{before} is what works, and could not be put back: {e}") from e
+    for p in env.parent.glob(f"{env.name}.*.failed"):
+        shutil.rmtree(p, ignore_errors=True)
 
 
 def _safe_members(names: list[str]) -> None:
@@ -504,6 +505,7 @@ def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: 
             except (service.Foreign, *ERRORS) as e:
                 say(f"hearth will not start at login: {e}")
         _tidy()
+        ok, message = _start(rel.version) if start or run else (True, "")
     except BaseException:
         if stopped and run:
             try:
@@ -513,7 +515,6 @@ def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: 
         raise
     if not (start or run):
         return
-    ok, message = _start(rel.version)
     if not ok:
         raise Problem(f"hearth is installed, and did not start: {message}")
     say(f"hearth is {message}")
@@ -528,29 +529,32 @@ def add_mantel(rebuild: bool, say: Say) -> None:
     """mantel, for an installation made without it (or made again)."""
     cur = current()
     version = cur["version"]
-    rel = release(os.environ.get("HEARTH_RELEASE_URL") or f"{RELEASES}/download/v{version}/manifest.json")
-    if rel.version != version:
-        raise Problem(f"That release is {rel.version}, and hearth here is {version}: update hearth first.")
     env = root() / "versions" / version / "mantel"
     prefixes = {os.path.abspath(env) + os.sep, os.path.realpath(env) + os.sep}
 
-    def running() -> list[int]:
+    def end_mantel() -> None:
         import psutil
 
-        out = []
+        pids = []
         for p in _own_processes():
             try:
                 if any(a.startswith(b) for a in (p.exe(), *p.cmdline()[:2]) if a for b in prefixes):
-                    out.append(p.pid)
+                    pids.append(p.pid)
             except psutil.Error:
                 continue
-        return out
+        for pid in pids:
+            procs.end_tree(pid)
 
-    build_env(rel, "mantel", say, lambda: [procs.end_tree(pid) for pid in running()] and None, again=rebuild)
+    put_back(env, end_mantel)
+    if rebuild or not (env / ".complete").is_file():
+        rel = release(os.environ.get("HEARTH_RELEASE_URL") or f"{RELEASES}/download/v{version}/manifest.json")
+        if rel.version != version:
+            raise Problem(f"That release is {rel.version}, and hearth here is {version}: update hearth first.")
+        build_env(rel, "mantel", say, end_mantel, again=rebuild)
+        shutil.rmtree(root() / "downloads", ignore_errors=True)
+        shutil.rmtree(root() / "cache", ignore_errors=True)
     _set_current({**cur, "mantel": True})
     link_programs(version, True)
-    shutil.rmtree(root() / "downloads", ignore_errors=True)
-    shutil.rmtree(root() / "cache", ignore_errors=True)
 
 
 def _mantel(action: str) -> None:
