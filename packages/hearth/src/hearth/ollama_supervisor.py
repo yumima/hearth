@@ -102,7 +102,7 @@ def _env(base_url: str, models_dir: str) -> dict:
 
 
 class Supervisor:
-    """One Ollama, ours. start() → watch() → stop()."""
+    """One Ollama, ours. start() → (kept up by a thread) → stop()."""
 
     def __init__(self, base_url: str, models_dir: str = ""):
         self.base_url = base_url
@@ -111,7 +111,7 @@ class Supervisor:
         self._since = 0.0
         self._failures = 0
         self._stopping = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()  # a start and the stop do not cross
         self._proc: subprocess.Popen | None = None
 
     # ── one start ────────────────────────────────────────────────────────────
@@ -126,20 +126,29 @@ class Supervisor:
                 p.replace(p.with_suffix(".log.1"))
         except OSError:
             pass
+        with self._lock:
+            if self._stopping.is_set():
+                return False
+            try:
+                with open(p, "ab") as out:
+                    self._proc = subprocess.Popen(
+                        [binary, "serve"], env=_env(self.base_url, self.models_dir),
+                        stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **procs.own_group())
+            except OSError as e:
+                log.error("could not run %s: %s", binary, e)
+                return False
+            self._own(self._proc.pid)
+        return True
+
+    def _own(self, pid: int) -> None:
+        self._pid, self._since = pid, time.monotonic()
+        me = os.getpid()
         try:
-            with open(p, "ab") as out:
-                self._proc = subprocess.Popen(
-                    [binary, "serve"], env=_env(self.base_url, self.models_dir),
-                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **procs.own_group())
-        except OSError as e:
-            log.error("could not run %s: %s", binary, e)
-            return False
-        self._pid, self._since = self._proc.pid, time.monotonic()
-        try:
-            _pid_path().write_text(json.dumps({"pid": self._pid, "started": procs.started_at(self._pid)}))
+            _pid_path().write_text(json.dumps({
+                "pid": pid, "started": procs.started_at(pid), "base_url": self.base_url,
+                "owner": me, "owner_started": procs.started_at(me)}))
         except OSError:
             pass
-        return True
 
     def _ended(self) -> bool:
         if self._proc is not None:
@@ -147,20 +156,29 @@ class Supervisor:
         return not procs.alive(self._pid)
 
     def _adopt(self) -> bool:
-        """One a hearth that was killed had started: ours to end, still."""
+        """One that a hearth which was killed had started, at this address: ours
+        to end, still. Not one whose hearth lives (a second gateway of the same
+        home), nor one a pid only looks like."""
         try:
             was = json.loads(_pid_path().read_text())
-            pid, started = int(was["pid"]), float(was["started"])
+            pid, started, owner, owner_started = (
+                int(was["pid"]), float(was["started"]), int(was["owner"]), float(was["owner_started"]))
+            if was["base_url"] != self.base_url:
+                return False
         except (OSError, ValueError, KeyError, TypeError):
             return False
         if not started or procs.started_at(pid) != started or "ollama" not in procs.command_line(pid).lower():
             return False
-        self._pid, self._since = pid, time.monotonic()
+        if owner != os.getpid() and owner_started and procs.started_at(owner) == owner_started:
+            return False
+        self._own(pid)
         return True
 
-    def start(self, wait_s: float = 30.0) -> bool:
-        """Is Ollama ours now, and running? False: one was already up that is
-        not ours, or there is none to run (is_up() tells which)."""
+    def start(self, wait_s: float = 30.0, keep_up: bool = True) -> bool:
+        """Is Ollama ours now? False: one was already up that is not ours, or
+        there is none to run (is_up() tells which). `keep_up`: start it again
+        when it ends, and end it on exit — a gateway's. Without, a command's for
+        as long as it runs."""
         if is_up(self.base_url):
             if not self._adopt():
                 return False
@@ -171,10 +189,10 @@ class Supervisor:
         deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline and not is_up(self.base_url):
             if self._ended():
-                break  # the watcher starts it again; what it said is in the log
+                break  # started again below; what it said is in the log
             time.sleep(0.5)
-        self._thread = threading.Thread(target=self._watch, name="ollama-watch", daemon=True)
-        self._thread.start()
+        if keep_up:
+            threading.Thread(target=self._watch, name="ollama-watch", daemon=True).start()
         return True
 
     # ── staying up ───────────────────────────────────────────────────────────
@@ -190,23 +208,30 @@ class Supervisor:
                       self._proc.returncode if self._proc else "?", wait, log_path())
             if self._stopping.wait(wait):
                 return
-            if is_up(self.base_url):
-                # Somebody else's has the address now: theirs to keep up.
-                log.info("another Ollama answers at %s — leaving it alone", self.base_url)
-                self._forget()
-                return
+            # Somebody else's may have the address now (a command's own, say).
+            # It is used while it is there, and ours comes back when it goes.
+            while is_up(self.base_url):
+                if self._stopping.wait(_LOOK_S):
+                    return
             self._spawn()
 
-    def _forget(self) -> None:
-        self._pid, self._proc = 0, None
-        _pid_path().unlink(missing_ok=True)
+    def stop_watching(self) -> None:
+        """The gateway is going down: what ends now stays ended."""
+        self._stopping.set()
 
     def stop(self) -> None:
         self._stopping.set()
-        if self._pid and not self._ended():
-            procs.end_tree(self._pid)
-        if self._pid:
-            self._forget()
+        with self._lock:
+            pid, self._pid = self._pid, 0
+            if not pid:
+                return
+            if self._proc is not None or procs.alive(pid):
+                procs.end_tree(pid)
+            try:
+                if json.loads(_pid_path().read_text()).get("pid") == pid:
+                    _pid_path().unlink()
+            except (OSError, ValueError, AttributeError):
+                pass
 
 
 def last_lines(count: int = 8) -> str:

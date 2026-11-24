@@ -87,7 +87,7 @@ def _start_in_background(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
         extra += ["--log-level", args.log_level]
     # The service serves its own config at its own address: anything asked for
     # here, in the command or the environment, is a gateway of its own.
-    own = extra or os.environ.get("HEARTH_HOME") or os.environ.get("HEARTH_CONFIG")
+    own = extra or any(os.environ.get(n) for n in ("HEARTH_HOME", "HEARTH_CONFIG", "HEARTH_DATA"))
     service = None
     if not own and _unit_path().exists() and shutil.which("systemctl"):
         # Type=simple: started means forked, so what became of it is asked again.
@@ -183,9 +183,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 1
 
     # Bring up Ollama unless told not to.
+    supervisor = None
     ollama = cfg.backends.get("ollama")
     if ollama and not args.no_manage:
-        if ollama_supervisor.Supervisor(ollama.base_url, ollama.models_dir).start():
+        supervisor = ollama_supervisor.Supervisor(ollama.base_url, ollama.models_dir)
+        if supervisor.start():
             print(f"[ollama] started ({ollama.base_url})" if ollama_supervisor.is_up(ollama.base_url) else
                   f"[ollama] not up yet ({ollama.base_url}) — it is started again as it ends; "
                   f"log: {ollama_supervisor.log_path()}")
@@ -245,8 +247,13 @@ def cmd_start(args: argparse.Namespace) -> int:
                             log_level=args.log_level, server_header=False)
     server = uvicorn.Server(config)
     app.state.shutdown = lambda: setattr(server, "should_exit", True)
-    server.run(sockets=[sock])
-    return 0
+    if supervisor is not None:
+        app.state.at_shutdown.append(supervisor.stop_watching)
+    try:
+        server.run(sockets=[sock])
+    except KeyboardInterrupt:
+        pass  # uvicorn has shut down in order, and raises what it caught
+    return 0 if server.started else 1
 
 
 def cmd_models(args: argparse.Namespace) -> int:
@@ -338,7 +345,14 @@ def _ensure_ollama(cfg: cfgmod.Config):
     if not ollama:
         return None
     if not ollama_supervisor.is_up(ollama.base_url):
-        ollama_supervisor.Supervisor(ollama.base_url, ollama.models_dir).start()
+        if _gateway_identity(cfg) is not None:
+            # Its to start: it is doing that, or has said in the log why it cannot.
+            print("waiting for the running gateway's Ollama…")
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not ollama_supervisor.is_up(ollama.base_url):
+                time.sleep(0.5)
+        else:
+            ollama_supervisor.Supervisor(ollama.base_url, ollama.models_dir).start(keep_up=False)
         if not ollama_supervisor.is_up(ollama.base_url):
             return None
     return ollama
@@ -1373,6 +1387,10 @@ def cmd_client(args: argparse.Namespace) -> int:
               "choose it, or use `hearth chat` here", file=sys.stderr)
         return 1
     action = getattr(args, "action", None) or "open"
+    if action == "open":  # a chat window without an engine is of no use
+        start = build_parser().parse_args(["start", "--background"])
+        if cmd_start(start) != 0:
+            print("opening the window without the engine", file=sys.stderr)
     return subprocess.run([program, *([] if action == "open" else [action])]).returncode
 
 

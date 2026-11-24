@@ -23,7 +23,7 @@ dependencies = [
 # Desktop window via the OS's native webview (no bundled browser). Without it,
 # `mantel` falls back to a Chromium/Edge --app window or the default browser.
 gui = ["pywebview>=5.0"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-timeout"]
 
 [project.scripts]
 mantel = "mantel.cli:main"
@@ -44,3 +44,4 @@ mantel = ["webui/*.html", "assets/*.svg"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+timeout = 120  # what hangs says where, and ends

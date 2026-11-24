@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`0b6e65f`](https://github.com/yumima/hearth/commit/0b6e65f) stop: only a gateway's own process, not one that mentions hearth
 - [`07fad80`](https://github.com/yumima/hearth/commit/07fad80) One lock file, two environments; CI on Linux, macOS and Windows
 - [`0b702ff`](https://github.com/yumima/hearth/commit/0b702ff) Ollama kept running, one way to handle processes everywhere; the chat window is mantel
 - [`fccccf8`](https://github.com/yumima/hearth/commit/fccccf8) layout: hearth under packages/

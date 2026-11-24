@@ -110,6 +110,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
                                                log_level=getattr(args, "log_level", "info")))
         app.state.shutdown = lambda: setattr(server, "should_exit", True)
         server.run()
+    except KeyboardInterrupt:
+        pass  # uvicorn has shut down in order, and raises what it caught
     finally:
         if pid_file is not None:
             try:
@@ -117,7 +119,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
                     pid_file.unlink()
             except OSError:
                 pass
-    return 0
+    return 0 if server.started else 1
 
 
 def _ensure_server(cfg: cfgmod.Config) -> bool:
@@ -182,20 +184,18 @@ def cmd_stop(args: argparse.Namespace) -> int:
         httpx.post(f"{_server_url(cfg)}api/shutdown", timeout=3.0)
     except httpx.HTTPError:
         pass
-    p = None
-    try:
-        p = psutil.Process(pid)
-        p.wait(5)
-    except psutil.TimeoutExpired:
+    for end in (lambda p: None, lambda p: p.terminate(), lambda p: p.kill()):
         try:
-            p.terminate()
+            p = psutil.Process(pid)
+            end(p)
             p.wait(5)
-        except psutil.TimeoutExpired:
-            p.kill()
-        except psutil.Error:
-            pass
-    except psutil.Error:
-        pass
+        except psutil.NoSuchProcess:
+            break
+        except psutil.Error:  # not ended yet, or not ours to end
+            continue
+    if _read_pid() == pid:
+        print(f"could not stop mantel (pid {pid}) — another user's?", file=sys.stderr)
+        return 1
     cfgmod.pid_path().unlink(missing_ok=True)
     print(f"stopped mantel (pid {pid}).")
     return 0

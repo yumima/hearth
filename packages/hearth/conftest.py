@@ -19,5 +19,6 @@ def _a_home_of_its_own(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("home")
     for name in ("HOME", "USERPROFILE"):
         monkeypatch.setenv(name, str(home))
-    for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "HEARTH_HOME", "HEARTH_CONFIG"):
+    for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "HEARTH_HOME", "HEARTH_CONFIG", "HEARTH_DATA",
+                 "HEARTH_OLLAMA_BIN"):
         monkeypatch.delenv(name, raising=False)

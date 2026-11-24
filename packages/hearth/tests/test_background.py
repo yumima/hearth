@@ -178,6 +178,7 @@ def test_one_that_is_already_coming_up_is_waited_for(home):
     """Two apps at login: the second one's gateway finds the port taken and ends;
     the first one's answers a moment later."""
     import http.server
+    import socketserver
 
     class Hearth(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -191,7 +192,12 @@ def test_one_that_is_already_coming_up_is_waited_for(home):
         def log_message(self, *_):
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", home.bind_port), Hearth)  # listening, and silent
+    class Server(http.server.HTTPServer):
+        def server_bind(self):  # HTTPServer's own looks its name up, for half a minute on some machines
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address
+
+    server = Server(("127.0.0.1", home.bind_port), Hearth)  # listening, and silent
     threading.Timer(4, server.serve_forever).start()
     try:
         ok, message = background.start(home, [sys.executable, "-c", "raise SystemExit(1)"], wait_s=30)

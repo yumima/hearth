@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     shell: bash
@@ -23,9 +27,11 @@ jobs:
           - { os: ubuntu-latest, python: "3.11" }
           - { os: ubuntu-latest, python: "3.14" }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       UV_PYTHON: ${{ matrix.python }}
       PYTHONUTF8: "1"
+      PYTHONFAULTHANDLER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -37,7 +43,7 @@ jobs:
       - name: hearth
         run: |
           uv sync --frozen --package hearth --extra dev
-          uv run --frozen --package hearth --extra dev pytest -q packages/hearth tests
+          uv run --frozen --package hearth --extra dev pytest -q --durations=5 packages/hearth tests
       - name: mantel
         run: |
           uv sync --frozen --package mantel --extra dev

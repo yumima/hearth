@@ -8,6 +8,7 @@ import sys
 import time
 
 import httpx
+import psutil
 import pytest
 
 from mantel import cli
@@ -25,13 +26,15 @@ def served(monkeypatch):
     while time.monotonic() < deadline and not cli._server_up(cfgmod.load()):
         time.sleep(0.2)
     yield p, port
-    if p.poll() is None:
-        p.kill()
+    for q in [*psutil.Process(p.pid).children(recursive=True), p] if p.poll() is None else []:
+        q.kill()
 
 
 def test_stop_ends_it_in_order(served, capsys):
     p, port = served
-    assert cli._read_pid() == p.pid and cli._read_pid() == p.pid  # asking does not end it
+    # (On Windows a venv's python is a launcher: the server is its child.)
+    ours = {p.pid, *(c.pid for c in psutil.Process(p.pid).children(recursive=True))}
+    assert cli._read_pid() in ours and cli._read_pid() in ours  # asking does not end it
     assert p.poll() is None
     assert cli.main(["stop"]) == 0
     assert p.wait(10) == 0
@@ -68,3 +71,26 @@ def test_a_pid_of_another_program_is_not_ours():
         other.kill()
     cfgmod.pid_path().write_text("not a pid")
     assert cli._read_pid() is None
+
+
+def test_one_that_cannot_be_stopped_is_not_called_stopped(served, monkeypatch, capsys):
+    p, port = served
+
+    def refused(*a, **k):
+        raise psutil.AccessDenied(p.pid)
+
+    monkeypatch.setattr(cli.httpx, "post", lambda *a, **k: None)
+    monkeypatch.setattr(cli.psutil.Process, "terminate", refused)
+    monkeypatch.setattr(cli.psutil.Process, "kill", refused)
+    monkeypatch.setattr(cli.psutil.Process, "wait", refused)
+    assert cli.main(["stop"]) == 1
+    assert "could not stop" in capsys.readouterr().err and cfgmod.pid_path().exists()
+
+
+def test_a_server_that_cannot_start_says_so(monkeypatch):
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        cfgmod.save(cfgmod.Config(port=s.getsockname()[1]))
+        r = subprocess.run([sys.executable, "-m", "mantel", "serve"], capture_output=True, timeout=60)
+    assert r.returncode != 0

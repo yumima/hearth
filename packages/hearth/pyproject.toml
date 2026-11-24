@@ -30,6 +30,7 @@ tts = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-timeout",
     "numpy",  # the read-aloud tests run Kokoro's audio code without Kokoro (the tts extra brings it)
 ]
 
@@ -50,3 +51,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+timeout = 120  # what hangs says where, and ends

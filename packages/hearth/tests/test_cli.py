@@ -56,8 +56,12 @@ def test_removed_commands_are_rejected(argv):
 def _client_runs(monkeypatch, program, *argv):
     ran = []
     monkeypatch.setattr(cli, "_mantel", lambda: program)
+    started = []
+    monkeypatch.setattr(cli, "cmd_start", lambda a: started.append(a.background) or 0)
     monkeypatch.setattr(cli.subprocess, "run", lambda a, **k: ran.append(a) or type("R", (), {"returncode": 7})())
-    return cli.main(["client", *argv]), ran
+    rc = cli.main(["client", *argv])
+    assert started == ([True] if program and argv in ((), ("open",)) else [])  # the window needs the engine
+    return rc, ran
 
 
 def test_client_is_mantel(monkeypatch):

@@ -54,6 +54,8 @@ def create_app(
         try:
             yield
         finally:
+            for f in app.state.at_shutdown:
+                f()
             await tts.pool.aclose()
             await kokoro_tts.engine.aclose()
             if owned:
@@ -63,6 +65,7 @@ def create_app(
     app = FastAPI(title="hearth", version=__version__, lifespan=lifespan)
     app.state.cfg = cfg
     app.state.backends = registry
+    app.state.at_shutdown = []  # called as the server goes down, before anything else is closed
     app.state.shutdown = None  # `hearth start` sets it: /admin/shutdown ends the server
     app.add_middleware(
         SecurityMiddleware, allow_any_host=allow_any_host, api_key=api_key

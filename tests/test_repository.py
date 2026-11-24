@@ -30,8 +30,10 @@ def test_neither_imports_the_other(name, other):
     files = list((PACKAGES[name] / "src").rglob("*.py"))
     assert len(files) > 5
     assert not [str(f) for f in files if other in _imports(f)]
-    deps = tomllib.loads((PACKAGES[name] / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-    assert not [d for d in deps if re.match(rf"{other}\\b", d)]
+    project = tomllib.loads((PACKAGES[name] / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    deps = [*project["dependencies"], *(d for extra in project["optional-dependencies"].values() for d in extra)]
+    assert len(deps) > 5
+    assert [d for d in deps if re.split(r"[^a-z0-9-]", d.lower())[0] == other] == []
 
 
 def _version(name: str) -> str:

@@ -94,8 +94,12 @@ FAKE = textwrap.dedent("""
             body = json.dumps({"version": "fake", **{k: v for k, v in os.environ.items() if k.startswith("OLLAMA_")}}).encode()
             self.send_response(200); self.end_headers(); self.wfile.write(body)
         def log_message(self, *_): pass
+    class Server(http.server.HTTPServer):
+        def server_bind(self):  # HTTPServer's own looks its name up, for half a minute on some machines
+            __import__("socketserver").TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address
     host, port = os.environ["OLLAMA_HOST"].split(":")
-    http.server.HTTPServer((host, int(port)), H).serve_forever()
+    Server((host, int(port)), H).serve_forever()
 """)
 
 
@@ -187,10 +191,15 @@ def test_somebody_elses_is_used_and_left_alone(ollama):
     assert osup.is_up(theirs.base_url)
 
 
+def _owner_is_gone():
+    p = paths.home() / "ollama.pid"
+    p.write_text(json.dumps({**json.loads(p.read_text()), "owner": 2**22 - 7, "owner_started": 1.0}))
+
+
 def test_one_left_by_a_killed_hearth_is_taken_over(ollama):
     left = ollama()
-    assert left.start()
-    left._stopping.set()  # killed: nothing was stopped
+    assert left.start(keep_up=False)
+    _owner_is_gone()
     ours = Supervisor(left.base_url)
     assert ours.start() and ours._pid == left._pid
     _kill(ours.base_url)
@@ -199,15 +208,84 @@ def test_one_left_by_a_killed_hearth_is_taken_over(ollama):
     assert not osup.is_up(ours.base_url)
 
 
+def test_one_whose_hearth_lives_is_not_taken_over(ollama):
+    """A second gateway of the same home (hearth start --bind …)."""
+    first = ollama()
+    assert first.start()
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        p = paths.home() / "ollama.pid"
+        p.write_text(json.dumps({**json.loads(p.read_text()), "owner": other.pid,
+                                 "owner_started": procs.started_at(other.pid)}))
+        second = Supervisor(first.base_url)
+        assert second.start() is False
+        second.stop()
+        assert osup.is_up(first.base_url) and p.exists()
+    finally:
+        other.kill()
+
+
+def test_one_at_another_address_is_not_taken_over(ollama):
+    first = ollama()
+    assert first.start(keep_up=False)
+    _owner_is_gone()
+    assert Supervisor("http://127.0.0.1:1")._adopt() is False
+
+
 def test_a_pid_that_is_another_process_by_now_is_not_taken_over(ollama):
     theirs = ollama()
     assert theirs.start()
-    for left in ({"pid": theirs._pid, "started": 1.0}, {"pid": os.getpid(), "started": procs.started_at(os.getpid())},
-                 {"pid": "x"}, [], {}):
+    _owner_is_gone()
+    good = json.loads((paths.home() / "ollama.pid").read_text())
+    for left in ({**good, "started": 1.0}, {**good, "pid": os.getpid(), "started": procs.started_at(os.getpid())},
+                 {**good, "pid": "x"}, {k: v for k, v in good.items() if k != "owner"}, [], {}):
         (paths.home() / "ollama.pid").write_text(json.dumps(left))
-        assert Supervisor(theirs.base_url)._adopt() is False
+        assert Supervisor(theirs.base_url)._adopt() is False, left
     (paths.home() / "ollama.pid").write_text("not json")
     assert Supervisor(theirs.base_url)._adopt() is False
+
+
+def test_it_comes_back_after_a_commands_own_one(ollama, monkeypatch):
+    """`hearth pull` while the gateway's Ollama is down for a restart."""
+    monkeypatch.setattr(osup, "_BACKOFF_S", (2.0,))
+    gateway = ollama()
+    assert gateway.start()
+    _kill(gateway.base_url)
+    assert _until(lambda: gateway._failures == 1)
+    command = Supervisor(gateway.base_url)
+    assert command.start(keep_up=False)
+    time.sleep(3)  # past the gateway's wait
+    assert gateway._ended()  # the command's is used
+    command.stop()
+    assert _until(lambda: osup.is_up(gateway.base_url)) and not gateway._ended()
+
+
+def test_nothing_is_started_once_it_is_stopping(ollama, monkeypatch):
+    s = ollama()
+    assert s.start()
+    asked = []
+
+    def slow_is_up(base_url, timeout=1.5):
+        asked.append(1)
+        time.sleep(0.6)  # stop() arrives while the watcher is here
+        return False
+
+    monkeypatch.setattr(osup, "is_up", slow_is_up)
+    _kill(s.base_url)
+    assert _until(lambda: asked)
+    s.stop()
+    time.sleep(1.5)
+    with pytest.raises(httpx.HTTPError):
+        httpx.get(s.base_url + "/api/version", timeout=1)
+
+
+def test_what_ends_while_the_gateway_goes_down_stays_ended(ollama):
+    s = ollama()
+    assert s.start()
+    s.stop_watching()
+    _kill(s.base_url)
+    time.sleep(1.5)
+    assert not osup.is_up(s.base_url)
 
 
 def test_no_program_at_all(ollama, monkeypatch, tmp_path):
@@ -271,3 +349,17 @@ def test_voices_come_from_hearths_folder_then_the_one_it_shared(monkeypatch, tmp
     assert kokoro_tts.model_dir() == new / "kokoro"  # half of it is none of it
     (old / "kokoro" / kokoro_tts.VOICES_FILE).write_text("")
     assert kokoro_tts.model_dir() == old / "kokoro"
+
+
+def test_a_gateway_going_down_stops_watching_first():
+    from fastapi.testclient import TestClient
+
+    from hearth import config as cfgmod
+    from hearth.app import create_app
+
+    app = create_app(cfgmod.default_config(), backends_override={})
+    called = []
+    app.state.at_shutdown.append(lambda: called.append(1))
+    with TestClient(app, base_url="http://localhost"):
+        assert not called
+    assert called == [1]

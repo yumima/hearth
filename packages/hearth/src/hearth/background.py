@@ -94,7 +94,7 @@ def _last_lines(since: int, count: int = 6) -> str:
 def _child_env() -> dict:
     """Ours, for a process in another folder: what names a file still names it."""
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}  # the log in order, whatever ends it
-    for name in ("HEARTH_HOME", "HEARTH_CONFIG", "HEARTH_OLLAMA_BIN"):
+    for name in ("HEARTH_HOME", "HEARTH_CONFIG", "HEARTH_DATA", "HEARTH_KOKORO_DIR", "HEARTH_OLLAMA_BIN"):
         if env.get(name):
             env[name] = os.path.abspath(os.path.expanduser(env[name]))
     if env.get("PYTHONPATH"):
