@@ -1424,13 +1424,32 @@ def cmd_service(args: argparse.Namespace) -> int:
 # ---- the desktop chat app: mantel ---------------------------------------
 
 
-def _mantel() -> str | None:
-    """mantel's program: where the installer puts it, beside this one, or on PATH."""
-    exe = "mantel.exe" if sys.platform == "win32" else "mantel"
-    for p in (paths.data_dir() / "bin" / exe, Path(os.path.abspath(sys.executable)).with_name(exe)):
-        if p.is_file():
-            return str(p)
-    return shutil.which("mantel")
+def cmd_client(args: argparse.Namespace) -> int:
+    """hearth's chat window is mantel, a program of its own (client.py)."""
+    from . import client, install
+    from .provision import Problem
+
+    say = lambda t: print(t, flush=True)  # noqa: E731
+    action = getattr(args, "action", None) or "open"
+    try:
+        if action == "install":
+            client.add(args.build, args.replace, say)
+            return 0
+        if action == "uninstall":
+            client.remove(say)
+            return 0
+    except (Problem, *install.ERRORS, httpx.HTTPError) as e:
+        print(str(e) or type(e).__name__, file=sys.stderr)
+        return 1
+    program = client.program()
+    if program is None:
+        print("mantel, hearth's chat window, is not here — `hearth client install` builds it; "
+              "`hearth chat` is in the terminal", file=sys.stderr)
+        return 1
+    start = build_parser().parse_args(["start", "--background"])  # a chat window without an engine is of no use
+    if cmd_start(start) != 0:
+        print("opening the window without the engine", file=sys.stderr)
+    return subprocess.run([program]).returncode
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -1493,24 +1512,9 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     try:
         install.uninstall(keep, args.keep_settings, lambda t: print(t, flush=True))
         return 0
-    except (Problem, OSError) as e:
+    except (Problem, *install.ERRORS) as e:
         print(e, file=sys.stderr)
         return 1
-
-
-def cmd_client(args: argparse.Namespace) -> int:
-    """hearth's chat window is mantel, a program of its own."""
-    program = _mantel()
-    if program is None:
-        print("mantel, hearth's chat window, is not installed — run hearth's installer again and "
-              "choose it, or use `hearth chat` here", file=sys.stderr)
-        return 1
-    action = getattr(args, "action", None) or "open"
-    if action == "open":  # a chat window without an engine is of no use
-        start = build_parser().parse_args(["start", "--background"])
-        if cmd_start(start) != 0:
-            print("opening the window without the engine", file=sys.stderr)
-    return subprocess.run([program, *([] if action == "open" else [action])]).returncode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1667,7 +1671,9 @@ def build_parser() -> argparse.ArgumentParser:
     cp = sub.add_parser("client", help="open the chat window (mantel), or add/remove its launcher")
     cp_sub = cp.add_subparsers(dest="action")
     cp_sub.add_parser("open", help="open the chat window")
-    cp_sub.add_parser("install", help="add mantel to your app menu")
+    ci = cp_sub.add_parser("install", help="build mantel if it is not here, and add it to the app menu")
+    ci.add_argument("--build", action="store_true", help="build it again")
+    ci.add_argument("--replace", action="store_true", help="have ~/.local/bin/mantel, if that is another one")
     cp_sub.add_parser("uninstall", help="remove it from your app menu")
     cp.set_defaults(func=cmd_client, action=None)  # bare `hearth client` → open
     return p

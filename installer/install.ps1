@@ -45,7 +45,7 @@
         throw "there is no hearth for Windows on $env:PROCESSOR_ARCHITECTURE yet"
     }
     $Root = if ($env:HEARTH_DATA) { $env:HEARTH_DATA } else { Join-Path $env:LOCALAPPDATA 'hearth' }
-    if (-not [IO.Path]::IsPathRooted($Root)) { throw 'HEARTH_DATA must be a full path' }
+    if ($Root -notmatch '^([A-Za-z]:\\|\\\\)') { throw 'HEARTH_DATA must be a full path' }
     if ((Test-Path -LiteralPath $Root) -and -not (Test-Path -LiteralPath (Join-Path $Root '.hearth-install'))) {
         $Others = @(Get-ChildItem -Force -LiteralPath $Root | Where-Object { $_.Name -notin @('models', 'voices') })
         if ($Others.Count) { throw "$Root is there already and was not made by this installer" }

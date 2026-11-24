@@ -253,6 +253,10 @@ def test_03_update(world):
     url = world.release("0.3.0")
     assert "0.3.0 is available" in world.hearth("update", "--check", HEARTH_RELEASE_URL=url).stdout
     assert world.version() == "0.2.0"
+    # started as finterm, or a login without systemd, starts it: from its own process
+    world.hearth("stop")
+    world.hearth("start", "--background")
+    assert world.version() == "0.2.0"
     world.hearth("update", "--yes", HEARTH_RELEASE_URL=url)
     assert world.version() == "0.3.0"
     cur = json.loads((world.data / "current.json").read_text())
@@ -307,6 +311,35 @@ def test_06b_a_newer_script_over_a_running_one_is_an_update(world):
     assert "0.3.0 is running again" in r.stderr + r.stdout and world.version() == "0.3.0"
 
 
+def test_06bb_a_script_that_cannot_finish_leaves_the_running_one_running(world):
+    url = world.release("0.6.0")
+    wheel = next((world.releases / "v0.6.0").glob("mantel-*.whl"))
+    wheel.write_bytes(wheel.read_bytes() + b"x")
+    r = world.install("0.6.0", "--no-open", ok=False)
+    assert "not the published file" in r.stderr + r.stdout and url
+    assert world.version() == "0.3.0"
+
+
+def test_06bd_without_mantel_there_is_no_link_left_to_it(world):
+    world.install("0.3.0", "--no-open", "--no-mantel")
+    assert world.version() == "0.3.0" and not (world.data / "bin" / ("mantel.exe" if WIN else "mantel")).exists()
+    assert not (world.home / ".local" / "bin" / "mantel").is_symlink()
+    if sys.platform.startswith("linux"):
+        assert not (world.home / ".local" / "share" / "applications" / "mantel.desktop").exists()
+
+
+def test_06be_a_program_with_a_file_of_it_open_is_not_ended(world):
+    f = next((world.data / "versions").glob("*/hearth/pyvenv.cfg"))
+    reader = subprocess.Popen([sys.executable, "-c", "import sys, time; open(sys.argv[1]); time.sleep(300)", str(f)])
+    try:
+        world.hearth("stop")
+        world.hearth("start", "--background")
+        world.install("0.3.0", "--no-open")  # a repair: stops and starts it
+        assert reader.poll() is None and world.version() == "0.3.0"
+    finally:
+        reader.kill()
+
+
 def test_06c_it_knows_where_it_is_without_being_told(world):
     """At login there are no variables of the shell it was installed from."""
     py = world.data / "versions" / "0.3.0" / "hearth" / ("Scripts/python.exe" if WIN else "bin/python")
@@ -335,6 +368,18 @@ def test_08_installing_beside_kept_models_and_without_mantel(world):
     assert (world.data / "models" / "a-model").exists()
     assert not (world.data / "bin" / ("mantel.exe" if WIN else "mantel")).exists()
     assert not (world.data / "versions" / "0.2.0" / "mantel").exists()
+
+
+def test_08b_mantel_can_be_added_later(world):
+    url = f"{world.url}/v0.2.0/manifest.json"
+    world.hearth("client", "install", HEARTH_RELEASE_URL=url)
+    assert (world.data / "bin" / ("mantel.exe" if WIN else "mantel")).exists()
+    assert json.loads((world.data / "current.json").read_text())["mantel"] is True
+    if sys.platform.startswith("linux"):
+        entry = (world.home / ".local" / "share" / "applications" / "mantel.desktop").read_text()
+        assert str(world.data / "bin" / "mantel") in entry
+    world.hearth("client", "uninstall")
+    world.hearth("client", "install", HEARTH_RELEASE_URL=f"{world.url}/nothing")  # it is here: nothing is fetched
 
 
 def test_09_removing_leaves_nothing(world):

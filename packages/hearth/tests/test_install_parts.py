@@ -159,3 +159,38 @@ def test_a_unit_somebody_wrote_is_left_alone(monkeypatch, tmp_path):
     assert 'ExecStart="/a folder/100%% hearth" start' in u.read_text() and service.foreign() == ""
     service.disable(remove=True)
     assert not u.exists()
+
+
+def test_whatever_fails_the_old_version_is_tried_for(monkeypatch, tmp_path):
+    """Every step of a switch failing in turn: the old one is started again."""
+    monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path / "h"))
+    (tmp_path / "d").mkdir()
+    old, new = {"version": "1", "ollama": "a", "mantel": True}, {"version": "2", "ollama": "b", "mantel": True}
+
+    def no(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    for broken in ("_stop_everything", "backup", "_set_current", "link_programs"):
+        started = []
+        with monkeypatch.context() as m:
+            m.setattr(install, "_stop_everything", lambda: None)
+            m.setattr(install, "link_programs", lambda *a: None)
+            m.setattr(install, "_start", lambda v: started.append(v) or (True, "running"))
+            install._set_current(old)
+            m.setattr(install, broken, no)
+            with pytest.raises(Problem, match="did not work. 1 is"):
+                install._switch(new, old, True, lambda t: None)
+            assert started == ["1"], broken
+            assert install.current()["version"] == "1" or broken == "_set_current"
+    # one that does not start, and one that was not running before
+    for run in (True, False):
+        started = []
+        with monkeypatch.context() as m:
+            m.setattr(install, "_stop_everything", lambda: None)
+            m.setattr(install, "link_programs", lambda *a: None)
+            m.setattr(install, "_start", lambda v: started.append(v) or (v == "1", "no answer"))
+            install._set_current(old)
+            with pytest.raises(Problem, match="running again" if run else "is back"):
+                install._switch(new, old, run, lambda t: None)
+            assert started == (["2", "1"] if run else ["2"]) and install.current() == old

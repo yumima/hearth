@@ -9,7 +9,6 @@ tmp HOME/XDG dir.
 from __future__ import annotations
 
 import socket
-import sys
 
 import httpx
 import pytest
@@ -51,40 +50,21 @@ def test_removed_commands_are_rejected(argv):
         build_parser().parse_args(argv)
 
 
-# ── the chat window is mantel ─────────────────────────────────────────────────
+# ── the chat window is mantel (test_client.py has the rest) ───────────────────
 
-def _client_runs(monkeypatch, program, *argv):
+def test_the_window_needs_the_engine(monkeypatch, capsys):
+    from hearth import client
+
     ran = []
-    monkeypatch.setattr(cli, "_mantel", lambda: program)
-    started = []
-    monkeypatch.setattr(cli, "cmd_start", lambda a: started.append(a.background) or 0)
+    monkeypatch.setattr(client, "program", lambda: "/x/mantel")
+    monkeypatch.setattr(cli, "cmd_start", lambda a: ran.append(("start", a.background)) or 0)
     monkeypatch.setattr(cli.subprocess, "run", lambda a, **k: ran.append(a) or type("R", (), {"returncode": 7})())
-    rc = cli.main(["client", *argv])
-    assert started == ([True] if program and argv in ((), ("open",)) else [])  # the window needs the engine
-    return rc, ran
-
-
-def test_client_is_mantel(monkeypatch):
-    assert _client_runs(monkeypatch, "/x/mantel") == (7, [["/x/mantel"]])
-    assert _client_runs(monkeypatch, "/x/mantel", "open") == (7, [["/x/mantel"]])
-    assert _client_runs(monkeypatch, "/x/mantel", "install") == (7, [["/x/mantel", "install"]])
-    assert _client_runs(monkeypatch, "/x/mantel", "uninstall") == (7, [["/x/mantel", "uninstall"]])
-
-
-def test_client_without_mantel_says_so(monkeypatch, capsys):
-    assert _client_runs(monkeypatch, None) == (1, [])
-    assert "hearth chat" in capsys.readouterr().err
-
-
-def test_mantel_is_looked_for_where_the_installer_puts_it(monkeypatch, tmp_path):
-    monkeypatch.setenv("HEARTH_DATA", str(tmp_path))
-    monkeypatch.setattr(cli.sys, "executable", str(tmp_path / "venv" / "python"))
-    monkeypatch.setattr(cli.shutil, "which", lambda n: None)
-    assert cli._mantel() is None
-    exe = tmp_path / "bin" / ("mantel.exe" if sys.platform == "win32" else "mantel")
-    exe.parent.mkdir()
-    exe.write_text("")
-    assert cli._mantel() == str(exe)
+    for argv in (["client"], ["client", "open"]):
+        ran.clear()
+        assert cli.main(argv) == 7 and ran == [("start", True), ["/x/mantel"]]
+    monkeypatch.setattr(client, "program", lambda: None)
+    ran.clear()
+    assert cli.main(["client"]) == 1 and ran == [] and "hearth client install" in capsys.readouterr().err
 
 
 def test_swap_alias_accepts_context_like_bind():

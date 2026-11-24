@@ -13,6 +13,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`d5778de`](https://github.com/yumima/hearth/commit/d5778de) catalog: the 9B, measured
 - [`5f4a48a`](https://github.com/yumima/hearth/commit/5f4a48a) Installer: what the review found
 - [`0d99546`](https://github.com/yumima/hearth/commit/0d99546) README, release and site workflows (a tag makes a draft), the site
 - [`5095592`](https://github.com/yumima/hearth/commit/5095592) Windows: stopping a stalled download; what is installed, and its licences
@@ -86,6 +87,8 @@ it. What was in use stays in use if that fails.
 | `hearth start` · `start --background` · `stop` · `status` | the gateway (the service, where one is installed) |
 | `hearth` · `hearth chat` | chat in the terminal (`/help`) |
 | `hearth client` | mantel's window, with the engine started |
+| `hearth client install` | build mantel if it is not here (from this source tree, or the release), and add it to the app menu; `--build` to build it again, `--replace` to take over `~/.local/bin/mantel` |
+| `hearth client uninstall` | take it out of the app menu |
 | `hearth code` | a coding agent for a folder |
 | `hearth bind <role> <model>` · `roles` · `models` | which model answers for what |
 | `hearth backend …` | add a cloud or other OpenAI-compatible server |
@@ -156,6 +159,7 @@ With [uv](https://docs.astral.sh/uv):
 ```bash
 make build     # hearth in .venv, mantel in .venv-mantel
 make test      # both, as CI runs them
+hearth client install    # mantel from this tree, in the app menu
 make start     # the gateway; Ollama from vendor/ollama, or on PATH
 HEARTH_E2E=1 .venv/bin/python -m pytest tests/test_install.py   # the install scripts, with real environments
 python3 tools/release.py OUT                                    # a release's files
