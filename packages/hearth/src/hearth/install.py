@@ -330,14 +330,17 @@ def link_programs(version: str, mantel: bool) -> None:
         if _WIN:
             # The launcher names its Python by its full path, so a copy works. One
             # that is running cannot be replaced, and can be moved out of the way.
+            if link.is_file() and link.read_bytes() == target.read_bytes():
+                continue
             shutil.copy2(target, tmp)
-            old = bin_dir / (exe(name) + ".old")
-            try:
-                old.unlink(missing_ok=True)
-                if link.exists():
-                    link.rename(old)
-            except OSError:
-                pass
+            for old in bin_dir.glob(exe(name) + ".*.old"):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass  # still running
+            if link.exists():
+                n = next(n for n in range(1000) if not (bin_dir / f"{exe(name)}.{n}.old").exists())
+                link.rename(bin_dir / f"{exe(name)}.{n}.old")
         else:
             tmp.symlink_to(os.path.relpath(target, bin_dir))
         os.replace(tmp, link)
