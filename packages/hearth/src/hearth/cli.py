@@ -1429,10 +1429,11 @@ def cmd_client(args: argparse.Namespace) -> int:
     from . import client, install
     from .provision import Problem
 
-    say = lambda t: print(t, flush=True)  # noqa: E731
+    say = install.say
     action = getattr(args, "action", None) or "open"
     try:
         if action == "install":
+            install.ended_in_order()
             client.add(args.build, args.replace, say)
             return 0
         if action == "uninstall":

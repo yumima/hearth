@@ -217,12 +217,20 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
         files[kind] = downloads / url.rsplit("/", 1)[-1]
         fetch(url, files[kind], digest)
     before = env.with_name(name + ".before")
+    if before.exists() and not done.is_file():  # the last time was cut short: that is the one that works
+        shutil.rmtree(env, ignore_errors=True)
+        before.rename(env)
+        if not again:
+            return env
     shutil.rmtree(before, ignore_errors=True)
+    uv, env_vars = _uv(), _uv_env()
     if env.exists():
         replacing()
-        env.rename(before) if done.is_file() else shutil.rmtree(env)
-    uv, env_vars = _uv(), _uv_env()
     try:
+        if done.is_file():
+            env.rename(before)
+        elif env.exists():
+            shutil.rmtree(env)
         _run([uv, "python", "install", "--quiet", rel.data["python"]], "Installing Python", env_vars)
         _run([uv, "venv", "--quiet", "--python", rel.data["python"], str(env)], f"Making {name}'s environment", env_vars)
         _run([uv, "pip", "install", "--quiet", "--python", str(env), "--require-hashes", "--only-binary", ":all:",
@@ -231,14 +239,27 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
              f"Installing {name}", env_vars)
         _run([str(env_bin(env, "python")), "-I", "-c",
               f"import {name}; assert {name}.__version__ == {rel.version!r}, {name}.__version__"], f"Starting {name}")
+        done.write_text("")
     except BaseException:
-        if before.exists():
-            shutil.rmtree(env, ignore_errors=True)
-            before.rename(env)
+        _put_back(before, env)
         raise
-    done.write_text("")
     shutil.rmtree(before, ignore_errors=True)
     return env
+
+
+def _put_back(before: Path, env: Path) -> None:
+    """(What cannot be put back now — a file held open — is, by the next build_env.)"""
+    if not before.exists():
+        return
+    try:
+        if env.exists():
+            shutil.rmtree(env, ignore_errors=True)
+        if env.exists():
+            (env / ".complete").unlink(missing_ok=True)
+            env.rename(env.with_name(f"{env.name}.{time.time_ns()}.failed"))
+        before.rename(env)
+    except OSError:
+        pass
 
 
 def _safe_members(names: list[str]) -> None:
@@ -483,15 +504,18 @@ def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: 
             except (service.Foreign, *ERRORS) as e:
                 say(f"hearth will not start at login: {e}")
         _tidy()
-        if not (start or run):
-            return
-        ok, message = _start(rel.version)
-        if not ok:
-            raise Problem(f"hearth is installed, and did not start: {message}")
     except BaseException:
         if stopped and run:
-            _start(current()["version"])  # it was running
+            try:
+                _start(current()["version"])  # it was running
+            except Exception as e:
+                say(f"hearth was not started again: {str(e) or type(e).__name__}")
         raise
+    if not (start or run):
+        return
+    ok, message = _start(rel.version)
+    if not ok:
+        raise Problem(f"hearth is installed, and did not start: {message}")
     say(f"hearth is {message}")
     cfg = cfgmod.load(create=False)
     url = f"http://{cfg.bind_host}:{cfg.bind_port}/"
@@ -507,7 +531,8 @@ def add_mantel(rebuild: bool, say: Say) -> None:
     rel = release(os.environ.get("HEARTH_RELEASE_URL") or f"{RELEASES}/download/v{version}/manifest.json")
     if rel.version != version:
         raise Problem(f"That release is {rel.version}, and hearth here is {version}: update hearth first.")
-    env = os.path.realpath(root() / "versions" / version / "mantel") + os.sep
+    env = root() / "versions" / version / "mantel"
+    prefixes = {os.path.abspath(env) + os.sep, os.path.realpath(env) + os.sep}
 
     def running() -> list[int]:
         import psutil
@@ -515,7 +540,7 @@ def add_mantel(rebuild: bool, say: Say) -> None:
         out = []
         for p in _own_processes():
             try:
-                if any(env in a or os.path.abspath(a).startswith(env) for a in (p.exe(), *p.cmdline()[:2]) if a):
+                if any(a.startswith(b) for a in (p.exe(), *p.cmdline()[:2]) if a for b in prefixes):
                     out.append(p.pid)
             except psutil.Error:
                 continue
@@ -805,13 +830,13 @@ def ended_in_order() -> None:
     """Asked to end, or the terminal closed: as with Ctrl-C, a switch is taken back."""
     import signal
 
-    asked = [getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n)]
+    asked = [getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n)]
     asked = [n for n in asked if signal.getsignal(n) != signal.SIG_IGN]  # nohup
 
     def stop(signum, frame) -> None:
-        for n in (*asked, signal.SIGINT):  # once is enough: going back is not ended, too
+        for n in asked:  # once is enough: going back is not ended, too
             signal.signal(n, signal.SIG_IGN)
-        raise SystemExit(128 + signum)
+        raise KeyboardInterrupt if signum == signal.SIGINT else SystemExit(128 + signum)
 
     for n in asked:
         signal.signal(n, stop)

@@ -31,6 +31,7 @@ def tree(tmp_path, monkeypatch):
 
     monkeypatch.setattr(client, "checkout", lambda: t)
     monkeypatch.setattr(install, "_run", run)
+    monkeypatch.setattr(install, "ended_in_order", lambda: None)  # the test run's own signals
     monkeypatch.setattr(client.shutil, "which", lambda n: "/usr/bin/uv" if n == "uv" else None)
     monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "data"))
     return type("T", (), {"root": t, "built": built, "calls": lambda self: (tmp_path / "calls").read_text().split("\n")[:-1],
@@ -61,6 +62,21 @@ def test_a_checkout_opens_its_own_although_one_is_installed(tree, tmp_path):
     assert client.program() == str(installed)
     cli.main(["client", "install"])
     assert client.program() == str(tree.program)
+    (tree.root / ".venv-mantel" / ".complete").unlink()  # its build was cut short
+    assert client.program() == str(installed)
+
+
+def test_a_rebuild_that_is_cut_short_is_not_a_build(tree, monkeypatch):
+    cli.main(["client", "install"])
+
+    def cut(*a, **k):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as m:
+        m.setattr(install, "_run", cut)
+        with pytest.raises(KeyboardInterrupt):
+            client.add(True, False, print)
+    assert cli.main(["client", "install"]) == 0 and len(tree.built) == 2
 
 
 def test_without_uv_it_is_built_with_pip(tree, monkeypatch):
