@@ -13,6 +13,7 @@ lives in finterm's `plans/local-ai-engine.md`.
 
 Latest first.
 
+- [`279c827`](https://github.com/yumima/hearth/commit/279c827) start --background: what the review found
 - [`876842f`](https://github.com/yumima/hearth/commit/876842f) **ci:** the engine branch too
 - [`83f1dc3`](https://github.com/yumima/hearth/commit/83f1dc3) start --background: the gateway outlives whoever started it
 - [`efbb107`](https://github.com/yumima/hearth/commit/efbb107) 0.2.0: web search only for a request that asks; other web pages are refused
