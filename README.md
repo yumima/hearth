@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`40daa0f`](https://github.com/yumima/hearth/commit/40daa0f) site: the counter is downloads only; concise technical copy
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
