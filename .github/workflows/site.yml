@@ -45,6 +45,15 @@ jobs:
           gh release download --repo "${{ github.repository }}" --pattern 'install.*' --pattern SHA256SUMS --dir scripts
           (cd scripts && grep ' install\.' SHA256SUMS | sha256sum -c -)
           cp scripts/install.sh scripts/install.ps1 site/
+      - name: Its version and date
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view --repo "${{ github.repository }}" --json tagName,publishedAt > release.json
+          v=$(jq -r '.tagName | ltrimstr("v")' release.json)
+          d=$(date -u -d "$(jq -r .publishedAt release.json)" '+%-d %B %Y')
+          sed -i "s/@VERSION@/$v/; s/@DATE@/$d/" site/index.html
+          ! grep -n "@[A-Z]*@" site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

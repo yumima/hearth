@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`d994b30`](https://github.com/yumima/hearth/commit/d994b30) site: deployed from main, also when a release starts it
 - [`6f3de8e`](https://github.com/yumima/hearth/commit/6f3de8e) stop: a pidfile of one that has ended is not talked about
 - [`d3c16c9`](https://github.com/yumima/hearth/commit/d3c16c9) Others do not reach the engine without a key, whatever the configuration says
 - [`8e8145a`](https://github.com/yumima/hearth/commit/8e8145a) restart restarts what answers

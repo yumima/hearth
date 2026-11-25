@@ -13,6 +13,22 @@
   <h1>AI models on your own computer</h1>
   <p class="lead">hearth finds a model that suits your machine, checks that it works there, and serves it to your programs on one local address. It comes with a chat window, and a coding agent in the terminal. Nothing you type leaves the computer.</p>
 
+  <p class="dim">Version @VERSION@ · @DATE@ · <span id="count" data-base="13" title="13 clones of the source that GitHub counted from 10 to 23 November 2026, automated ones included, and the downloads of the engine">13</span> clones and downloads</p>
+  <script>
+  (function () {
+    var el = document.getElementById("count"), base = +el.dataset.base;
+    fetch("https://api.github.com/repos/yumima/hearth/releases?per_page=100")
+      .then(function (x) { return x.ok ? x.json() : []; })
+      .then(function (releases) {
+        var n = 0;
+        releases.forEach(function (rel) {
+          rel.assets.forEach(function (a) { if (/^hearth-.*\.whl$/.test(a.name)) n += a.download_count; });
+        });
+        el.textContent = (base + n).toLocaleString("en");
+      }).catch(function () {});
+  })();
+  </script>
+
   <section aria-labelledby="install">
     <h2 id="install">Install</h2>
     <p>Linux (x86-64) and macOS (Apple Silicon):</p>
