@@ -26,18 +26,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run site.yml --repo "${{ github.repository }}" --ref main
 
-  deploy:
+  build:
     if: github.event_name != 'release'
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    concurrency:
-      group: pages
+      pages: read
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: The install scripts, as released
@@ -62,5 +56,37 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-      - id: deployment
+
+  # A job of its own, and tried again: deploy-pages asks once which artifacts the
+  # run has, and GitHub can take a moment to list a finished upload.
+  deploy:
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+      actions: read
+    concurrency:
+      group: pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: github-pages
+      url: ${{ steps.try1.outputs.page_url || steps.try2.outputs.page_url || steps.try3.outputs.page_url }}
+    steps:
+      - id: try1
+        continue-on-error: true
         uses: actions/deploy-pages@v4
+        with: { timeout: 360000 }
+      - if: steps.try1.outcome == 'failure'
+        run: sleep 20
+      - id: try2
+        if: steps.try1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+        with: { timeout: 360000 }
+      - if: steps.try2.outcome == 'failure'
+        run: sleep 60
+      - id: try3
+        if: steps.try2.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        with: { timeout: 360000 }
