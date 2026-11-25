@@ -30,6 +30,7 @@ import fnmatch
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,7 @@ _LIST_MAX = 600
 _SHELL_MAX_CHARS = 16000
 _FILE_MAX_BYTES = 20_000_000
 _DIFF_LINES = 60
+_DIFF_CHARS = 8000
 
 _FILE_TOOLS = [
     {"type": "function", "function": {
@@ -127,15 +129,40 @@ def _plain(text: str) -> str:
 
 
 def _diff(old: str, new: str, name: str) -> str:
+    """What would change. All of it is shown, or it is said that it is not."""
     lines = list(difflib.unified_diff(old.splitlines(), new.splitlines(), name, name, lineterm="", n=2))[2:]
-    more = len(lines) - _DIFF_LINES
-    out = []
-    for line in lines[:_DIFF_LINES]:
+    out, left = [], _DIFF_CHARS
+    for n, line in enumerate(lines):
+        text = _plain(line)
+        if n >= _DIFF_LINES or len(text) > left:
+            rest = len(lines) - n
+            out.append(f"    {_YEL}… NOT SHOWN: {rest} more line{'s' if rest > 1 else ''}, "
+                       f"{sum(map(len, lines[n:]))} characters{_RST}")
+            break
+        left -= len(text)
         colour = {"+": "\033[32m", "-": "\033[31m"}.get(line[:1], _DIM)
-        out.append(f"    {colour}{_plain(line)[:200]}{_RST}")
-    if more > 0:
-        out.append(f"    {_DIM}… {more} more lines{_RST}")
+        out.append(f"    {colour}{text}{_RST}")
     return "\n".join(out)
+
+
+def _replace(text: str, old: str, new: str, every: bool) -> tuple[int, str]:
+    """(how often `old` is in `text`, the text with it replaced). The model was shown
+    lines, not line endings: each place keeps the one it has."""
+    rx = re.compile(r"\r?\n".join(re.escape(part) for part in old.replace("\r\n", "\n").split("\n")))
+    found = [m for m in rx.finditer(text) if m.group()]
+    lines = new.replace("\r\n", "\n").split("\n")
+
+    def put(m: re.Match) -> str:
+        at = text.find("\n", m.start())  # the ending in it, or of the line it is in
+        if at < 0:
+            at = text.rfind("\n")
+        return ("\r\n" if at > 0 and text[at - 1] == "\r" else "\n").join(lines)
+
+    out, end = [], 0
+    for m in found if every else found[:1]:
+        out += [text[end:m.start()], put(m)]
+        end = m.end()
+    return len(found), "".join(out) + text[end:]
 
 
 def _read_text(p: Path) -> str:
@@ -227,8 +254,8 @@ class CodeAgent:
             dns[:] = [d for d in dns if d not in _SKIP_DIRS and not d.startswith(".")]
             for f in fns:
                 p = Path(dp) / f
-                if p.is_symlink() and self.root not in p.resolve().parents:
-                    continue  # leads out of the project
+                if p.is_symlink() and self.root not in Path(os.path.realpath(p)).parents:
+                    continue  # leads out of the project, or nowhere
                 yield p
 
     # ── tools ─────────────────────────────────────────────────────────────────
@@ -316,18 +343,15 @@ class CodeAgent:
         if not old:
             return "ERROR: old_string is required and must not be empty"
         text = _read_text(p)
-        if "\r\n" in text and "\r\n" not in old:  # as it was shown to the model: without
-            old, new = old.replace("\n", "\r\n"), new.replace("\r\n", "\n").replace("\n", "\r\n")
-        count = text.count(old)
+        replace_all = bool(args.get("replace_all"))
+        count, after = _replace(text, old, new, replace_all)
         if count == 0:
             return ("ERROR: old_string not found. It must match the file EXACTLY, including "
                     "indentation and line breaks. Re-read the file and copy the text verbatim.")
-        replace_all = bool(args.get("replace_all"))
         if count > 1 and not replace_all:
             return (f"ERROR: old_string appears {count} times — the edit would be ambiguous. "
                     "Include surrounding lines to make it unique, or set replace_all.")
         rel = self._rel(p)
-        after = text.replace(old, new) if replace_all else text.replace(old, new, 1)
         if not self._approve(f"edit {rel} ({count} occurrence{'s' if count > 1 else ''})", _diff(text, after, rel),
                              "edit", "edits"):
             return "DENIED by user"
@@ -365,10 +389,10 @@ class CodeAgent:
         try:
             out, _ = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            procs.end_tree(p.pid)
+            self._end(p.pid)
             return f"ERROR: command timed out after {timeout}s"
         except BaseException:
-            procs.end_tree(p.pid)
+            self._end(p.pid)
             raise
         body = out.strip()
         if len(body) > _SHELL_MAX_CHARS:
@@ -376,11 +400,26 @@ class CodeAgent:
             body = body[:half] + "\n… (output truncated) …\n" + body[-half:]
         return (body or "(no output)") + f"\n[exit {p.returncode}]"
 
+    @staticmethod
+    def _end(pid: int) -> None:
+        procs.end_tree(pid)
+        if os.name == "posix":  # what it left in the background is nobody's child any more, and still of its group
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
     def _web(self, name: str, args: dict) -> str:
         if name == "web_fetch":
-            url = str(args.get("url", ""))
-            host = urlsplit(url).netloc
-            ok = self._approve(f"fetch {url}", always=f"fetch {host}", always_is=f"from {_plain(host)}")
+            url = str(args.get("url", "")).strip()
+            if "://" not in url:
+                url = "http://" + url  # as it is fetched
+            try:
+                host = urlsplit(url).netloc.lower()
+            except ValueError:
+                host = ""
+            args = {**args, "url": url}
+            ok = self._approve(f"fetch {url}", always=f"fetch {host}" if host else "", always_is=f"from {_plain(host)}")
         else:
             ok = self._approve(f"search the web: {args.get('query', '')}", always="search", always_is="search")
         return asyncio.run(webtools.dispatch(name, args, self.search_cfg)) if ok else "DENIED by user"

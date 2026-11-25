@@ -54,8 +54,8 @@ jobs:
           uv venv -q wheel && uv pip install -q --python wheel dist/hearth-*.whl
           BIN=wheel/bin; [ -d wheel/Scripts ] && BIN=wheel/Scripts
           export HEARTH_HOME="$PWD/hearth-home"
-          "$BIN/hearth" hardware
-          "$BIN/hearth" start --background --no-manage
+          "$BIN/hearth" model suggest --json
+          "$BIN/hearth" start --no-manage
           curl -sf http://127.0.0.1:11435/admin/version | grep -q '"name":"hearth"'
           curl -sf http://127.0.0.1:11435/ | grep -q '<title>hearth setup</title>'
           curl -sf http://127.0.0.1:11435/admin/setup | grep -q '"verdict"'

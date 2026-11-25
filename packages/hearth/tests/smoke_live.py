@@ -1,6 +1,6 @@
 """Live smoke against a running hearth gateway (needs Ollama + pulled models).
 
-    $ hearth start &                 # in one shell
+    $ hearth start
     $ python tests/smoke_live.py     # in another
 
 Exercises the exact surface finterm depends on: /v1/models, a streaming

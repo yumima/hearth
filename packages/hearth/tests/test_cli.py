@@ -8,6 +8,7 @@ tmp HOME/XDG dir.
 
 from __future__ import annotations
 
+import re
 import socket
 
 import httpx
@@ -31,9 +32,49 @@ def test_bare_hearth_is_the_coding_agent():
     assert build_parser().parse_args(["code", "sub", "-p", "x"]).path == "sub"
 
 
-def test_chat_and_service_still_dispatch():
-    assert _dispatch(["chat"])[0] == "cmd_chat"
-    assert _dispatch(["service", "start"]) == ("cmd_service", "start")
+@pytest.mark.parametrize("argv,func", [
+    (["chat"], "cmd_chat"), (["code", "x"], "cmd_code"), (["client"], "cmd_client"), (["search", "x"], "cmd_search"),
+    (["start"], "cmd_start"), (["serve"], "cmd_serve"), (["stop"], "cmd_stop"), (["restart"], "cmd_restart"),
+    (["status"], "cmd_status"), (["logs", "-f"], "cmd_logs"), (["autostart"], "cmd_autostart"), (["autostart", "on"], "cmd_autostart"),
+    (["model", "list"], "cmd_model_list"), (["model", "suggest"], "cmd_model_suggest"), (["model", "install", "m"], "cmd_model_install"),
+    (["model", "add", "m"], "cmd_model_install"), (["model", "use", "m"], "cmd_model_use"), (["model", "remove", "m"], "cmd_model_remove"),
+    (["voice", "list"], "cmd_voice_list"), (["voice", "install", "kokoro"], "cmd_voice_install"), (["voice", "remove", "x"], "cmd_voice_remove"),
+    (["provider", "list"], "cmd_provider"), (["provider", "add", "n", "--base-url", "u"], "cmd_provider"), (["provider", "remove", "n"], "cmd_provider"),
+    (["setup"], "cmd_setup"), (["update"], "cmd_update"), (["uninstall"], "cmd_uninstall"),
+    (["start", "--background"], "cmd_start"),  # as apps say it
+])
+def test_every_command(argv, func):
+    assert _dispatch(argv)[0] == func
+
+
+def test_the_help_names_every_command_and_no_other():
+    import argparse
+
+    p = build_parser()
+    subs = next(a for a in p._actions if isinstance(a, argparse._SubParsersAction)).choices
+    text = cli._HELP
+    for name, sp in subs.items():
+        assert re.search(rf"\b{name}\b", text), name
+        for g in (a for a in sp._actions if isinstance(a, argparse._SubParsersAction)):
+            line = next(ln for ln in text.splitlines() if ln.strip().startswith(f"hearth {name} "))
+            assert set(re.findall(r"[a-z]+", line.split("…", 1)[1].split(":")[0])) == set(g.choices) - {"add"} | (
+                {"add"} if name == "provider" else set())
+    named = set(re.findall(r"^  hearth ([a-z]+)", text, re.M)) | set(re.findall(r"· ([a-z]+)", "\n".join(
+        ln for ln in text.splitlines() if re.match(r"  hearth (start|update)", ln))))
+    assert named <= set(subs)
+
+
+def test_one_name_for_one_thing():
+    for old in ("models", "pull", "bind", "swap", "roles", "plan", "hardware", "install", "remove", "backend", "service"):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([old])
+
+
+def test_a_group_without_a_command_says_which_there_are(capsys):
+    for g in ("model", "voice", "provider"):
+        with pytest.raises(SystemExit):
+            cli.main([g])
+        assert f"hearth {g}" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("argv", [
@@ -46,23 +87,10 @@ def test_removed_commands_are_rejected(argv):
         build_parser().parse_args(argv)
 
 
-def test_swap_alias_accepts_context_like_bind():
-    """`swap` aliases cmd_bind. When --context existed only on `bind`, every
-    `hearth swap` died with AttributeError before writing anything."""
-    from hearth import cli
-
-    parser = cli.build_parser()
-    args = parser.parse_args(["swap", "primary_chat", "qwen3:8b"])
-    assert hasattr(args, "context"), "swap must expose --context; cmd_bind reads it"
-    assert args.context is None
-    assert parser.parse_args(
-        ["swap", "primary_chat", "qwen3:8b", "--context", "16384"]).context == 16384
-
-
-# ── `hearth start` refuses to double-bind ────────────────────────────────────
+# ── `hearth serve` refuses to double-bind ────────────────────────────────────
 
 def _start_args(bind: str, **kw):
-    a = build_parser().parse_args(["start", "--bind", bind])
+    a = build_parser().parse_args(["serve", "--bind", bind])
     for k, v in kw.items():
         setattr(a, k, v)
     return a
@@ -96,7 +124,7 @@ def test_duplicate_start_survives_a_slow_health_probe(tmp_path, monkeypatch, cap
         served.bind(("127.0.0.1", 0))
         served.listen(1)
         port = served.getsockname()[1]
-        rc = cli.cmd_start(_start_args(f"127.0.0.1:{port}", no_manage=True))
+        rc = cli.cmd_serve(_start_args(f"127.0.0.1:{port}", no_manage=True))
 
     out, err = capsys.readouterr()
     assert rc == 0
@@ -118,7 +146,7 @@ def test_start_on_a_taken_port_touches_nothing(tmp_path, monkeypatch, capsys):
         squatter.bind(("127.0.0.1", 0))
         squatter.listen(1)
         port = squatter.getsockname()[1]
-        rc = cli.cmd_start(_start_args(f"127.0.0.1:{port}", no_manage=True))
+        rc = cli.cmd_serve(_start_args(f"127.0.0.1:{port}", no_manage=True))
 
     out, err = capsys.readouterr()
     assert rc == 1
@@ -140,12 +168,11 @@ def test_listen_socket_is_listening_and_ipv4_for_hostnames():
         sock.close()
 
 
-def test_start_tip_carries_the_recommended_context(tmp_path, monkeypatch, capsys):
-    """Bind clears a role's context when none is given, so a tip without one
-    would land the model on the daemon's default and silently drop old messages."""
+def test_the_tip_is_to_install_it(tmp_path, monkeypatch, capsys):
+    """Installing measures the context that fits; a model only written down would
+    get the daemon's default and silently drop old messages."""
     monkeypatch.setenv("HEARTH_HOME", str(tmp_path))
     monkeypatch.setattr(cli.catalog, "recommend_roles", lambda hw, here=(): {"primary_chat": "some-model:1b"})
-    monkeypatch.setattr(cli.catalog, "recommend_contexts", lambda hw, models: {"primary_chat": 16384})
     monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: None)
 
     with socket.socket() as squatter:  # stops cmd_start right after the tip
@@ -153,15 +180,15 @@ def test_start_tip_carries_the_recommended_context(tmp_path, monkeypatch, capsys
         squatter.bind(("127.0.0.1", 0))
         squatter.listen(1)
         port = squatter.getsockname()[1]
-        cli.cmd_start(_start_args(f"127.0.0.1:{port}", no_manage=True))
+        cli.cmd_serve(_start_args(f"127.0.0.1:{port}", no_manage=True))
 
-    assert "hearth bind primary_chat some-model:1b --context 16384" in capsys.readouterr().err
+    assert "hearth model install some-model:1b" in capsys.readouterr().err
 
 
-# ── `hearth bind` ─────────────────────────────────────────────────────────────
+# ── `hearth model use --for` ─────────────────────────────────────────────────────────────
 
-def _bind(*argv):
-    return cli.cmd_bind(build_parser().parse_args(["bind", *argv]))
+def _bind(role, model, *argv):
+    return cli.main(["model", "use", model, "--for", role, *[{"--backend": "--provider"}.get(a, a) for a in argv]])
 
 
 def _gateway_says(monkeypatch, status):
@@ -233,3 +260,83 @@ def test_pull_refused_by_old_daemon_names_the_version(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "requires a newer version" in err and "Ollama 0.30.4" in err
 
+
+
+# ── `hearth model use`, `voice`, `restart` ────────────────────────────────────
+
+@pytest.fixture
+def conf(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEARTH_CONFIG", str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(cli.httpx, "put", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("none runs")))
+    jobs = []
+    monkeypatch.setattr(cli, "_run_job", lambda *a: jobs.append(a) or 0)
+    return type("C", (), {"jobs": jobs, "load": staticmethod(cli.cfgmod.load)})()
+
+
+def test_a_local_model_is_used_as_it_is_installed(conf):
+    """Measured and checked: not only written down."""
+    assert cli.main(["model", "use", "m:1b"]) == 0 and cli.main(["model", "use", "m:1b", "--anyway"]) == 0
+    assert conf.jobs == [("model", "m:1b", False), ("model", "m:1b", True)]
+
+
+def test_a_providers_model_answers_for_chat_and_agent(conf):
+    assert cli.main(["provider", "add", "cloud", "--base-url", "https://c.example/v1", "--api-key-env", "K"]) == 0
+    assert cli.main(["model", "use", "big", "--provider", "cloud"]) == 0 and conf.jobs == []
+    roles = conf.load().roles
+    assert {r: (roles[r].model, roles[r].backend) for r in ("primary_chat", "fast_chat", "coding")} == {
+        r: ("big", "cloud") for r in ("primary_chat", "fast_chat", "coding")}
+    assert cli.main(["model", "use", "eye", "--provider", "cloud", "--for", "vision", "--for", "stt"]) == 0
+    assert conf.load().roles["vision"].model == conf.load().roles["stt"].model == "eye"
+    assert conf.load().roles["coding"].model == "big"
+
+
+def test_what_is_not_there_is_said(conf, capsys):
+    assert cli.main(["model", "use", "x", "--provider", "nowhere"]) == 2 and "provider list" in capsys.readouterr().err
+    assert cli.main(["model", "use", "x", "--context", "-1"]) == 2
+    with pytest.raises(SystemExit):
+        cli.main(["model", "use", "x", "--for", "no_such_role"])
+
+
+def test_voices_come_and_go(conf, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "data"))
+    d = cli.paths.voices_dir("piper")
+    d.mkdir(parents=True)
+    for n in ("a.onnx", "a.onnx.json", "ab.onnx"):
+        (d / n).write_text("x")
+    assert cli.main(["voice", "list"]) == 0 and "ab " in capsys.readouterr().out
+    assert cli.main(["voice", "remove", "a"]) == 0 and [p.name for p in d.iterdir()] == ["ab.onnx"]
+    assert cli.main(["voice", "remove", "a"]) == 1
+    for bad in ("../ab", "..", "/etc/passwd", ".hidden"):
+        assert cli.main(["voice", "remove", bad]) == 2
+    assert (d / "ab.onnx").exists()
+    assert cli.main(["voice", "install", "kokoro"]) == 0 and conf.jobs == [("kokoro",)]
+
+
+def test_restart_stops_what_runs_and_starts(monkeypatch):
+    did = []
+    up = [True]
+    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: "hearth/9" if up[0] else None)
+    monkeypatch.setattr(cli, "cmd_stop", lambda a: did.append("stop") or 0)
+    monkeypatch.setattr(cli, "cmd_start", lambda a: did.append("start") or 0)
+    assert cli.main(["restart"]) == 0 and did == ["stop", "start"]
+    up[0] = False
+    did.clear()
+    assert cli.main(["restart"]) == 0 and did == ["start"]
+    up[0] = True
+    did.clear()
+    monkeypatch.setattr(cli, "cmd_stop", lambda a: 1)
+    assert cli.main(["restart"]) == 1 and did == []  # not a second one beside it
+
+
+def test_the_models_here_and_what_they_are_for(conf, monkeypatch, capsys):
+    cfg = conf.load()
+    cfg.roles["primary_chat"] = cli.cfgmod.RoleBinding("m", "ollama")
+    cfg.roles["coding"] = cli.cfgmod.RoleBinding("gone:1b", "ollama")
+    cli.cfgmod.save(cfg)
+    monkeypatch.setattr(cli, "_ensure_ollama", lambda c: c.backends["ollama"])
+    monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: httpx.Response(200, json={"models": [
+        {"name": "m:latest", "size": 4_000_000_000}, {"name": "spare:2b", "size": 1_000_000_000}]}))
+    assert cli.main(["model", "list"]) == 0
+    out = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines() if ln.strip()}
+    assert "4.0 GB" in out["m:latest"] and "primary_chat" in out["m:latest"]
+    assert out["spare:2b"].rstrip().endswith("—") and "not here" in out["gone:1b"] and "coding" in out["gone:1b"]

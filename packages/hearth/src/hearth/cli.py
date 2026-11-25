@@ -7,6 +7,7 @@ already running), then serves the OpenAI-compatible gateway on loopback.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import atexit
 import errno
 import json
@@ -17,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 import httpx
@@ -41,7 +43,7 @@ def _pid_path() -> Path:
 def _pid_looks_like_hearth(pid: int) -> bool:
     """Is `pid` a hearth gateway? Asked before ending it: a pidfile left by a
     killed one may name another program's process by now."""
-    return procs.runs(procs.argv(pid), "hearth", "start")
+    return procs.runs(procs.argv(pid), "hearth", "serve")
 
 
 def _listen_socket(host: str, port: int) -> socket.socket:
@@ -79,12 +81,17 @@ def _listen_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
-def _start_in_background(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
+def cmd_start(args: argparse.Namespace) -> int:
+    """Start the engine so that it outlives whoever asked: the service where one is
+    installed, else a process of its own. Returns when it answers."""
     from . import background
 
-    if args.unsafe_bind or args.api_key or cfg.bind_host not in ("127.0.0.1", "localhost", "::1"):
-        print("--background is for the gateway of this computer: not with --unsafe-bind, "
-              "--api-key or an address others can reach", file=sys.stderr)
+    cfg = cfgmod.load()
+    if args.bind:
+        host, _, port = args.bind.rpartition(":")
+        cfg.bind_host, cfg.bind_port = host or cfg.bind_host, int(port)
+    if cfg.bind_host not in ("127.0.0.1", "localhost", "::1"):
+        print("an address others can reach is for `hearth serve --unsafe-bind --api-key …`", file=sys.stderr)
         return 2
     extra = []
     if args.bind:
@@ -105,7 +112,7 @@ def _start_in_background(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
     # This interpreter, as it was called: not _hearth_exec_argv(), which keeps
     # the launcher link — starting the engine must not change what is installed.
     # -P: the folder it runs in is no place to import from.
-    ok, message = background.start(cfg, [sys.executable, "-P", "-m", "hearth", "start", *extra], service)
+    ok, message = background.start(cfg, [sys.executable, "-P", "-m", "hearth", "serve", *extra], service)
     print(f"[hearth] {message}", file=sys.stdout if ok else sys.stderr)
     return 0 if ok else 1
 
@@ -116,7 +123,8 @@ def _unit_is(state: str) -> bool:
     return r.stdout.strip() == state
 
 
-def cmd_start(args: argparse.Namespace) -> int:
+def cmd_serve(args: argparse.Namespace) -> int:
+    """The engine itself, in the foreground: what a service runs."""
     cfg = cfgmod.load()
     if args.bind:
         host, _, port = args.bind.rpartition(":")
@@ -127,21 +135,15 @@ def cmd_start(args: argparse.Namespace) -> int:
     if allow_any_host and not api_key:
         print("--unsafe-bind requires --api-key (off-loopback exposure)", file=sys.stderr)
         return 2
-    if args.background:
-        return _start_in_background(cfg, args)
 
     import uvicorn
 
     from .app import create_app
 
-    # If hearth is installed as a service, a bare `hearth start` at a terminal is
-    # a FOREGROUND instance — not the daemon. Nudge the user toward the service.
-    # (Skip when systemd is running us: it sets INVOCATION_ID, so the unit's own
-    # `hearth start` stays quiet.)
+    # (systemd sets INVOCATION_ID for what it runs.)
     if "INVOCATION_ID" not in os.environ and _unit_path().exists():
-        print("note: a hearth service is installed — this is a FOREGROUND instance, "
-              "not the daemon.\n      For the background service:  hearth service start"
-              "      (Ctrl-C stops this one)", file=sys.stderr)
+        print("note: hearth is installed as a service, and this is not it: `hearth start` starts that one "
+              "(Ctrl-C ends this one)", file=sys.stderr)
 
     # Detect + suggest the best-fit model: if the bound primary_chat differs from
     # what fits this hardware best, say so. A model that overflows VRAM runs its
@@ -153,13 +155,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         rec = catalog.recommend_roles(hw, [cfg.roles["primary_chat"].model] if "primary_chat" in cfg.roles else []).get("primary_chat")
         cur = cfg.roles.get("primary_chat")
         if rec and cur and cur.model != rec and not cfg.role_is_remote("primary_chat"):
-            # Bind drops the role's context when none is given, so the advice has
-            # to carry the one that makes this model the better fit.
-            ctx = catalog.recommend_contexts(hw, {"primary_chat": rec}).get("primary_chat")
-            flag = f" --context {ctx}" if ctx else ""
             print(f"tip: primary_chat = '{cur.model}', but '{rec}' fits your hardware "
-                  f"better (full-GPU speed).\n     apply with:  hearth bind primary_chat "
-                  f"{rec}{flag}   (or: hearth setup)", file=sys.stderr)
+                  f"better (full-GPU speed).\n     apply with:  hearth model install {rec}   (or: hearth setup)", file=sys.stderr)
     except Exception:
         pass
 
@@ -184,9 +181,8 @@ def cmd_start(args: argparse.Namespace) -> int:
             cl = procs.command_line(pid)[:90] if pid else ""
             print(f"[hearth] {where} is already in use{who} — not starting."
                   + (f"\n         holder: {cl}" if cl else "")
-                  + "\n         stop the gateway that holds it (`hearth stop`, or "
-                    "`hearth service stop` for the daemon), or serve elsewhere "
-                    "with `hearth start --bind 127.0.0.1:PORT`", file=sys.stderr)
+                  + "\n         stop the gateway that holds it (`hearth stop`), or serve elsewhere "
+                    "with `hearth serve --bind 127.0.0.1:PORT`", file=sys.stderr)
         else:
             print(f"[hearth] cannot bind {where} — {exc}", file=sys.stderr)
         return 1
@@ -230,9 +226,9 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     atexit.register(_cleanup_pid)
 
-    # Hint to run `hearth setup` when the primary_chat model isn't pulled yet.
+    # Hint to run `hearth setup` when the primary_chat model isn't here yet.
     # Skipped for a remote-bound role: the provider hosts the weights, so there
-    # is nothing to pull and `hearth pull gemini-3.7-flash` would just fail.
+    # is nothing to pull and downloading gemini-3.7-flash would just fail.
     pm = cfg.roles.get("primary_chat")
     if ollama and pm and not cfg.role_is_remote("primary_chat"):
         try:
@@ -241,7 +237,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             if pm.model not in names:
                 print(f"[hearth] primary_chat model '{pm.model}' not pulled — run "
                       f"`hearth setup` to auto-pick + pull a model that fits your hardware "
-                      f"(or `hearth pull {pm.model}`)", file=sys.stderr)
+                      f"(or `hearth model install {pm.model}`)", file=sys.stderr)
         except httpx.HTTPError:
             pass
 
@@ -265,26 +261,43 @@ def cmd_start(args: argparse.Namespace) -> int:
     return 0 if server.started else 1
 
 
-def cmd_models(args: argparse.Namespace) -> int:
+def cmd_model_list(args: argparse.Namespace) -> int:
+    """What is on this computer and what uses it; with --all, what the providers have, too."""
     cfg = cfgmod.load()
-    base = _admin_base(cfg)
-    # Prefer the running gateway; fall back to Ollama directly.
-    try:
-        r = httpx.get(f"{base}/v1/models", timeout=5.0)
-        data = r.json().get("data", [])
+    ollama = _ensure_ollama(cfg)
+    here = {}
+    if ollama is not None:
+        try:
+            here = {m["name"]: m.get("size", 0) for m in
+                    httpx.get(f"{ollama.base_url}/api/tags", timeout=5.0).json().get("models", [])}
+        except (httpx.HTTPError, ValueError):
+            pass
+    from .provision import same_model
+
+    used: dict[str, list[str]] = {}
+    for role, r in cfg.roles.items():
+        name = next((n for n in here if same_model(n, r.model)), r.model) if not cfg.role_is_remote(role) else r.model
+        used.setdefault(name, []).append(role)
+    for name, size in here.items():
+        print(f"{name:52s} {size / 1e9:6.1f} GB  {', '.join(used.pop(name, [])) or '—'}")
+    for name, roles in used.items():
+        far = cfg.role_is_remote(roles[0])
+        print(f"{name:52s} {'⚠ ' + cfg.roles[roles[0]].backend if far else 'not here':>9s}  {', '.join(roles)}")
+    if any(cfg.role_is_remote(r) for r in cfg.roles):
+        print("\n⚠ a provider's model: what is sent to it leaves this computer.")
+    if ollama is None:
+        print("(Ollama is not running: what is on this computer is not known)", file=sys.stderr)
+    if args.all:
+        try:
+            data = httpx.get(f"{_admin_base(cfg)}/v1/models", timeout=10.0).json().get("data", [])
+        except (httpx.HTTPError, ValueError):
+            print("the engine is not running: `hearth start`", file=sys.stderr)
+            return 1
+        print("\neverything that can be used:")
         for m in data:
-            print(f"{m['id']:40s} {m.get('owned_by','')}")
-        return 0
-    except httpx.HTTPError:
-        pass
-    ollama = cfg.backends.get("ollama")
-    if ollama and ollama_supervisor.is_up(ollama.base_url):
-        r = httpx.get(f"{ollama.base_url}/api/tags", timeout=5.0)
-        for m in r.json().get("models", []):
-            print(m.get("name", ""))
-        return 0
-    print("no running gateway or ollama daemon", file=sys.stderr)
-    return 1
+            if m.get("owned_by") != "hearth-role":
+                print(f"  {m['id']:50s} {m.get('owned_by', '')}")
+    return 0
 
 
 def _pull_model(ollama_base_url: str, model: str) -> int:
@@ -367,23 +380,15 @@ def _ensure_ollama(cfg: cfgmod.Config):
     return ollama
 
 
-def cmd_pull(args: argparse.Namespace) -> int:
-    cfg = cfgmod.load()
-    ollama = _ensure_ollama(cfg)
-    if not ollama:
-        print("ollama backend not available", file=sys.stderr)
-        return 1
-    return _pull_model(ollama.base_url, args.model)
-
-
 # ── local TTS voice (Piper) ──────────────────────────────────────────────────
 #
-# Speech is part of the local AI runtime, so `hearth setup`/`hearth voice`
+# Speech is part of the local AI runtime, so `hearth setup`/`hearth voice install`
 # provision it: install the piper CLI (into hearth's venv, symlinked onto PATH)
 # and download a voice model to hearth's own folder (paths.voices_dir), where finterm's
 # read-aloud auto-discovers — no manual config.
 
 _DEFAULT_VOICE = "en_US-amy-medium"
+_KOKORO = "kokoro"  # the natural voices, all at once
 
 
 def _voice_dir() -> Path:
@@ -436,7 +441,7 @@ def _ensure_piper() -> bool:
         return True
     if not (sys.platform.startswith("linux") and platform.machine() == "x86_64"):
         print("  Piper voices can be installed on 64-bit Linux only, for now; the natural voices "
-              "(hearth voice --voice kokoro) work here", file=sys.stderr)
+              "(hearth voice install kokoro) work here", file=sys.stderr)
         return False
     pdir = Path.home() / ".local" / "share" / "piper"
     bin_ = pdir / "piper" / "piper"  # the release tars to a `piper/` dir
@@ -496,16 +501,41 @@ def _provision_voice(voice: str) -> bool:
         return False
 
 
-def cmd_voice(args: argparse.Namespace) -> int:
-    voice = getattr(args, "voice", None) or _DEFAULT_VOICE
-    print(f"provisioning local TTS voice '{voice}'…")
-    if voice == "kokoro":
+def cmd_voice_install(args: argparse.Namespace) -> int:
+    if args.name == _KOKORO:
         return _run_job("kokoro")
-    if _provision_voice(voice):
-        print("✓ done — finterm's read-aloud (LISTEN / 🔊) auto-discovers it, no config needed.")
+    if _provision_voice(args.name):
         return 0
-    print("voice provisioning failed.", file=sys.stderr)
+    print("the voice could not be installed.", file=sys.stderr)
     return 1
+
+
+def cmd_voice_list(args: argparse.Namespace) -> int:
+    from . import kokoro_tts
+
+    print(f"{_KOKORO:32s} {'installed' if kokoro_tts.installed() else '—'}   the natural voices")
+    for d in paths.voice_dirs("piper"):
+        for p in sorted(d.glob("*.onnx")):
+            print(f"{p.stem:32s} installed   Piper")
+    return 0
+
+
+def cmd_voice_remove(args: argparse.Namespace) -> int:
+    engine, name = (_KOKORO, "") if args.name == _KOKORO else ("piper", args.name)
+    if name and (Path(name).name != name or name.startswith(".")):
+        print(f"not a voice: {name!r}", file=sys.stderr)
+        return 2
+    d = paths.voices_dir(engine)
+    doomed = [p for p in ([d] if not name else [d / f"{name}.onnx", d / f"{name}.onnx.json"]) if p.exists()]
+    if not doomed:
+        elsewhere = [x for x in paths.voice_dirs(engine) if x != d and (not name or (x / f"{name}.onnx").exists())]
+        print(f"{args.name} is not in {d}" + (f"; it is in {elsewhere[0]}, which is not hearth's own" if elsewhere else ""),
+              file=sys.stderr)
+        return 1
+    for p in doomed:
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
+    print(f"removed {args.name}")
+    return 0
 
 
 # ── models and voices: the same jobs as on the setup page ────────────────────
@@ -593,11 +623,11 @@ def _run_job(kind: str, what: str = "", anyway: bool = False) -> int:
         print(f"\n{e}", file=sys.stderr)
         return 1
     if job.get("can_anyway"):
-        print(f"to use it all the same:  hearth install {what} --anyway", file=sys.stderr)
+        print(f"to use it all the same:  hearth model install {what} --anyway", file=sys.stderr)
     return 0 if job["stage"] == "done" else 1
 
 
-def cmd_plan(args: argparse.Namespace) -> int:
+def cmd_model_suggest(args: argparse.Namespace) -> int:
     plan = catalog.plan(hardware.probe())
     if args.json:
         print(json.dumps(plan, indent=2))
@@ -609,11 +639,17 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_install(args: argparse.Namespace) -> int:
-    return _run_job("model", args.model, args.anyway)
+def cmd_model_install(args: argparse.Namespace) -> int:
+    if not args.download_only:
+        return _run_job("model", args.model, args.anyway)
+    ollama = _ensure_ollama(cfgmod.load())
+    if ollama is None:
+        print("Ollama is not available", file=sys.stderr)
+        return 1
+    return _pull_model(ollama.base_url, args.model)
 
 
-def cmd_remove(args: argparse.Namespace) -> int:
+def cmd_model_remove(args: argparse.Namespace) -> int:
     from .provision import Problem
 
     jobs = _jobs()
@@ -624,7 +660,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
     except (RuntimeError, Problem, httpx.HTTPError) as e:
         print(e, file=sys.stderr)
         return 1
-    print(f"removed {args.model}")
+    print(f"removed {args.model}: its files are deleted")
     return 0
 
 
@@ -635,8 +671,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(plan["summary"])
     best = next((o for o in plan["offers"] if o["recommended"]), None)
     if best is None:
-        print("No model is recommended for this computer. `hearth plan` lists them all; a cloud model can be "
-              "used with `hearth backend`.")
+        print("No model is recommended for this computer. `hearth model suggest` lists them all; a cloud model can be "
+              "used with `hearth provider add`.")
         return 1
     print(f"Recommended: {best['title']} — {best['download'] / 1e9:.1f} GB, {best['license']}. {best['note']}")
     if not args.yes:
@@ -647,54 +683,63 @@ def cmd_setup(args: argparse.Namespace) -> int:
             return 1
     if (rc := _run_job("model", best["model"])) != 0:
         return rc
-    if not (args.no_voice or args.no_kokoro):
+    if not args.no_voice:
         _run_job("kokoro")
-    print("Done. Try: hearth chat")
+    print("Done. Try: hearth")
     return 0
 
 
-def cmd_bind(args: argparse.Namespace) -> int:
+def cmd_model_use(args: argparse.Namespace) -> int:
+    """Which model answers for what. A model of this computer, for the chat: as it
+    is installed, measured and checked. Anything else is as it is said."""
+    from .provision import CHAT_ROLES
+
     cfg = cfgmod.load()
-    if args.role not in cfgmod.ROLE_NAMES:
-        print(f"unknown role {args.role!r}; valid: {', '.join(cfgmod.ROLE_NAMES)}", file=sys.stderr)
+    ollama = next((n for n, b in cfg.backends.items() if b.type == "ollama"), "ollama")
+    provider = args.provider or ollama
+    if provider not in cfg.backends:
+        print(f"no provider {provider!r}: `hearth provider list`", file=sys.stderr)
         return 2
+    if args.context is not None and args.context < 0:
+        print("--context must be >= 0", file=sys.stderr)
+        return 2
+    if not args.roles and provider == ollama and args.context is None:
+        return _run_job("model", args.model, args.anyway)
+    return max(_bind(cfg, role, args.model, provider, args.context) for role in (args.roles or CHAT_ROLES))
+
+
+def _bind(cfg: cfgmod.Config, role: str, model: str, backend: str, ctx_arg: int | None) -> int:
     # A role's context is tuned to the MODEL that was bound (what fits in VRAM
     # at full-GPU speed), so it can't carry over to a different one. Dropping it
     # silently is the trap: the daemon falls back to its own default and starts
     # discarding the oldest messages — which reads as the model ignoring its
     # system prompt, not as a config change. So say it out loud.
-    # getattr, not args.context: `swap` aliases this handler, and an alias that
-    # forgets the flag should not take the command down with an AttributeError.
-    ctx_arg = getattr(args, "context", None)
-    if ctx_arg is not None and ctx_arg < 0:
-        print("--context must be >= 0", file=sys.stderr)
-        return 2
-    previous = cfg.roles.get(args.role)
+    previous = cfg.roles.get(role)
     prior_ctx = int(previous.context or 0) if previous else 0
     # With no --context, match a role already on this model: Ollama reloads a
     # model whose context changes, so hopping between the two would cost a cold
     # start every time. An explicit --context 0 still clears it.
-    shared_ctx = cfg.context_of_model(args.model, exclude_role=args.role) if ctx_arg is None else 0
+    shared_ctx = cfg.context_of_model(model, exclude_role=role) if ctx_arg is None else 0
     if shared_ctx:
         ctx_arg = shared_ctx
-    cfg.roles[args.role] = cfgmod.RoleBinding(
-        model=args.model, backend=args.backend, context=int(ctx_arg or 0))
+    cfg.roles[role] = cfgmod.RoleBinding(
+        model=model, backend=backend, context=int(ctx_arg or 0))
     cfgmod.save(cfg)
-    print(f"bound {args.role} -> {args.model} ({args.backend})")
+    print(f"{role} -> {model} ({backend})")
     if shared_ctx:
         print(f"context: {shared_ctx} (matches other roles on this model)")
     elif prior_ctx and not ctx_arg:
         print(f"note: cleared this role's context ({prior_ctx}); the daemon default "
-              f"applies now.\n      keep it with:  hearth bind {args.role} {args.model} "
-              f"--backend {args.backend} --context {prior_ctx}")
+              f"applies now.\n      keep it with:  hearth model use {model} --for {role} "
+              f"--provider {backend} --context {prior_ctx}")
     elif ctx_arg:
         print(f"context: {int(ctx_arg)}")
     # If a gateway is running, hot-apply via admin so no restart is needed.
     base = _admin_base(cfg)
     try:
         r = httpx.put(
-            f"{base}/admin/roles/{args.role}",
-            json={"model": args.model, "backend": args.backend,
+            f"{base}/admin/roles/{role}",
+            json={"model": model, "backend": backend,
                   "context": int(ctx_arg or 0)}, timeout=3.0,
         )
     except httpx.HTTPError:
@@ -707,28 +752,15 @@ def cmd_bind(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_roles(args: argparse.Namespace) -> int:
-    cfg = cfgmod.load()
-    remote_any = False
-    for name, r in cfg.roles.items():
-        remote = cfg.role_is_remote(name)
-        remote_any = remote_any or remote
-        tag = "  ⚠ off-box" if remote else ""
-        print(f"{name:14s} -> {r.model} ({r.backend}){tag}")
-    if remote_any:
-        print("\n⚠ marked roles send prompts to a remote provider — they leave this machine.")
-    return 0
-
-
-def cmd_backend(args: argparse.Namespace) -> int:
-    """Manage model backends: a local Ollama engine, or a remote
+def cmd_provider(args: argparse.Namespace) -> int:
+    """Where models are: the local Ollama, or a remote
     OpenAI-compatible API (cloud GLM/OpenAI/Groq/… or a self-hosted vLLM)."""
     cfg = cfgmod.load()
     action = getattr(args, "action", None)
 
     if action in (None, "list"):
         if not cfg.backends:
-            print("(no backends configured)")
+            print("(no providers)")
         for name, b in cfg.backends.items():
             key = "literal" if b.api_key else (f"env:{b.api_key_env}" if b.api_key_env else "—")
             print(f"{name:12s} type={b.type:7s} base_url={b.base_url}  api_key={key}")
@@ -736,30 +768,30 @@ def cmd_backend(args: argparse.Namespace) -> int:
 
     if action == "add":
         if args.type == "openai" and not (args.api_key or args.api_key_env):
-            print("an openai backend needs --api-key or --api-key-env", file=sys.stderr)
+            print("an openai provider needs --api-key or --api-key-env", file=sys.stderr)
             return 2
         cfg.backends[args.name] = cfgmod.Backend(
             args.name, args.type, args.base_url, args.api_key or "", args.api_key_env or "")
         cfgmod.save(cfg)
-        print(f"added backend {args.name!r} ({args.type}) -> {args.base_url}")
-        print("next: restart the gateway to load it  →  hearth service restart")
-        print(f"      then bind a role               →  hearth bind primary_chat <model> --backend {args.name}")
+        print(f"added provider {args.name!r} ({args.type}) -> {args.base_url}")
+        print("next: the engine loads it when it is restarted  →  hearth restart")
+        print(f"      then use a model of it                    →  hearth model use <model> --provider {args.name}")
         return 0
 
-    if action == "rm":
+    if action == "remove":
         b = cfg.backends.get(args.name)
         if b is None:
-            print(f"no such backend {args.name!r}", file=sys.stderr)
+            print(f"no such provider {args.name!r}", file=sys.stderr)
             return 2
         if b.type == "ollama":
-            print("refusing to remove the local ollama backend", file=sys.stderr)
+            print("the local Ollama stays", file=sys.stderr)
             return 2
         bound = [rn for rn, rb in cfg.roles.items() if rb.backend == args.name]
         if bound:
-            print(f"note: rebind these roles after removal: {', '.join(bound)}", file=sys.stderr)
+            print(f"note: choose another model for: {', '.join(bound)}", file=sys.stderr)
         del cfg.backends[args.name]
         cfgmod.save(cfg)
-        print(f"removed backend {args.name!r}; restart the gateway to apply.")
+        print(f"removed provider {args.name!r}; `hearth restart` to apply.")
         return 0
     return 0
 
@@ -826,14 +858,18 @@ def _modes(mode: str, args: argparse.Namespace) -> int:
         import readline  # noqa: F401  (line editing and history; not on Windows)
     except ImportError:
         pass
-    first = mode
+    args.models = {mode: args.model}  # the one asked for is for the mode it was started in
+    other = {"chat": "code", "code": "chat"}
+    came_from = None
     while True:
-        if mode != first:
-            args.model = None  # the one asked for was for the mode it was started in
+        args.model = args.models.get(mode)
         rc = (_chat_mode if mode == "chat" else _code_mode)(args)
-        if rc != _SWITCH:
+        if rc == _SWITCH:
+            mode, came_from = other[mode], mode
+        elif rc != 0 and came_from is not None:  # it could not be gone to: the one before goes on
+            mode, came_from = came_from, None
+        else:
             return rc
-        mode = "code" if mode == "chat" else "chat"
 
 
 def _engine_ready(cfg: cfgmod.Config, role: str, model: str | None) -> str | None:
@@ -844,8 +880,9 @@ def _engine_ready(cfg: cfgmod.Config, role: str, model: str | None) -> str | Non
     base = _admin_base(cfg)
     if background.gateway_identity(cfg) is None:
         print("Starting hearth…", file=sys.stderr)
-        if cmd_start(build_parser().parse_args(["start", "--background"])) != 0:
-            return None
+        with contextlib.redirect_stdout(sys.stderr):  # what is asked for may be read by a program
+            if cmd_start(build_parser().parse_args(["start"])) != 0:
+                return None
     try:
         roles = httpx.get(f"{base}/admin/roles", timeout=10.0).json().get("roles", {})
     except (httpx.HTTPError, ValueError) as e:
@@ -939,6 +976,7 @@ def _code_mode(args: argparse.Namespace) -> int:
         if not user:
             continue
         if user == "/chat":
+            args.models["code"] = agent.model
             return _SWITCH
         if user in ("/exit", "/quit"):
             break
@@ -980,11 +1018,6 @@ def _code_mode(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_hardware(args: argparse.Namespace) -> int:
-    print(json.dumps(hardware.as_dict(), indent=2))
-    return 0
-
-
 def cmd_status(args: argparse.Namespace) -> int:
     cfg = cfgmod.load()
     base = _admin_base(cfg)
@@ -993,9 +1026,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         health = httpx.get(f"{base}/admin/health", timeout=3.0).json()
     except httpx.HTTPError:
         print(f"hearth: NOT running at {base}  (start with `hearth start`)")
+        print(f"at login: {_at_login()}")
         return 1
     print(f"hearth {ver.get('version')}  (contract {ver.get('contract')})  @ {base}")
-    print(f"status: {health.get('status')}   backends: {health.get('backends')}")
+    print(f"status: {health.get('status')}   providers: {health.get('backends')}   at login: {_at_login()}")
     try:
         roles = httpx.get(f"{base}/admin/roles", timeout=3.0).json().get("roles", {})
         remote_any = False
@@ -1112,6 +1146,7 @@ def _chat_mode(args: argparse.Namespace) -> int:
     model = args.model or "primary_chat"
     think_on = not bool(getattr(args, "no_think", False))    # deep-think, default on
     show_think = bool(getattr(args, "show_thinking", False))  # show full reasoning text
+    think_on, show_think = getattr(args, "chat_settings", (think_on, show_think))
     bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
     print(f"{dim}hearth chat — model {model} · deep-think {'on' if think_on else 'off'} · "
           f"/help for commands · /exit to quit{reset}")
@@ -1128,7 +1163,7 @@ def _chat_mode(args: argparse.Namespace) -> int:
         if not user:
             continue
         if user == "/code":
-            args.history = history
+            args.history, args.models["chat"], args.chat_settings = history, model, (think_on, show_think)
             return _SWITCH
         if user in ("/exit", "/quit"):
             break
@@ -1396,51 +1431,10 @@ def _sc_env() -> dict:
 def _systemctl(*sc_args: str) -> int:
     sc = shutil.which("systemctl")
     if not sc:
-        print("systemctl not found — `hearth service` needs a systemd user "
-              "session. Use `hearth start` directly, or the desktop launcher.",
+        print("systemctl not found — there is no systemd user session here",
               file=sys.stderr)
         return 127
     return subprocess.run([sc, "--user", *sc_args], env=_sc_env()).returncode
-
-
-def _real_hearth_bin() -> str | None:
-    """The real `hearth` console-script, or None if there isn't one (e.g. when
-    invoked via `python -m hearth`). Never returns __main__.py."""
-    found = shutil.which("hearth")
-    if found:
-        return os.path.realpath(found)
-    # The console-script normally sits next to the interpreter in the venv.
-    # (Beside it as it was called: a venv's python, resolved, is the base one.)
-    cand = Path(os.path.abspath(sys.executable)).with_name("hearth")
-    if cand.exists():
-        return str(cand)
-    argv0 = Path(sys.argv[0]).resolve()
-    if argv0.name == "hearth" and os.access(argv0, os.X_OK):
-        return str(argv0)
-    return None
-
-
-def _launcher() -> str:
-    """ExecStart command (without the trailing `start`) for the unit. Prefers
-    the stable ~/.local/bin/hearth symlink — (re)pointed at the real console-
-    script so venv rebuilds don't break the service — and falls back to
-    `<python> -m hearth` so the unit is always a valid, absolute command even
-    when no console script is on PATH (never an unexecutable __main__.py)."""
-    real = _real_hearth_bin()
-    if real:
-        link = Path.home() / ".local" / "bin" / "hearth"
-        try:
-            link.parent.mkdir(parents=True, exist_ok=True)
-            if link.exists() and not link.is_symlink():
-                return str(link)  # a real file is already installed there; trust it
-            if not link.exists() or os.path.realpath(link) != real:
-                if link.is_symlink():
-                    link.unlink()
-                link.symlink_to(real)
-            return str(link)
-        except OSError:
-            return real
-    return f"{os.path.abspath(sys.executable)} -m hearth"
 
 
 def _service_autostart(on: bool, boot: bool) -> int:
@@ -1471,41 +1465,49 @@ def _service_autostart(on: bool, boot: bool) -> int:
     return 0
 
 
-def cmd_service(args: argparse.Namespace) -> int:
-    action = args.action
-    if action == "stop":
-        return _systemctl("stop", _UNIT_NAME)
-    if action in ("start", "restart"):
-        # If a foreground/manual gateway already holds the port, the unit would
-        # fork, find the port taken, exit 0, and go inactive — warn rather than
-        # silently no-op. (Skip the warning if our service is already active.)
-        try:
-            port = cfgmod.load().bind_port
-        except Exception:
-            port = 11435
-        active = _systemctl("is-active", "--quiet", _UNIT_NAME) == 0
-        if not active and procs.listening_on(port):
-            print(f"warning: something already serves :{port} (likely a foreground "
-                  f"`hearth start`). Stop it first (`hearth stop`), or the service "
-                  f"will start, find the port taken, and immediately exit.",
-                  file=sys.stderr)
-        return _systemctl(action, _UNIT_NAME)
-    if action == "status":
-        # `systemctl status` exits non-zero when inactive — don't surface that
-        # as a CLI error; the printed status is the answer.
-        _systemctl("status", "--no-pager", _UNIT_NAME)
+def _at_login() -> str:
+    from . import service
+
+    if _unit_path().exists() and service.foreign():
+        return "started, by a unit of your own" if service.systemctl("is-enabled", "--quiet", _UNIT_NAME) == 0 else "not started"
+    return "started" if service.enabled() else "not started"
+
+
+def cmd_autostart(args: argparse.Namespace) -> int:
+    if args.state is None:
+        print(f"at login: {_at_login()}")
         return 0
-    if action == "logs":
-        jc = shutil.which("journalctl")
-        if not jc:
-            print("journalctl not found", file=sys.stderr)
-            return 127
-        tail = ["-f"] if getattr(args, "follow", False) else ["-n", "200", "--no-pager"]
+    return _service_autostart(args.state == "on", args.boot)
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    if _gateway_identity(cfgmod.load()) is not None and (rc := cmd_stop(args)) != 0:
+        return rc
+    return cmd_start(build_parser().parse_args(["start"]))
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    """The service's journal, where that is what runs it; else the log file."""
+    from . import background
+
+    jc = shutil.which("journalctl")
+    if jc and _unit_path().exists() and _systemctl("is-active", "--quiet", _UNIT_NAME) == 0:
+        tail = ["-f"] if args.follow else ["-n", "200", "--no-pager"]
         return subprocess.run([jc, "--user", "-u", _UNIT_NAME, *tail], env=_sc_env()).returncode
-    if action == "autostart":
-        return _service_autostart(args.state == "on", getattr(args, "boot", False))
-    print(f"unknown service action {action!r}", file=sys.stderr)
-    return 2
+    p = background.log_path()
+    if not p.exists():
+        print(f"no log yet ({p})")
+        return 0
+    with open(p, encoding="utf-8", errors="replace") as f:
+        sys.stdout.writelines(deque(f, maxlen=200))
+        try:
+            while args.follow:
+                sys.stdout.write(f.read())
+                sys.stdout.flush()
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+    return 0
 
 
 # ---- the chat window: hearth-client -------------------------------------
@@ -1520,7 +1522,7 @@ def cmd_client(args: argparse.Namespace) -> int:
     rest = list(getattr(args, "rest", []))
     if rest[:1] not in (["install"], ["uninstall"]):
         # A chat window without an engine is of no use; the other commands do not need one.
-        start = build_parser().parse_args(["start", "--background"])
+        start = build_parser().parse_args(["start"])
         return client.open_window((lambda: cmd_start(start)) if rest in ([], ["open"]) else None, rest)
     p = argparse.ArgumentParser(prog=f"hearth client {rest[0]}")
     if rest[0] == "install":
@@ -1605,103 +1607,126 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         return 1
 
 
+_HELP = """\
+AI on your own computer.
+
+  hearth                      a coding agent in this folder (asks before it changes anything)
+  hearth -p "…"               one task for it, without asking; its answer (-q: nothing else)
+  hearth code FOLDER          the same for another folder, and its options
+  hearth chat                 chat in the terminal
+  hearth client               the chat window; `client install` puts it in the app menu
+
+  hearth setup                the model that suits this computer, and natural voices
+  hearth model …              list · suggest · install · use · remove
+  hearth voice …              list · install · remove
+  hearth provider …           list · add · remove: cloud or other servers
+
+  hearth start · stop · restart · status · logs
+  hearth autostart on|off     start the engine at login
+  hearth serve                the engine in the foreground (what a service runs)
+
+  hearth search "…"           the engine's web search, without a model
+  hearth update · uninstall
+
+`hearth <command> --help` has the rest."""
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="hearth", description="Local OpenAI-compatible AI engine")
-    # Bare `hearth` (no subcommand) is the coding agent in this folder, like bare
-    # `claude`. A subcommand's own set_defaults(func=...) overrides these.
+    p = argparse.ArgumentParser(prog="hearth", usage="hearth [command] …", description=_HELP,
+                                formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
+    p.add_argument("-h", "--help", action="help", help=argparse.SUPPRESS)
+    # Bare `hearth` (no command) is the coding agent in this folder, like bare
+    # `claude`. A command's own set_defaults(func=...) overrides these.
     p.set_defaults(func=cmd_code, model=None, path=".", yolo=False, max_rounds=60)
-    p.add_argument("-p", "--prompt", help="one task for the coding agent in this folder, without asking; its answer, and exit")
-    p.add_argument("-q", "--quiet", action="store_true", help="with -p: only the final answer")
-    sub = p.add_subparsers(dest="cmd")
+    p.add_argument("-p", "--prompt", help=argparse.SUPPRESS)
+    p.add_argument("-q", "--quiet", action="store_true", help=argparse.SUPPRESS)
+    sub = p.add_subparsers(dest="cmd", prog="hearth", metavar="command", help=argparse.SUPPRESS, required=False)
 
-    s = sub.add_parser("start", help="serve the gateway (brings up Ollama)")
-    s.add_argument("--background", action="store_true",
-                   help="return once it serves; it keeps running (the service, where one is installed)")
-    s.add_argument("--bind", help="host:port override (default from config)")
-    s.add_argument("--no-manage", action="store_true", help="don't start/stop Ollama")
-    s.add_argument("--unsafe-bind", action="store_true", help="allow non-loopback Host (requires --api-key)")
-    s.add_argument("--api-key", help="bearer token required when --unsafe-bind")
-    s.add_argument("--log-level", default="info")
-    s.set_defaults(func=cmd_start)
+    def group(name: str, what: str):
+        g = sub.add_parser(name, description=what)
+        return g.add_subparsers(dest="action", required=True, metavar="command")
 
-    s = sub.add_parser("models", help="list servable models")
-    s.set_defaults(func=cmd_models)
+    # ── the engine
+    for name, func, what in (("start", cmd_start, "Start the engine; it keeps running."),
+                             ("serve", cmd_serve, "The engine in the foreground: what a service runs.")):
+        s = sub.add_parser(name, description=what)
+        s.add_argument("--bind", help="host:port override (default from config)")
+        s.add_argument("--no-manage", action="store_true", help="don't start/stop Ollama")
+        s.add_argument("--log-level", default="info")
+        if name == "serve":
+            s.add_argument("--unsafe-bind", action="store_true", help="allow non-loopback Host (requires --api-key)")
+            s.add_argument("--api-key", help="bearer token required when --unsafe-bind")
+        else:
+            s.add_argument("--background", action="store_true", help=argparse.SUPPRESS)  # how apps say it
+        s.set_defaults(func=func)
+    sub.add_parser("stop", description="Stop the engine, its Ollama with it.").set_defaults(func=cmd_stop)
+    sub.add_parser("restart", description="Stop it, and start it again.").set_defaults(func=cmd_restart)
+    sub.add_parser("status", description="Whether the engine runs, and which model answers for what.").set_defaults(func=cmd_status)
+    s = sub.add_parser("logs", description="The engine's log.")
+    s.add_argument("-f", "--follow", action="store_true", help="and what is added to it")
+    s.set_defaults(func=cmd_logs)
+    s = sub.add_parser("autostart", description="Start the engine at login. Without on or off: whether it is.")
+    s.add_argument("state", nargs="?", choices=["on", "off"])
+    s.add_argument("--boot", action="store_true", help="with on: at boot already, before login (Linux)")
+    s.set_defaults(func=cmd_autostart)
 
-    s = sub.add_parser("pull", help="pull a model via Ollama")
-    s.add_argument("model")
-    s.set_defaults(func=cmd_pull)
-
-    s = sub.add_parser("bind", help="bind a role to a model")
-    s.add_argument("role")
-    s.add_argument("model")
-    s.add_argument("--backend", default="ollama")
-    s.add_argument("--context", type=int, default=None,
-                   help="context window for this role (tokens); if omitted, matches other "
-                        "roles on this model, or else clears it")
-    s.set_defaults(func=cmd_bind)
-    # `swap` is an alias for hot-rebind.
-    s2 = sub.add_parser("swap", help="alias for bind (hot rebind)")
-    s2.add_argument("role")
-    s2.add_argument("model")
-    s2.add_argument("--backend", default="ollama")
-    s2.add_argument("--context", type=int, default=None,
-                   help="context window for this role (tokens); if omitted, matches other "
-                        "roles on this model, or else clears it")
-    s2.set_defaults(func=cmd_bind)
-
-    s = sub.add_parser("roles", help="show role bindings")
-    s.set_defaults(func=cmd_roles)
-
-    # Backends: local ollama (default) or a remote OpenAI-compatible API.
-    sb = sub.add_parser("backend", help="manage model backends (local or remote/cloud)")
-    sb.set_defaults(func=cmd_backend, action=None)
-    sb_sub = sb.add_subparsers(dest="action")
-    sb_sub.add_parser("list", help="list configured backends")
-    sb_a = sb_sub.add_parser("add", help="add a backend (e.g. a cloud OpenAI-compatible API)")
-    sb_a.add_argument("name")
-    sb_a.add_argument("--type", default="openai", choices=["ollama", "openai"])
-    sb_a.add_argument("--base-url", required=True, dest="base_url",
-                      help="versioned root, e.g. https://open.bigmodel.cn/api/paas/v4")
-    sb_a.add_argument("--api-key", dest="api_key", help="literal API key (prefer --api-key-env)")
-    sb_a.add_argument("--api-key-env", dest="api_key_env",
-                      help="name of an env var holding the API key (keeps it out of config)")
-    sb_r = sb_sub.add_parser("rm", help="remove a backend")
-    sb_r.add_argument("name")
-
-    s = sub.add_parser("hardware", help="print hardware probe")
-    s.set_defaults(func=cmd_hardware)
-
-    s = sub.add_parser("plan", help="which models suit this computer")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(func=cmd_plan)
-
-    s = sub.add_parser("install", help="download a model, check that it works here, and use it for chat")
+    # ── models
+    m = group("model", "Models: what is here, what suits this computer, what is used.")
+    s = m.add_parser("list", help="what is on this computer, and what it is used for")
+    s.add_argument("--all", action="store_true", help="and what the providers have")
+    s.set_defaults(func=cmd_model_list)
+    s = m.add_parser("suggest", help="which models suit this computer, best first")
+    s.add_argument("--json", action="store_true", help="with what was found out about the computer")
+    s.set_defaults(func=cmd_model_suggest)
+    s = m.add_parser("install", aliases=["add"], help="download a model, check that it works here, and use it")
     s.add_argument("model")
     s.add_argument("--anyway", action="store_true", help="use it although it changed, or failed a check")
-    s.set_defaults(func=cmd_install)
-
-    s = sub.add_parser("remove", help="delete a model no role uses")
+    s.add_argument("--download-only", action="store_true", help="neither check nor use it")
+    s.set_defaults(func=cmd_model_install)
+    s = m.add_parser("use", help="which model answers (the chat and the agent, or --for a role)")
     s.add_argument("model")
-    s.set_defaults(func=cmd_remove)
-
-    s = sub.add_parser("setup", help="install the model that suits this computer, and natural voices")
-    s.add_argument("--yes", "-y", action="store_true", help="don't prompt")
-    s.add_argument("--no-voice", action="store_true", help="skip the natural voices")
-    s.add_argument("--no-kokoro", action="store_true",
-                   help="the same")
+    s.add_argument("--for", dest="roles", action="append", choices=cfgmod.ROLE_NAMES, metavar="ROLE",
+                   help=f"one of {', '.join(cfgmod.ROLE_NAMES)}; may be given more than once")
+    s.add_argument("--provider", help="where the model is, if not on this computer")
+    s.add_argument("--context", type=int, default=None, help="how many tokens it gets (default: measured)")
+    s.add_argument("--anyway", action="store_true", help="although it changed, or failed a check")
+    s.set_defaults(func=cmd_model_use)
+    s = m.add_parser("remove", help="delete a model's files (not while it is used)")
+    s.add_argument("model")
+    s.set_defaults(func=cmd_model_remove)
+    s = sub.add_parser("setup", description="Install the model that suits this computer, and natural voices.")
+    s.add_argument("--yes", "-y", action="store_true", help="don't ask")
+    s.add_argument("--no-voice", action="store_true", help="without the voices")
     s.set_defaults(func=cmd_setup)
 
-    s = sub.add_parser("voice", help="provision a local Piper TTS voice (read-aloud)")
-    s.add_argument("--voice", default=_DEFAULT_VOICE, help="piper voice id (default en_US-amy-medium), or 'kokoro' for the natural-voice engine")
-    s.set_defaults(func=cmd_voice)
+    # ── voices
+    v = group("voice", "Voices for reading aloud.")
+    v.add_parser("list", help="what is here").set_defaults(func=cmd_voice_list)
+    s = v.add_parser("install", help="get one")
+    s.add_argument("name", help=f"'{_KOKORO}' (the natural voices), or a Piper voice such as {_DEFAULT_VOICE}")
+    s.set_defaults(func=cmd_voice_install)
+    s = v.add_parser("remove", help="delete one")
+    s.add_argument("name")
+    s.set_defaults(func=cmd_voice_remove)
 
-    s = sub.add_parser("status", help="show whether the gateway is up + roles")
-    s.set_defaults(func=cmd_status)
+    # ── providers
+    b = group("provider", "Where models are, besides this computer: a cloud, or another server that speaks OpenAI's API.")
+    b.add_parser("list", help="which there are").set_defaults(func=cmd_provider)
+    s = b.add_parser("add", help="add one")
+    s.add_argument("name")
+    s.add_argument("--type", default="openai", choices=["ollama", "openai"])
+    s.add_argument("--base-url", required=True, dest="base_url",
+                   help="versioned root, e.g. https://open.bigmodel.cn/api/paas/v4")
+    s.add_argument("--api-key", dest="api_key", help="literal API key (prefer --api-key-env)")
+    s.add_argument("--api-key-env", dest="api_key_env",
+                   help="name of an env var holding the API key (keeps it out of config)")
+    s.set_defaults(func=cmd_provider)
+    s = b.add_parser("remove", help="take one out")
+    s.add_argument("name")
+    s.set_defaults(func=cmd_provider)
 
-    s = sub.add_parser("stop", help="stop a running gateway (started via `hearth start`)")
-    s.set_defaults(func=cmd_stop)
-
-    s = sub.add_parser("chat", help="interactive streaming chat with the local engine")
+    # ── talking to it
+    s = sub.add_parser("chat", description="Chat in the terminal.")
     s.add_argument("--model", help="role alias or model id (default: primary_chat)")
     s.add_argument("--system", help="optional system prompt")
     s.add_argument("--no-think", action="store_true",
@@ -1709,8 +1734,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--show-thinking", action="store_true",
                    help="show the model's full reasoning text (default: compact indicator)")
     s.set_defaults(func=cmd_chat)
-
-    s = sub.add_parser("search", help="query the web through the engine's search chain")
+    s = sub.add_parser("code", description="The coding agent, as plain `hearth`, for a folder: it reads, and asks "
+                                           "before it changes a file, runs a command or goes to the web.")
+    s.add_argument("path", nargs="?", default=".", help="the folder (default: this one)")
+    s.add_argument("-p", "--prompt", help="one task, without asking; its answer, and exit")
+    s.add_argument("-q", "--quiet", action="store_true", help="with -p: only the final answer, no tool trace")
+    s.add_argument("--model", help="role alias or model id (default: coding)")
+    s.add_argument("--max-rounds", type=int, default=60,
+                   help="tool rounds before the agent stops and asks (default 60)")
+    s.add_argument("--yolo", action="store_true", help="do not ask before changes, commands and the web")
+    s.set_defaults(func=cmd_code)
+    s = sub.add_parser("search", description="Query the web through the engine's search chain.")
     s.add_argument("query", help="search query, or a URL with --fetch")
     s.add_argument("-n", "--count", type=int, default=0, help="number of results")
     s.add_argument("--provider", choices=["auto", "brave", "searxng", "brave_html", "wikipedia"],
@@ -1718,50 +1752,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fetch", action="store_true",
                    help="treat the argument as a URL and print the page text")
     s.set_defaults(func=cmd_search)
+    # (The window's arguments are its own: main() passes them on unread.)
+    sub.add_parser("client", add_help=False).set_defaults(func=cmd_client, rest=[])
 
-    s = sub.add_parser("code", help="coding agent for a project — greps, edits files, runs shell")
-    s.add_argument("path", nargs="?", default=".", help="project directory (default: current dir)")
-    s.add_argument("-p", "--prompt",
-                   help="run this one task non-interactively and exit (implies --yolo)")
-    s.add_argument("-q", "--quiet", action="store_true",
-                   help="with -p: print only the final answer, no tool trace")
-    s.add_argument("--model", help="role alias or model id (default: coding)")
-    s.add_argument("--max-rounds", type=int, default=60,
-                   help="tool rounds before the agent stops and asks (default 60)")
-    s.add_argument("--yolo", action="store_true",
-                   help="auto-approve file writes + shell commands (no per-action prompt)")
-    s.set_defaults(func=cmd_code)
-
-    sp = sub.add_parser("service", help="control the background gateway service (systemd --user)")
-    sp_sub = sp.add_subparsers(dest="action", required=True)
-    sp_sub.add_parser("start", help="start the service now")
-    sp_sub.add_parser("stop", help="stop the service")
-    sp_sub.add_parser("restart", help="restart (reloads edited code)")
-    sp_sub.add_parser("status", help="show service status")
-    sp_l = sp_sub.add_parser("logs", help="show service logs (journal)")
-    sp_l.add_argument("-f", "--follow", action="store_true", help="follow live")
-    sp_a = sp_sub.add_parser("autostart", help="enable/disable start-on-login")
-    sp_a.add_argument("state", choices=["on", "off"])
-    sp_a.add_argument("--boot", action="store_true",
-                      help="with 'on': also start at boot, before login (linger)")
-    sp.set_defaults(func=cmd_service)
-
-    s = sub.add_parser("update", help="update hearth and its chat window, or go back")
+    # ── hearth itself
+    s = sub.add_parser("update", description="Update hearth and its chat window, or go back.")
     s.add_argument("--check", action="store_true", help="only say whether there is one")
     s.add_argument("--yes", "-y", action="store_true", help="don't ask")
     s.add_argument("--rollback", action="store_true", help="go back to the version before")
     s.set_defaults(func=cmd_update)
-
-    s = sub.add_parser("uninstall", help="remove hearth from this computer")
+    s = sub.add_parser("uninstall", description="Remove hearth from this computer.")
     s.add_argument("--yes", "-y", action="store_true", help="don't ask")
     s.add_argument("--keep-models", action="store_true", help="keep downloaded models and voices")
     s.add_argument("--keep-settings", action="store_true", help="keep ~/.hearth")
     s.set_defaults(func=cmd_uninstall)
-
-    # (Its arguments are its own: main() passes them on unread.)
-    sub.add_parser("client", add_help=False,
-                   help="open the chat window; `client install` adds it to the app menu; "
-                        "`client --help` lists its other commands").set_defaults(func=cmd_client, rest=[])
     return p
 
 

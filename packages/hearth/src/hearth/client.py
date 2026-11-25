@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -120,4 +121,16 @@ def open_window(start_engine, args: list[str]) -> int:
     if start_engine is not None:
         threading.Thread(target=start_engine, daemon=True).start()
     quiet = {"creationflags": subprocess.CREATE_NO_WINDOW} if _WIN and sys.stdout is None else {}
-    return subprocess.run([found, *args], env={**os.environ, "HEARTH_PROGRAM": launcher()}, **quiet).returncode
+    p = subprocess.Popen([found, *args], env={**os.environ, "HEARTH_PROGRAM": launcher()}, **quiet)
+    # A Ctrl-C at the terminal is the program's, which ends in order; what ends us, ends it.
+    before = {}
+    try:
+        before[signal.SIGINT] = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        before[signal.SIGTERM] = signal.signal(signal.SIGTERM, lambda *_: p.terminate())
+    except ValueError:
+        pass  # not the main thread
+    try:
+        return p.wait()
+    finally:
+        for n, h in before.items():
+            signal.signal(n, h)

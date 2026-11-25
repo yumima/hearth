@@ -93,7 +93,7 @@ def test_opening_it_starts_the_engine_its_other_commands_do_not(tree, monkeypatc
     import threading
 
     started = threading.Event()
-    monkeypatch.setattr(cli, "cmd_start", lambda a: started.set() if a.background else None)
+    monkeypatch.setattr(cli, "cmd_start", lambda a: started.set())
     assert cli.main(["client"]) == 1 and "hearth client install" in capsys.readouterr().err
     assert not started.is_set()  # nothing to open
     cli.main(["client", "install"])
@@ -137,6 +137,29 @@ def test_stopping_the_engine_is_not_stopping_the_window():
     from hearth import procs
 
     for window in (["/v/bin/python", "/v/bin/hearth-client", "serve"], ["python", "-m", "hearth_client", "serve"],
-                   ["/v/bin/python", "/v/bin/hearth", "client"], ["/v/bin/hearth", "client", "start"]):
-        assert not procs.runs(window, "hearth", "start"), window
-    assert procs.runs(["/v/bin/python", "/v/bin/hearth", "start"], "hearth", "start")
+                   ["/v/bin/python", "/v/bin/hearth", "client"], ["/v/bin/hearth", "client", "serve"]):
+        assert not procs.runs(window, "hearth", "serve"), window
+    assert procs.runs(["/v/bin/python", "/v/bin/hearth", "serve"], "hearth", "serve")
+
+
+def test_what_ends_it_lets_the_program_end_in_order(tree, tmp_path):
+    """A Ctrl-C is the program's own; a SIGTERM to us is passed on."""
+    import os
+    import signal
+    import subprocess
+    import time
+
+    cli.main(["client", "install"])
+    tree.program.write_text(f"#!/bin/sh\ntrap 'sleep 1; echo ended >> {tmp_path}/how; exit 3' INT TERM\ntouch {tmp_path}/up\nwhile :; do sleep 0.1; done\n")
+    code = (f"import sys; from pathlib import Path; from hearth import client; client.program = lambda: {str(tree.program)!r}; "
+            "sys.exit(client.open_window(None, ['serve']))")
+    for sig, whole_group in ((signal.SIGINT, True), (signal.SIGTERM, False)):
+        (tmp_path / "up").unlink(missing_ok=True)
+        (tmp_path / "how").unlink(missing_ok=True)
+        p = subprocess.Popen([sys.executable, "-c", code], start_new_session=True, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "up").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        os.killpg(p.pid, sig) if whole_group else p.send_signal(sig)
+        assert p.wait(20) == 3 and (tmp_path / "how").read_text() == "ended\n", sig
+        assert b"Traceback" not in p.stderr.read()

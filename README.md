@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`d5a0b8f`](https://github.com/yumima/hearth/commit/d5a0b8f) One name: hearth is the engine, the window and the command
 - [`eac6206`](https://github.com/yumima/hearth/commit/eac6206) **test:** a stand-in takes a port that was in use a moment ago
 - [`71a9afc`](https://github.com/yumima/hearth/commit/71a9afc) Release: the list of hashes is of the files that are in it
 - [`f32fd67`](https://github.com/yumima/hearth/commit/f32fd67) mantel: its README says where it is now
@@ -95,21 +96,19 @@ it. What was in use stays in use if that fails.
 
 | Command | What it does |
 |---|---|
-| `hearth plan` | which models suit this computer |
-| `hearth setup` | install the recommended one, and natural voices |
-| `hearth install <model>` · `remove <model>` | what the setup page does, here |
-| `hearth start` · `start --background` · `stop` · `status` | the gateway (the service, where one is installed) |
-| `hearth` · `hearth code [folder]` | a coding agent for the folder you are in: it reads, and asks before it changes a file, runs a command or goes to the web. It asks once whether you trust the folder. Starts the engine if need be |
+| `hearth` | a coding agent for the folder you are in: it reads, and asks before it changes a file, runs a command or goes to the web. It asks once whether you trust the folder, and starts the engine if need be. `hearth code FOLDER` for another |
 | `hearth -p "…"` | one task, without asking, and the answer; for scripts |
 | `hearth chat` | chat in the terminal, without files (`/chat` and `/code` go from one to the other) |
-| `hearth client` | the chat window, with the engine started |
-| `hearth client install` | build the window (from this source tree, or the release) and add **Hearth** to the app menu; `--build` to make it anew |
-| `hearth client uninstall` | take it out of the app menu |
-| `hearth client …` | the window's own commands: `setup`, `status`, `mcp`, … (`hearth client --help`) |
-| `hearth bind <role> <model>` · `roles` · `models` | which model answers for what |
-| `hearth backend …` | add a cloud or other OpenAI-compatible server |
-| `hearth voice --voice kokoro` | natural voices |
-| `hearth service autostart on\|off` | start at login |
+| `hearth client` | the chat window, with the engine started. `client install` builds it and adds **Hearth** to the app menu, `client uninstall` takes it out; `client --help` has its own commands |
+| `hearth setup` | install the model that suits this computer, and natural voices |
+| `hearth model list` · `suggest` | what is here and what it is used for · what suits this computer |
+| `hearth model install M` · `use M` · `remove M` | download, check and use a model · use another (`--for ROLE`, `--provider P`) · delete its files |
+| `hearth voice list` · `install V` · `remove V` | voices for reading aloud: `kokoro` (the natural ones) or a Piper voice |
+| `hearth provider list` · `add` · `remove` | a cloud, or another server that speaks OpenAI's API |
+| `hearth start` · `stop` · `restart` · `status` · `logs` | the engine (the service, where one is installed) |
+| `hearth autostart on\|off` | start it at login |
+| `hearth serve` | the engine in the foreground: what a service runs |
+| `hearth search "…"` | the engine's web search, without a model |
 | `hearth update` · `uninstall` | see above |
 
 ## API
@@ -139,7 +138,7 @@ Admin (off `/v1` so OpenAI clients never see it):
 `model: "primary_chat"` → role registry → concrete `(model_id, backend)`. A
 literal id (`qwen3.8:27b`) routes straight through, using the context of any
 role bound to it. Config at `~/.hearth/config.yaml` (written on first
-run); rebind with `hearth bind <role> <model> --context <tokens>` (persisted +
+run); choose another with `hearth model use <model> --for <role> --context <tokens>` (persisted +
 hot-applied). Omitting `--context` matches other roles on that model, or else
 clears the role's context.
 

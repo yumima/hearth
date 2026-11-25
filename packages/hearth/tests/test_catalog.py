@@ -131,9 +131,7 @@ def test_roles():
     # one model for every chat role, so a hop between them does not swap models
     assert {roles[r] for r in ("primary_chat", "fast_chat", "coding", "vision")} == {BIT2}
     assert roles["embedding"] == "nomic-embed-text"
-    assert catalog.recommend_contexts(hw, roles) == {r: 40960 for r in roles if r != "embedding"}
     assert catalog.recommend_roles(_hw(ram=8000)) == {}
-    assert catalog.recommend_contexts(hw, {"primary_chat": "somebody/elses:1b"}) == {}
 
 
 # ── the catalog itself ────────────────────────────────────────────────────────

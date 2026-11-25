@@ -227,7 +227,7 @@ async def embeddings(request: Request):
 # ── Text-to-speech (Piper) ────────────────────────────────────────────────────
 # Not an Ollama capability — Piper is a standalone local engine. Exposed in the
 # OpenAI /v1/audio/speech shape so any client (incl. the chat window) works unmodified.
-# Voices are provisioned by `hearth voice <id>` into paths.voices_dir("piper").
+# Voices are provisioned by `hearth voice install <id>` into paths.voices_dir("piper").
 
 
 def _piper_bin() -> str | None:
@@ -235,9 +235,9 @@ def _piper_bin() -> str | None:
     found = shutil.which("piper") or shutil.which("piper-tts")
     if found:
         return found
-    # Fall back to the canonical `hearth voice` install location. This is what
+    # Fall back to the canonical `hearth voice install` location. This is what
     # lets TTS work under systemd --user, whose bare PATH omits ~/.local/bin
-    # (where `hearth voice` symlinks piper) — without it, a service install can
+    # (where `hearth voice install` symlinks piper) — without it, a service install can
     # provision a voice yet still 503 with "piper not installed". Mirrors the
     # extract target in cli.py:_ensure_piper().
     cand = Path.home() / ".local" / "share" / "piper" / "piper" / "piper"
@@ -338,11 +338,11 @@ async def audio_speech(request: Request):
         payload = {**payload, "voice": None}  # a Kokoro id means nothing to Piper
     piper = _piper_bin()
     if piper is None:
-        return _err(503, "piper not installed — run `hearth voice <id>` to provision TTS",
+        return _err(503, "piper not installed — run `hearth voice install <id>` to provision TTS",
                     "backend_unavailable")
     voice = _find_voice(payload.get("voice"))
     if voice is None:
-        return _err(503, "no Piper voice provisioned — run `hearth voice en_US-amy-medium`",
+        return _err(503, "no Piper voice provisioned — run `hearth voice install en_US-amy-medium`",
                     "backend_unavailable")
     try:
         # Piper phonemizes with espeak too: numbers and money as words first.

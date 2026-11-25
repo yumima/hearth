@@ -510,21 +510,21 @@ def test_the_command_line_without_a_gateway(prov, ollama, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: None)
     monkeypatch.setattr(hardware, "probe", lambda: GOOD_HW)
     monkeypatch.setattr(provision.hardware, "probe", lambda: GOOD_HW)
-    assert cli.main(["plan"]) == 0 and "★ Qwen 3.8 27B, 2-bit" in capsys.readouterr().out
-    assert cli.main(["plan", "--json"]) == 0 and json.loads(capsys.readouterr().out)["verdict"] == "recommended"
+    assert cli.main(["model", "suggest"]) == 0 and "★ Qwen 3.8 27B, 2-bit" in capsys.readouterr().out
+    assert cli.main(["model", "suggest", "--json"]) == 0 and json.loads(capsys.readouterr().out)["verdict"] == "recommended"
     assert cli.main(["setup", "--yes", "--no-voice"]) == 0
     assert "tokens a second" in capsys.readouterr().out
     assert cfgmod.load().roles["primary_chat"].model == BIT2
-    assert cli.main(["remove", BIT2]) == 1 and "primary_chat" in capsys.readouterr().err
+    assert cli.main(["model", "remove", BIT2]) == 1 and "primary_chat" in capsys.readouterr().err
     ollama.cannot = {"json"}
-    assert cli.main(["install", "qwen3.5:9b"]) == 1 and "--anyway" in capsys.readouterr().err
-    assert cli.main(["install", "qwen3.5:9b", "--anyway"]) == 0
-    assert cli.main(["remove", BIT2]) == 0
-    assert cli.main(["install", "a b"]) == 1 and "a model's name" in capsys.readouterr().err
+    assert cli.main(["model", "install", "qwen3.5:9b"]) == 1 and "--anyway" in capsys.readouterr().err
+    assert cli.main(["model", "install", "qwen3.5:9b", "--anyway"]) == 0
+    assert cli.main(["model", "remove", BIT2]) == 0
+    assert cli.main(["model", "install", "a b"]) == 1 and "a model's name" in capsys.readouterr().err
     ollama.server.shutdown()
     ollama.server.server_close()
     monkeypatch.setattr(cli, "_ensure_ollama", lambda cfg: object())
-    assert cli.main(["remove", "x:1b"]) == 1  # said, not a traceback
+    assert cli.main(["model", "remove", "x:1b"]) == 1  # said, not a traceback
 
 
 def test_the_command_line_when_the_gateway_goes_away(monkeypatch, capsys):
@@ -540,10 +540,10 @@ def test_the_command_line_when_the_gateway_goes_away(monkeypatch, capsys):
         raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(cli.httpx, "request", request)
-    assert cli.main(["install", "m:1b"]) == 1 and "stopped answering" in capsys.readouterr().err
+    assert cli.main(["model", "install", "m:1b"]) == 1 and "stopped answering" in capsys.readouterr().err
     replies[:] = [httpx.Response(200, json={"id": 5, "kind": "model", "what": "m:1b", "stage": "waiting", "message": "",
                                             "done": 0, "total": 0}), httpx.Response(200, json={"jobs": []})]
-    assert cli.main(["install", "m:1b"]) == 1 and "restarted" in capsys.readouterr().err
+    assert cli.main(["model", "install", "m:1b"]) == 1 and "restarted" in capsys.readouterr().err
 
 
 def test_what_was_measured_is_kept_whatever_is_in_the_file(prov, tmp_path):

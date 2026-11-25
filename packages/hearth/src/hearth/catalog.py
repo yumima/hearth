@@ -154,7 +154,7 @@ def offers(hw: Hardware, here: Iterable[str] = ()) -> list[Offer]:
 
 
 def plan(hw: Hardware, here: Iterable[str] = ()) -> dict:
-    """What the setup page and `hearth plan --json` show."""
+    """What the setup page and `hearth model suggest --json` show."""
     level, sentence = verdict(hw)
     g = hw.best_gpu()
     return {
@@ -176,8 +176,3 @@ def recommend_roles(hw: Hardware, here: Iterable[str] = ()) -> dict[str, str]:
     if best.vision:
         roles["vision"] = best.model
     return {**roles, "embedding": embedding()["model"]}
-
-
-def recommend_contexts(hw: Hardware, roles: dict[str, str]) -> dict[str, int]:
-    by_model = {o.model: o.context for o in offers(hw)}
-    return {role: by_model[m] for role, m in roles.items() if by_model.get(m)}

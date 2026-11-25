@@ -452,7 +452,7 @@ def _start(version: str) -> tuple[bool, str]:
     if sys.platform.startswith("linux") and service.unit_path().exists() and not service.foreign() and service.has_systemd():
         svc = background.Service(lambda: service.systemctl("start", service.UNIT_NAME),
                                  lambda: service.systemctl("is-active", "--quiet", service.UNIT_NAME) in (0, 3))
-    ok, message = background.start(cfg, [program, "start"], svc)
+    ok, message = background.start(cfg, [program, "serve"], svc)
     if ok and not _serving(version):
         return False, "another version answers"
     return ok, message

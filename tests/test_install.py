@@ -239,7 +239,7 @@ def test_01_install(world):
         _run([py, "-I", "-c", f"import {other}"], ok=False)
     assert not (world.data / "downloads").exists() and not (world.data / "cache").exists()
     assert httpx.get(f"http://127.0.0.1:{world.port}/").status_code == 200
-    assert "verdict" in world.hearth("plan", "--json").stdout
+    assert "verdict" in world.hearth("model", "suggest", "--json").stdout
 
 
 def test_02_installing_again_repairs(world):
@@ -256,7 +256,7 @@ def test_03_update(world):
     assert world.version() == "0.2.0"
     # started as finterm, or a login without systemd, starts it: from its own process
     world.hearth("stop")
-    world.hearth("start", "--background")
+    world.hearth("start")
     assert world.version() == "0.2.0"
     world.hearth("update", "--yes", HEARTH_RELEASE_URL=url)
     assert world.version() == "0.3.0"
@@ -333,7 +333,7 @@ def test_06be_a_program_with_a_file_of_it_open_is_not_ended(world):
     reader = subprocess.Popen([sys.executable, "-c", "import sys, time; open(sys.argv[1]); time.sleep(300)", str(f)])
     try:
         world.hearth("stop")
-        world.hearth("start", "--background")
+        world.hearth("start")
         world.install("0.3.0", "--no-open")  # a repair: stops and starts it
         assert reader.poll() is None and world.version() == "0.3.0"
     finally:

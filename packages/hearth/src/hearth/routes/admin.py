@@ -51,7 +51,7 @@ async def shutdown(request: Request):
     process without a console.)"""
     end = request.app.state.shutdown
     if end is None:
-        return JSONResponse({"error": "this gateway is not run by `hearth start`"}, 409)
+        return JSONResponse({"error": "this gateway is not run by `hearth serve`"}, 409)
     end()
     return {"stopping": True}
 
@@ -138,7 +138,7 @@ async def put_role(role: str, request: Request):
     if backend not in cfg.backends:
         return JSONResponse({"error": f"unknown backend {backend!r}"}, 400)
     # Optional: the CLI sends the context alongside the model so a hot rebind
-    # and a config-file rebind agree. Absent → cleared, matching `hearth bind`.
+    # and a config-file rebind agree. Absent → cleared, matching `hearth model use`.
     try:
         context = int(body.get("context") or 0)
     except (TypeError, ValueError):

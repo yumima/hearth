@@ -3,7 +3,7 @@
 Piper is fast but sounds synthetic; Kokoro (82M params, Apache-2.0, ONNX) is
 close to human read-aloud quality and still runs ~4x faster than real time on
 a laptop CPU. It is optional: the ``kokoro-onnx`` package plus two model files
-under ``paths.voices_dir("kokoro")`` (``hearth voice --voice kokoro``
+under ``paths.voices_dir("kokoro")`` (``hearth voice install kokoro``
 provisions both). When either is missing, callers fall back to Piper.
 
 One model instance serves every voice (a voice is a 256-float style vector,
@@ -251,7 +251,7 @@ class KokoroEngine:
     async def synth(self, text: str, voice: str | None = None, speed: float = 1.0) -> bytes:
         self._closing.clear()
         if not installed():
-            raise KokoroError("kokoro not installed — run `hearth voice --voice kokoro`")
+            raise KokoroError("kokoro not installed — run `hearth voice install kokoro`")
         speed = min(max(float(speed), 0.5), 2.0)
         self._ensure_reaper()
         cancel = threading.Event()

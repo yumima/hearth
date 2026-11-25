@@ -50,7 +50,7 @@ def test_which_command_lines_are_a_servers():
         assert cli._is_server(yes), yes
     for no in (["/home/u/hearth-client/.venv/bin/python", "-m", "pytest"], ["vim", "hearth-client", "serve"],
                ["python", "-c", "hearth client serve"], ["/v/bin/hearth-client"],
-               ["/v/bin/python", "/v/bin/hearth", "start"], ["python", "-m", "hearth", "start"], []):
+               ["/v/bin/python", "/v/bin/hearth", "serve"], ["python", "-m", "hearth", "serve"], []):
         assert not cli._is_server(no), no
 
 

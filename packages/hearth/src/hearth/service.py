@@ -83,7 +83,7 @@ def _unit(program: str) -> str:
 Description=hearth — local AI engine on 127.0.0.1:11435
 
 [Service]
-ExecStart="{quoted}" start
+ExecStart="{quoted}" serve
 Restart=on-failure
 RestartSec=5
 # The Ollama it starts goes with it, in order, and is given the time to.
@@ -96,7 +96,7 @@ WantedBy=default.target
 
 
 def enable(program: str) -> None:
-    """Start `program start` at login, from the next one on."""
+    """Start the engine of `program` at login, from the next one on."""
     if sys.platform == "win32":
         import winreg
 
@@ -104,7 +104,7 @@ def enable(program: str) -> None:
             raise Foreign(f"{f} was not made by hearth's installer; it is left as it is")
         # hearthw: the same without a console window, which would be there all day.
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
-            winreg.SetValueEx(k, "hearth", 0, winreg.REG_SZ, f'"{program}" start --background')
+            winreg.SetValueEx(k, "hearth", 0, winreg.REG_SZ, f'"{program}" start')
     elif sys.platform == "darwin":
         p = _agent_path()
         if p.exists() and not _agent_ours(p):
@@ -112,7 +112,7 @@ def enable(program: str) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         log = str(paths.home() / "hearth.log")
         p.write_bytes(plistlib.dumps({
-            "Label": LABEL, "ProgramArguments": [program, "start"], "RunAtLoad": True,
+            "Label": LABEL, "ProgramArguments": [program, "serve"], "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False}, "StandardOutPath": log, "StandardErrorPath": log,
             "ProcessType": "Interactive", "HearthInstaller": True}))
     elif has_systemd():
@@ -122,7 +122,7 @@ def enable(program: str) -> None:
             raise OSError("systemctl could not enable hearth.service")
     else:
         _write(_autostart_path(), f"[Desktop Entry]\n{MARK}\nType=Application\nName=hearth\n"
-                                  f"Exec={shlex.quote(program)} start --background\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n")
+                                  f"Exec={shlex.quote(program)} start\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n")
 
 
 def _agent_ours(p: Path) -> bool:

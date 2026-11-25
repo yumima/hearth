@@ -5,9 +5,9 @@ a remote vLLM, … — behind hearth's role registry, so a cloud model can be bo
 to a role and used by every local client (finterm, the chat window) through the same
 loopback API with no client reconfiguration: just
 
-    hearth backend add zhipu --type openai \\
+    hearth provider add zhipu --type openai \\
         --base-url https://open.bigmodel.cn/api/paas/v4 --api-key-env ZHIPU_API_KEY
-    hearth bind primary_chat glm-4.6 --backend zhipu
+    hearth model use glm-4.6 --provider zhipu
 
 The request is already in OpenAI shape, so this is a near-pure passthrough: we
 attach an Authorization header and stream the response bytes unchanged. The

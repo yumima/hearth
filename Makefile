@@ -2,7 +2,7 @@
 #
 #   make build     both, each in an environment of its own
 #   make test      both packages' tests, as CI runs them
-#   make start     the gateway (foreground; Ctrl-C to stop)      make stop
+#   make start     the engine                                    make stop
 #   make status    is it up? show roles
 #   make chat      terminal chat                                 make client   the window
 #   make lock      after changing a dependency
@@ -11,7 +11,7 @@
 
 HEARTH := .venv/bin/hearth
 
-.PHONY: build test start stop status chat client models hardware lock install-cli uninstall-cli
+.PHONY: build test start stop status chat client models lock install-cli uninstall-cli
 
 build:
 	uv sync --frozen --package hearth --extra dev --extra tts --extra stt
@@ -28,8 +28,7 @@ stop:    ; $(HEARTH) stop
 status:  ; $(HEARTH) status
 chat:    ; $(HEARTH) chat
 client:  ; $(HEARTH) client
-models:  ; $(HEARTH) models
-hardware:; $(HEARTH) hardware
+models:  ; $(HEARTH) model list
 
 # The command on PATH (a symlink in ~/.local/bin).
 install-cli:

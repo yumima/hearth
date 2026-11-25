@@ -86,7 +86,7 @@ def _env(base_url: str, models_dir: str) -> dict:
     # (curated MCP tool schemas + history + tool results) overruns 4096 and the
     # model loses the tools — which broke tool-calling. This is only the floor for
     # requests with no context of their own: a role's bound context overrides it,
-    # sized per model so the KV cache stays in VRAM (hardware.recommend_contexts).
+    # sized per model so the KV cache stays in VRAM.
     # Respect an explicit operator override if one is already set.
     env.setdefault("OLLAMA_CONTEXT_LENGTH", str(DEFAULT_CONTEXT_LENGTH))
     # Quantize the K/V cache to 8-bit. The cache scales linearly with context and

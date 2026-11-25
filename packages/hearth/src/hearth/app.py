@@ -69,7 +69,7 @@ def create_app(
     app.state.backends = registry
     app.state.provisioner = Provisioner(cfg)
     app.state.at_shutdown = []  # called as the server goes down, before anything else is closed
-    app.state.shutdown = None  # `hearth start` sets it: /admin/shutdown ends the server
+    app.state.shutdown = None  # `hearth serve` sets it: /admin/shutdown ends the server
     app.add_middleware(
         SecurityMiddleware, allow_any_host=allow_any_host, api_key=api_key
     )

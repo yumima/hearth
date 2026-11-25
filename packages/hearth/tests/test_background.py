@@ -1,4 +1,4 @@
-"""`hearth start --background`: real processes, no Ollama, no model."""
+"""`hearth start`: real processes, no Ollama, no model."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def _answer_once_per_connection(s):
 
 
 def test_it_serves_and_outlives_the_command(home, tmp_path):
-    r = subprocess.run([*EXEC, "start", "--background", "--no-manage"],
+    r = subprocess.run([*EXEC, "start", "--no-manage"],
                        capture_output=True, text=True, timeout=90)
     assert r.returncode == 0, r.stderr
     assert "running (hearth/" in r.stdout
@@ -69,7 +69,7 @@ def test_it_serves_and_outlives_the_command(home, tmp_path):
     if hasattr(os, "getsid"):
         assert os.getsid(pid) != os.getsid(0)  # not ended with this terminal
     # a second one finds it, and starts nothing
-    r = subprocess.run([*EXEC, "start", "--background", "--no-manage"],
+    r = subprocess.run([*EXEC, "start", "--no-manage"],
                        capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and "already running" in r.stdout
     assert int((tmp_path / "hearth.pid").read_text()) == pid
@@ -80,7 +80,7 @@ def test_why_it_could_not_start_is_said(home):
         s.bind(("127.0.0.1", home.bind_port))
         s.listen()
         threading.Thread(target=_answer_once_per_connection, args=(s,), daemon=True).start()
-        ok, message = background.start(home, [*EXEC, "start", "--no-manage"], wait_s=30)
+        ok, message = background.start(home, [*EXEC, "serve", "--no-manage"], wait_s=30)
     assert not ok
     assert "ended (exit 1)" in message and "already in use" in message
 
@@ -119,11 +119,11 @@ def test_an_installed_service_is_what_starts(home, tmp_path, monkeypatch):
     monkeypatch.delenv("HEARTH_HOME")
     monkeypatch.setattr(background, "gateway_identity", lambda cfg: None)  # not this machine's own
     monkeypatch.setattr(background, "spawn", lambda argv: pytest.fail(f"spawned {argv}"))
-    assert cli.main(["start", "--background"]) == 1  # the service failed, and that is said
+    assert cli.main(["start"]) == 1  # the service failed, and that is said
     assert ran == [("start", cli._UNIT_NAME)]
     # an address of its own is not the service's
     monkeypatch.setattr(background, "spawn", lambda argv: ran.append(argv) or (_ for _ in ()).throw(OSError("x")))
-    cli.main(["start", "--background", "--bind", f"127.0.0.1:{_free_port()}"])
+    cli.main(["start", "--bind", f"127.0.0.1:{_free_port()}"])
     assert ran[-1][-2] == "--bind"
 
 
@@ -133,9 +133,9 @@ def test_starting_changes_nothing_that_is_installed(home, monkeypatch):
     link.symlink_to("/opt/elsewhere/hearth")
     seen = []
     monkeypatch.setattr(background, "start", lambda cfg, argv, service: seen.append(argv) or (True, "running"))
-    assert cli.main(["start", "--background"]) == 0
+    assert cli.main(["start"]) == 0
     assert os.readlink(link) == "/opt/elsewhere/hearth"
-    assert seen == [[sys.executable, "-P", "-m", "hearth", "start"]]
+    assert seen == [[sys.executable, "-P", "-m", "hearth", "serve"]]
 
 
 def test_what_was_asked_for_is_passed_on(home, monkeypatch):
@@ -146,15 +146,17 @@ def test_what_was_asked_for_is_passed_on(home, monkeypatch):
         return True, "running"
 
     monkeypatch.setattr(background, "start", start)
-    assert cli.main(["start", "--background", "--no-manage", "--log-level", "debug"]) == 0
+    assert cli.main(["start", "--no-manage", "--log-level", "debug"]) == 0
     assert seen["argv"][5:] == ["--no-manage", "--log-level", "debug"]
     assert seen["service"] is None
 
 
 def test_an_exposed_gateway_is_not_started_in_the_background(home, monkeypatch):
     monkeypatch.setattr(background, "start", lambda *a: pytest.fail("started"))
-    for extra in (["--unsafe-bind", "--api-key", "k"], ["--api-key", "k"], ["--bind", "0.0.0.0:1"]):
-        assert cli.main(["start", "--background", *extra]) == 2
+    assert cli.main(["start", "--bind", "0.0.0.0:1"]) == 2
+    for extra in (["--unsafe-bind", "--api-key", "k"], ["--api-key", "k"]):
+        with pytest.raises(SystemExit):
+            cli.main(["start", *extra])  # that is `serve`'s
 
 
 def test_another_config_is_not_the_service(home, tmp_path, monkeypatch):
@@ -163,7 +165,7 @@ def test_another_config_is_not_the_service(home, tmp_path, monkeypatch):
     unit.write_text("[Service]\n")
     seen = []
     monkeypatch.setattr(background, "start", lambda cfg, argv, service: seen.append(service) or (True, ""))
-    cli.main(["start", "--background"])  # HEARTH_HOME is set (the fixture's)
+    cli.main(["start"])  # HEARTH_HOME is set (the fixture's)
     assert seen == [None]
 
 
@@ -223,7 +225,7 @@ def test_relative_paths_still_name_the_same_files(home, tmp_path, monkeypatch):
 
 def test_stop_ends_it_in_order(home, tmp_path):
     """Asked over HTTP, as Windows has to be; its atexit (Ollama) runs."""
-    assert background.start(home, [*EXEC, "start", "--no-manage"])[0]
+    assert background.start(home, [*EXEC, "serve", "--no-manage"])[0]
     pid = int((tmp_path / "hearth.pid").read_text())
     r = subprocess.run([*EXEC, "stop"], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr

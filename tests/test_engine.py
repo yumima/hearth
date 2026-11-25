@@ -47,11 +47,11 @@ def test_01_installed_with_the_ollama_of_the_release(world):
 
 def test_02_a_model_is_downloaded_checked_and_assigned(world):
     # (It is small: what it cannot do is not what is tested.)
-    r = world.hearth("install", MODEL, "--anyway", ok=None)
+    r = world.hearth("model", "install", MODEL, "--anyway", ok=None)
     print(r.stdout[-1500:], r.stderr[-1500:])
     assert r.returncode == 0
     assert (world.data / "models" / "blobs").is_dir()
-    assert MODEL in world.hearth("roles").stdout
+    assert MODEL in world.hearth("model", "list").stdout
 
 
 def test_03_it_answers_by_role(world):
@@ -64,8 +64,8 @@ def test_03_it_answers_by_role(world):
 def test_04_stopping_stops_its_ollama(world):
     world.hearth("stop")
     assert _until(lambda: world.processes() == []), world.processes()
-    world.hearth("start", "--background")
-    assert world.version() == "0.2.0" and MODEL in world.hearth("roles").stdout
+    world.hearth("start")
+    assert world.version() == "0.2.0" and MODEL in world.hearth("model", "list").stdout
 
 
 def test_05_removing_leaves_nothing(world):

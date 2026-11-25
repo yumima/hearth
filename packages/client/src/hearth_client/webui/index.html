@@ -1919,7 +1919,7 @@ async function loadLearn(lang){
         </select>
         ${ov.streak ? `<span class="tag flame">🔥 ${ov.streak}-day streak</span>` : ""}
         ${ov.studied_today ? `<span class="tag okt">✓ Practised today</span>` : ""}
-        ${!lang.voice ? `<span class="tag" title="Provision a voice with: hearth voice <id>">No native voice — English fallback</span>` : ""}
+        ${!lang.voice ? `<span class="tag" title="Provision a voice with: hearth voice install <id>">No native voice — English fallback</span>` : ""}
       </div>
       <input class="goal" id="goal" placeholder="What's your goal? e.g. get around on a trip to Rome in May" value="${escapeHtml(p.goals || "")}" maxlength="300">
       <div class="modes" id="modes">${Object.entries(MODES).map(([k, m]) => `<button class="mode${learnMode === k ? " on" : ""}" data-m="${k}"><b>${m.name}</b><span>${m.desc}</span></button>`).join("")}</div>

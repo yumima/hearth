@@ -1,6 +1,6 @@
 """Start the gateway so that it outlives whoever asked.
 
-`hearth start --background` is what an app uses (finterm, the chat window): it
+`hearth start` is what an app uses, too (finterm, the chat window): it
 returns once the gateway answers, and the gateway stays when the app is gone.
 Where hearth is installed as a service, the service is what is started, so the
 engine keeps one owner. (A caller that is itself a systemd service takes what it
@@ -29,7 +29,7 @@ def gateway_identity(cfg: cfgmod.Config) -> str | None:
     Probes /admin/version — a constant handler — and deliberately NOT
     /admin/health: health awaits every configured backend, remote providers
     included, so one slow round-trip over the internet times the probe out. A
-    duplicate `hearth start` then concludes the port is free, announces itself,
+    duplicate `hearth serve` then concludes the port is free, announces itself,
     and dies on EADDRINUSE.
     """
     try:
@@ -142,7 +142,7 @@ def start(cfg: cfgmod.Config, argv: list[str], service: Service | None = None,
     proc, before = None, 0
     if service is not None:
         if (rc := service.start()) != 0:
-            return False, f"the hearth service did not start (exit {rc}) — see `hearth service logs`"
+            return False, f"the hearth service did not start (exit {rc}) — see `hearth logs`"
     else:
         try:
             proc, before = spawn(argv)
@@ -158,9 +158,9 @@ def start(cfg: cfgmod.Config, argv: list[str], service: Service | None = None,
             if (ident := gateway_identity(cfg)) is not None:  # up since we looked
                 return True, f"running ({ident})"
             if proc is None:
-                return False, "the hearth service ended — see `hearth service logs`"
+                return False, "the hearth service ended — see `hearth logs`"
             why = _last_lines(before)
             return False, f"hearth ended (exit {proc.returncode})" + (f":\n{why}" if why else "")
         time.sleep(0.25)
-    where = "`hearth service logs`" if service is not None else str(log_path())
+    where = "`hearth logs`" if service is not None else str(log_path())
     return False, f"hearth did not answer in {wait_s:.0f} s — see {where}"
