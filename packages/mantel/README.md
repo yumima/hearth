@@ -25,15 +25,13 @@ into a cloud backend or a remote server.
   MCP servers + system prompt.
 
 ## Quick start
-```bash
-git clone https://github.com/yumima/mantel && cd mantel
-python3 -m venv .venv && .venv/bin/pip install -e ".[gui]"   # [gui] = native window (pywebview)
+mantel is part of [hearth](https://github.com/yumima/hearth) and comes with its
+installer: https://yumima.github.io/hearth/. From a source checkout of it:
 
-# with a hearth engine running on :11435 (see github.com/yumima/hearth):
-.venv/bin/mantel            # opens the desktop chat window
-# or:
-.venv/bin/mantel serve      # headless — open http://127.0.0.1:8765 in a browser
-.venv/bin/mantel install    # add a clickable launcher to your app menu
+```bash
+hearth client install       # builds it and adds it to the app menu
+mantel                      # opens the desktop chat window
+mantel serve                # headless — open http://127.0.0.1:8765 in a browser
 ```
 Without `[gui]`/pywebview, `mantel` falls back to a Chromium/Edge `--app` window,
 then your default browser.

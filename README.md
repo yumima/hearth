@@ -13,6 +13,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`9e867c2`](https://github.com/yumima/hearth/commit/9e867c2) Speech recognition: PyAV 17, which faster-whisper 1.2.1 can use; CI reads a recording
 - [`b68bb87`](https://github.com/yumima/hearth/commit/b68bb87) catalog: the 27B in 2 bits, measured
 - [`2d737a8`](https://github.com/yumima/hearth/commit/2d737a8) client install without uv: one that works is left alone
 - [`dc193dc`](https://github.com/yumima/hearth/commit/dc193dc) client install always puts mantel right, and needs no marker of its own; put_back is one function
