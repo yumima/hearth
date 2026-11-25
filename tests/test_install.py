@@ -418,6 +418,7 @@ def test_10b_another_hearth_that_is_running_is_not_replaced(world):
         "        self.send_response(200); self.end_headers(); self.wfile.write(b'{}')\n"
         "    def log_message(self, *_): pass\n"
         "import socketserver\n"
+        "socketserver.TCPServer.allow_reuse_address = sys.platform != 'win32'\n"  # (hearth had it a moment ago)
         "socketserver.ThreadingTCPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n"), str(world.port)])
     try:
         assert _until(lambda: _answers(world.port))
