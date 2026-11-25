@@ -83,6 +83,7 @@ def main() -> None:
             text = text.replace(k, val)
         assert not re.search(r"@[A-Z0-9_]+@", text), re.search(r"@[A-Z0-9_]+@", text).group(0)
         (out / script).write_text(text, encoding="utf-8", newline="\n")
+    (out / ".gitignore").unlink(missing_ok=True)  # uv's; not of the release
     sums = "".join(f"{digest(p)}  {p.name}\n" for p in sorted(out.iterdir()) if p.name != "SHA256SUMS")
     (out / "SHA256SUMS").write_text(sums, encoding="utf-8", newline="\n")
     print(out)

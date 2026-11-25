@@ -33,8 +33,7 @@ jobs:
           python3 tools/release.py out
           v=$(python3 -c "import json; print(json.load(open('out/manifest.json'))['version'])")
           [ "v$v" = "${{ github.ref_name }}" ] || { echo "::error::the tag is ${{ github.ref_name }}, the version $v"; exit 1; }
-          rm -f out/.gitignore
-          cat out/SHA256SUMS
+          (cd out && sha256sum -c SHA256SUMS && [ "$(wc -l < SHA256SUMS)" -eq "$(ls -A | grep -cv "^SHA256SUMS$")" ])
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
