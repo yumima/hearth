@@ -87,6 +87,8 @@ jobs:
           done
           PY=bin/python; [ -d env-hearth/Scripts ] && PY=Scripts/python.exe
           env-hearth/$PY -c "import hearth.app, kokoro_onnx, faster_whisper; from hearth import provision as p, kokoro_tts as k; assert p.stt_possible() and k.package_present()"
+          # (a recording is read: importing it says nothing about what it is read with)
+          env-hearth/$PY -c "import io, wave; from faster_whisper.audio import decode_audio as d; b = io.BytesIO(); w = wave.open(b, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(bytes(32000)); w.close(); b.seek(0); assert len(d(b)) == 16000"
           env-mantel/$PY -c "import mantel.app, mantel.mcp_servers.rag, mantel.mcp_servers.web, mantel.mcp_servers.image"
           rm -rf env-hearth env-mantel out
       - name: Install, update, go back, remove

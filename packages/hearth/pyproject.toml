@@ -21,6 +21,8 @@ stt = [
     # M2: faster-whisper for /v1/audio/transcriptions. Installed into a
     # separate interpreter when the host Python lacks ctranslate2 wheels.
     "faster-whisper>=1.0",
+    # 18 took away the argument faster-whisper 1.2.1 opens every recording with.
+    "av>=17,<18",
 ]
 tts = [
     # Natural read-aloud voices (Kokoro-82M, ONNX). Optional: without it
