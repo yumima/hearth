@@ -313,8 +313,9 @@ def test_voices_come_and_go(conf, tmp_path, monkeypatch, capsys):
 
 
 @pytest.fixture
-def engine(monkeypatch):
+def engine(monkeypatch, tmp_path):
     """No real process or service: what would be done to them."""
+    monkeypatch.setenv("HEARTH_HOME", str(tmp_path / "home"))
     did, unit, pid = [], {"exists": False, "state": "inactive"}, [None]
     monkeypatch.setattr(cli, "_has_service", lambda: unit["exists"])
     monkeypatch.setattr(cli, "_unit_is", lambda state: unit["state"] == state)
@@ -339,12 +340,12 @@ def engine(monkeypatch):
         return True, "running"
 
     monkeypatch.setattr(background, "start", start)
-    monkeypatch.setattr(cli, "_ask_to_stop", lambda cfg, p: did.append(f"end {p}") or True)
+    monkeypatch.setattr(cli, "_ask_to_stop", lambda cfg, p: did.append(f"end {p}") or pid.__setitem__(0, None) or True)
     monkeypatch.setattr(cli.procs, "alive", lambda p: False)
     return type("E", (), {"did": did, "unit": unit, "pid": pid})()
 
 
-def test_where_there_is_a_service_it_is_the_service(engine):
+def test_where_there_is_a_service_it_is_the_service(engine, monkeypatch):
     engine.unit.update(exists=True, state="active")
     assert cli.main(["stop"]) == 0 and cli.main(["restart"]) == 0 and cli.main(["start"]) == 0
     assert engine.did == ["stop", "start"]
@@ -354,8 +355,12 @@ def test_where_there_is_a_service_it_is_the_service(engine):
     engine.unit["state"] = "activating"  # it ends and is started again, over and over
     assert cli.main(["stop"]) == 0 and engine.did == ["stop"]
     engine.did.clear()
-    engine.unit["state"], engine.pid[0] = "inactive", 7  # one was started beside it
-    assert cli.main(["restart"]) == 0 and engine.did == ["end 7", "start"]
+    engine.unit["state"], engine.pid[0] = "active", 7  # one was started beside it, on a port of its own
+    assert cli.main(["stop"]) == 0 and engine.did == ["stop", "end 7"]
+    engine.did.clear()
+    engine.unit["state"], engine.pid[0] = "inactive", 7
+    monkeypatch.setattr(cli.procs, "argv", lambda p: ["hearth", "serve", "--bind", "127.0.0.1:5000"])
+    assert cli.main(["restart"]) == 0 and engine.did == ["end 7", ["serve", "--bind", "127.0.0.1:5000"]]
 
 
 def test_restart_without_a_service(engine, monkeypatch):
@@ -365,11 +370,27 @@ def test_restart_without_a_service(engine, monkeypatch):
     monkeypatch.setattr(cli.procs, "argv", lambda p: ["python", "-P", "-m", "hearth", "serve", "--bind", "127.0.0.1:5000", "--no-manage"])
     assert cli.main(["restart"]) == 0 and engine.did == ["end 7", ["serve", "--bind", "127.0.0.1:5000", "--no-manage"]]
     engine.did.clear()
-    monkeypatch.setattr(cli.procs, "argv", lambda p: ["hearth", "serve", "--unsafe-bind", "--api-key", "k"])
-    assert cli.main(["restart"]) == 2 and engine.did == []  # what cannot be started again is not stopped
+    engine.pid[0] = 7
+    for how in (["--unsafe-bind", "--api-key", "k"], ["--unsafe", "--api", "k"], ["--bind", "0.0.0.0:11435"], ["--no-such"]):
+        monkeypatch.setattr(cli.procs, "argv", lambda p: ["hearth", "serve", *how])
+        assert cli.main(["restart"]) == 2 and engine.did == [], how  # what cannot be started again is not stopped
     monkeypatch.setattr(cli.procs, "alive", lambda p: True)
     monkeypatch.setattr(cli.procs, "argv", lambda p: ["hearth", "serve"])
     assert cli.main(["restart"]) == 1 and [d for d in engine.did if isinstance(d, list)] == []  # not a second one beside it
+
+
+def test_one_that_cannot_be_found_is_not_called_restarted(engine, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: "hearth/9")
+    assert cli.main(["restart"]) == 1 and engine.did == [] and "not restarted" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "::"])
+def test_others_do_not_reach_it_without_a_key(engine, host, monkeypatch, capsys):
+    cfg = cli.cfgmod.default_config()
+    cfg.bind_host = host
+    monkeypatch.setattr(cli.cfgmod, "load", lambda *a, **k: cfg)
+    monkeypatch.setattr(cli, "_listen_socket", lambda *a: pytest.fail("listened"))
+    assert cli.main(["serve"]) == 2 and "--api-key" in capsys.readouterr().err
 
 
 def test_a_service_may_have_an_address_others_can_reach(engine, conf, monkeypatch, capsys):
@@ -388,8 +409,12 @@ def test_the_services_log_also_when_it_failed(engine, monkeypatch):
     monkeypatch.setattr(cli.subprocess, "run", lambda a, **k: ran.append(a[0]) or type("R", (), {"returncode": 0})())
     engine.unit.update(exists=True, state="failed")
     assert cli.main(["logs"]) == 0 and ran == ["/usr/bin/journalctl"]
-    engine.unit["exists"] = False
+    engine.pid[0] = 7  # another one runs, with a log file
     assert cli.main(["logs"]) == 0 and len(ran) == 1
+    engine.unit["state"] = "active"
+    assert cli.main(["logs"]) == 0 and len(ran) == 2
+    engine.unit["exists"] = False
+    assert cli.main(["logs"]) == 0 and len(ran) == 2
 
 
 def test_the_models_here_and_what_they_are_for(conf, monkeypatch, capsys):
@@ -420,3 +445,15 @@ def test_a_model_is_not_shown_as_here_because_one_of_its_name_is(conf, monkeypat
     assert ["GB" in ln and "coding" in ln and "primary_chat" not in ln for ln in lines] == [True, False, False]
     assert any("⚠ groq" in ln and "primary_chat" in ln for ln in lines)
     assert any("vllm" in ln and "⚠" not in ln and "vision" in ln for ln in lines)
+
+
+def test_a_remote_ollama_is_marked(conf, monkeypatch, capsys):
+    cfg = conf.load()
+    cfg.backends["ollama"].base_url = "http://gpu.example.com:11434"
+    cfg.roles["primary_chat"] = cli.cfgmod.RoleBinding("m:1b", "ollama")
+    cli.cfgmod.save(cfg)
+    monkeypatch.setattr(cli, "_ensure_ollama", lambda c: c.backends["ollama"])
+    monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: httpx.Response(200, json={"models": [{"name": "m:1b", "size": 1}]}))
+    assert cli.main(["model", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "⚠ ollama" in out and "leaves this computer" in out

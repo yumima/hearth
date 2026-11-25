@@ -255,3 +255,26 @@ def test_shutdown_of_an_app_nobody_serves():
     c = TestClient(create_app(cfgmod.default_config(), backends_override={}), base_url="http://localhost")
     assert c.post("/admin/shutdown").status_code == 409
     assert c.post("/admin/shutdown", headers={"origin": "https://evil.example"}).status_code == 403
+
+
+def test_an_exposed_gateway_is_known_by_its_answer(home, monkeypatch):
+    """It listens on 0.0.0.0 and wants a key we do not have: that is a hearth, too."""
+    import threading
+
+    import uvicorn
+
+    from hearth.app import create_app
+
+    home.bind_host = "0.0.0.0"
+    server = uvicorn.Server(uvicorn.Config(create_app(home, allow_any_host=True, api_key="k"), host="127.0.0.1",
+                                           port=home.bind_port, log_level="error", server_header=False))
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    try:
+        deadline = time.monotonic() + 20
+        while background.gateway_identity(home) is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert background.gateway_identity(home).startswith("hearth/")
+    finally:
+        server.should_exit = True
+        t.join(10)

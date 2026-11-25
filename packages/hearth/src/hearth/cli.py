@@ -35,6 +35,9 @@ def _admin_base(cfg: cfgmod.Config) -> str:
     return f"http://{cfg.bind_host}:{cfg.bind_port}"
 
 
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
 def _pid_path() -> Path:
     """PID file for the running gateway, alongside config.yaml (~/.hearth)."""
     return cfgmod.config_path().parent / "hearth.pid"
@@ -103,7 +106,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         service = background.Service(lambda: _systemctl("start", _UNIT_NAME),
                                      lambda: _systemctl("is-active", "--quiet", _UNIT_NAME) == 0
                                      or _unit_is("activating"))
-    elif cfg.bind_host not in ("127.0.0.1", "localhost", "::1"):
+    elif cfg.bind_host not in _LOOPBACK:
         print("an address others can reach is for `hearth serve --unsafe-bind --api-key …`", file=sys.stderr)
         return 2
     # This interpreter, as it was called: not _hearth_exec_argv(), which keeps
@@ -142,6 +145,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     api_key = args.api_key
     if allow_any_host and not api_key:
         print("--unsafe-bind requires --api-key (off-loopback exposure)", file=sys.stderr)
+        return 2
+    if cfg.bind_host not in _LOOPBACK and not allow_any_host:
+        print(f"{cfg.bind_host} can be reached by others: that takes --unsafe-bind and --api-key", file=sys.stderr)
         return 2
 
     import uvicorn
@@ -290,8 +296,9 @@ def cmd_model_list(args: argparse.Namespace) -> int:
         used.setdefault((r.backend, name), []).append(role)
     for name, size in here.items():
         roles = used.pop((ollama.name, name), [])
-        print(f"{name:52s} {size / 1e9:6.1f} GB  {', '.join(roles) or '—'}")
-    far = False
+        mark = f"  ⚠ {ollama.name}" if ollama.is_remote else ""
+        print(f"{name:52s} {size / 1e9:6.1f} GB  {', '.join(roles) or '—'}{mark}")
+    far = ollama is not None and ollama.is_remote
     for (backend, name), roles in used.items():
         remote = cfg.role_is_remote(roles[0])
         far |= remote
@@ -957,7 +964,8 @@ def _code_mode(args: argparse.Namespace) -> int:
     if not prompt and not hasattr(args, "agent") and not _trusts(root):
         return 1
     if hasattr(args, "agent"):
-        base = _admin_base(cfgmod.load())  # come back to: what was said stays, whatever became of the engine
+        cfg = cfgmod.load()  # come back to: what was said stays, whatever became of the engine
+        base = _engine_ready(cfg, "coding", args.agent.model) or _admin_base(cfg)
     else:
         base = _engine_ready(cfgmod.load(), "coding", args.model)
     if base is None:
@@ -1068,7 +1076,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
         rc = _systemctl("stop", _UNIT_NAME)
         print("stopped the hearth service" if rc == 0 else f"the hearth service did not stop (exit {rc})",
               file=sys.stdout if rc == 0 else sys.stderr)
-        if rc != 0 or not _gateway_identity(cfgmod.load()):
+        if rc != 0 or _engine_pid()[0] is None:
             return rc
         # …and one that was started beside it
     pid, via = _engine_pid()
@@ -1170,7 +1178,9 @@ def _chat_mode(args: argparse.Namespace) -> int:
     """A tiny streaming REPL against the local gateway — like ChatGPT in the
     terminal, but fully local."""
     cfg = cfgmod.load()
-    base = _admin_base(cfg) if hasattr(args, "history") else _engine_ready(cfg, "primary_chat", args.model)
+    base = _engine_ready(cfg, "primary_chat", args.model)
+    if base is None and hasattr(args, "history"):
+        base = _admin_base(cfg)  # come back to: what was said stays, whatever became of the engine
     if base is None:
         return 1
 
@@ -1512,21 +1522,32 @@ def cmd_autostart(args: argparse.Namespace) -> int:
 
 
 def cmd_restart(args: argparse.Namespace) -> int:
-    if _has_service():
-        if (_unit_runs() or _engine_pid()[0] is not None) and (rc := cmd_stop(args)) != 0:
+    if _has_service() and _unit_runs():
+        if (rc := _systemctl("stop", _UNIT_NAME)) != 0:
             return rc
         return cmd_start(build_parser().parse_args(["start"]))
     pid, _ = _engine_pid()  # answering or not
-    with_args: list[str] = []
-    if pid is not None:
-        argv = procs.argv(pid)
-        with_args = argv[argv.index("serve") + 1:] if "serve" in argv else []  # as it was started
-        if {"--unsafe-bind", "--api-key"} & {a.split("=")[0] for a in with_args}:
-            print("it was started by `hearth serve --unsafe-bind`: end that, and run it again", file=sys.stderr)
-            return 2
-        if (rc := cmd_stop(args)) != 0:
-            return rc
-    return cmd_start(build_parser().parse_args(["start", *with_args]))
+    if pid is None:
+        if _gateway_identity(cfgmod.load()) is not None:
+            print("a hearth answers, and its process was not found (another user's?): it was not restarted", file=sys.stderr)
+            return 1
+        return cmd_start(build_parser().parse_args(["start"]))
+    # As it was started — and what could not be started again is not stopped.
+    argv = procs.argv(pid)
+    how = argv[argv.index("serve") + 1:] if "serve" in argv else []
+    try:
+        with contextlib.redirect_stderr(None):
+            served = build_parser().parse_args(["serve", *how])
+            start = build_parser().parse_args(["start", *how])
+    except SystemExit:
+        served = start = None
+    host = cfgmod.load().bind_host
+    if served is not None and served.bind:
+        host = served.bind.rpartition(":")[0] or host
+    if start is None or host not in _LOOPBACK:
+        print("it was started with options of its own (hearth serve …): end that, and run it again", file=sys.stderr)
+        return 2
+    return cmd_stop(args) or cmd_start(start)
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
@@ -1534,7 +1555,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
     from . import background
 
     jc = shutil.which("journalctl")
-    if jc and _has_service():  # running or not: it is where it says why
+    if jc and _has_service() and (_unit_runs() or _engine_pid()[0] is None):  # also when it failed: it is where it says why
         tail = ["-f"] if args.follow else ["-n", "200", "--no-pager"]
         return subprocess.run([jc, "--user", "-u", _UNIT_NAME, *tail], env=_sc_env()).returncode
     p = background.log_path()

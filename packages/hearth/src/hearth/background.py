@@ -23,6 +23,11 @@ _LOG_MAX = 5_000_000  # then it is moved aside, once
 _WAIT_S = 45.0        # importing the server and bringing up Ollama, on a slow disk
 
 
+def _reach(host: str) -> str:
+    """Where a server that listens on `host` is reached from here."""
+    return {"0.0.0.0": "127.0.0.1", "::": "[::1]", "": "127.0.0.1"}.get(host, f"[{host}]" if ":" in host else host)
+
+
 def gateway_identity(cfg: cfgmod.Config) -> str | None:
     """`Server:` identity of a hearth gateway already serving cfg's port, else None.
 
@@ -33,7 +38,7 @@ def gateway_identity(cfg: cfgmod.Config) -> str | None:
     and dies on EADDRINUSE.
     """
     try:
-        r = httpx.get(f"http://{cfg.bind_host}:{cfg.bind_port}/admin/version", timeout=2.0)
+        r = httpx.get(f"http://{_reach(cfg.bind_host)}:{cfg.bind_port}/admin/version", timeout=2.0)
     except httpx.HTTPError:
         return None
     ident = r.headers.get("server", "")
@@ -53,7 +58,7 @@ def _coming_up(cfg: cfgmod.Config) -> bool:
     it brings up Ollama and answers after. Anything else on the port answers
     (or refuses) at once."""
     try:
-        with socket.create_connection((cfg.bind_host, cfg.bind_port), timeout=1.0) as s:
+        with socket.create_connection((_reach(cfg.bind_host).strip("[]"), cfg.bind_port), timeout=1.0) as s:
             s.settimeout(0.5)
             s.sendall(b"GET /admin/version HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
             try:

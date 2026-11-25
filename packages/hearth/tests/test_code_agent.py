@@ -338,16 +338,16 @@ def test_a_link_to_itself_is_passed_over(tmp_path):
 def test_what_a_command_left_in_the_background_ends_with_it(tmp_path):
     import time
 
-    import psutil
+    from hearth import procs
 
     a = _agent(str(tmp_path))
     out = a._exec_tool("run_shell", {"command": "sleep 7777 & echo $! > pid; echo hi", "timeout": 1})
     assert "timed out" in out
     pid = int((tmp_path / "pid").read_text())
     deadline = time.monotonic() + 5
-    while psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE and time.monotonic() < deadline:
+    while procs.alive(pid) and time.monotonic() < deadline:
         time.sleep(0.1)
-    assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    assert not procs.alive(pid)
 
 
 # ── getting there ─────────────────────────────────────────────────────────────
@@ -463,7 +463,7 @@ def test_each_mode_keeps_its_model_and_settings(terminal, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_engine_ready", lambda cfg, role, model: asked.append((role, model)) or "http://127.0.0.1:1")
     terminal("/model other", "/think off", "/code", "y", "/model coder", "/chat", "/status", "/code", "/exit")
     assert cli.main(["chat", "--model", "big"]) == 0
-    assert asked == [("primary_chat", "big"), ("coding", None)]  # (come back to, the engine is not asked again)
+    assert asked == [("primary_chat", "big"), ("coding", None), ("primary_chat", "other"), ("coding", "coder")]
     out = capsys.readouterr().out
     assert "model: other · deep-think: off" in out and "· model coder ·" in out
 
@@ -486,6 +486,6 @@ def test_the_answer_is_all_there_is_on_stdout(monkeypatch, capsys, tmp_path):
 def test_an_engine_that_died_does_not_end_the_session(terminal, monkeypatch, capsys):
     ups = [True]
     monkeypatch.setattr(cli, "_engine_ready", lambda cfg, role, model: "http://127.0.0.1:1" if ups.pop(0) else None)
-    ups += [False]  # asked for by the mode it cannot go to, and not by the one it comes back to
+    ups += [False, False]  # for the mode it cannot go to, and for the one it comes back to
     terminal("y", "/chat", "/exit")
     assert cli.main([]) == 0 and ups == []

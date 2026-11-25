@@ -101,4 +101,6 @@ class SecurityMiddleware:
     @staticmethod
     async def _reject(scope, receive, send, status: int, message: str, etype: str) -> None:
         response = JSONResponse({"error": {"message": message, "type": etype}}, status_code=status)
+        if status == 401:  # a client without the key may know what it is talking to (a web page may not)
+            response.headers["server"] = _SERVER_HEADER
         await response(scope, receive, send)
