@@ -3,70 +3,90 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hearth</title>
-<meta name="description" content="hearth runs AI models on your own computer and serves them to your programs, with a chat window and a coding agent.">
+<title>hearth — local AI engine</title>
+<meta name="description" content="Local AI engine with an OpenAI-compatible API, a chat window and a terminal coding agent.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <nav aria-label="Projects"><a href="/">yumima</a><a href="/finterm/">finterm</a><a href="/hearth/" aria-current="page">hearth</a></nav>
 <main>
-  <h1>AI models on your own computer</h1>
-  <p class="lead">hearth finds a model that suits your machine, checks that it works there, and serves it to your programs on one local address. It comes with a chat window, and a coding agent in the terminal. Nothing you type leaves the computer.</p>
+  <h1>Local AI engine</h1>
+  <p class="lead">Runs models on your own hardware and serves them through an OpenAI-compatible API on loopback. Includes a chat window and a terminal coding agent. Apache-2.0.</p>
 
-  <p class="dim">Version @VERSION@ · @DATE@ · <span id="count" data-base="13">13</span> clones and downloads<br><small>13 clones of the source, counted by GitHub from 10 to 23 November 2026, automated ones included; the rest are downloads of the engine.</small></p>
+  <p class="dim">Version @VERSION@ · @DATE@ · Downloads: <span id="count" data-built="@DOWNLOADS@">@DOWNLOADS@</span></p>
   <script>
   (function () {
-    var el = document.getElementById("count"), base = +el.dataset.base;
-    fetch("https://api.github.com/repos/yumima/hearth/releases?per_page=100")
-      .then(function (x) { return x.ok ? x.json() : []; })
-      .then(function (releases) {
-        var n = 0;
-        releases.forEach(function (rel) {
-          rel.assets.forEach(function (a) { if (/^hearth-.*\.whl$/.test(a.name)) n += a.download_count; });
-        });
-        el.textContent = (base + n).toLocaleString("en");
-      }).catch(function () {});
+    // Counts only rise: the page's own, the last shown in the past day, GitHub's current.
+    var el = document.getElementById("count"), key = "hearth-downloads", shown = +el.dataset.built;
+    function render() { el.textContent = shown.toLocaleString("en"); }
+    function refresh() {
+      fetch("https://api.github.com/repos/yumima/hearth/releases?per_page=100")
+        .then(function (x) { if (!x.ok) throw x.status; return x.json(); })
+        .then(function (releases) {
+          var n = 0;
+          releases.forEach(function (rel) {
+            rel.assets.forEach(function (a) { if (/^hearth-.*\.whl$/.test(a.name)) n += a.download_count; });
+          });
+          if (n <= shown) return;
+          shown = n;
+          try { localStorage.setItem(key, JSON.stringify({ at: Date.now(), n: n })); } catch (e) {}
+          render();
+        }).catch(function () {});
+    }
+    try {
+      var m = JSON.parse(localStorage.getItem(key));
+      if (m && Date.now() - m.at < 864e5 && m.n > shown) shown = m.n;
+    } catch (e) {}
+    render();
+    refresh();
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
   })();
   </script>
 
   <section aria-labelledby="install">
     <h2 id="install">Install</h2>
-    <p>Linux (x86-64) and macOS (Apple Silicon):</p>
+    <p>Linux (x86-64), macOS (Apple Silicon):</p>
     <pre><code>curl -fsSL https://yumima.github.io/hearth/install.sh | sh</code></pre>
-    <p>Windows, in PowerShell:</p>
+    <p>Windows (PowerShell):</p>
     <pre><code>irm https://yumima.github.io/hearth/install.ps1 | iex</code></pre>
-    <p class="dim">For you alone, without administrator rights, in one folder. It leaves an Ollama, a Python or a hearth you already have as they are. <a href="install.sh">Read the script</a> first if you like. The engine is up to 2&nbsp;GB, and the model you choose 3&nbsp;to&nbsp;18&nbsp;GB.</p>
+    <p class="dim">Per-user, single folder, no administrator rights. Existing Ollama, Python and hearth installations are not modified. Disk: engine up to 2&nbsp;GB, model 3–18&nbsp;GB. <a href="install.sh">Install script</a>.</p>
   </section>
 
-  <section aria-labelledby="after">
-    <h2 id="after">After that</h2>
-    <p>The setup page opens. It lists the models that suit your computer, best first. The one you choose is downloaded, compared with the build that was tested, loaded with as much room as your graphics card has for it, measured and checked before any program gets it.</p>
-    <p>Programs reach it at <code>http://127.0.0.1:11435/v1</code>, where they expect OpenAI. <a href="/finterm/">finterm</a> finds it by itself and asks.</p>
+  <section aria-labelledby="setup">
+    <h2 id="setup">Setup</h2>
+    <p>The setup page (<code>http://127.0.0.1:11435/</code>) ranks models by hardware fit. The selected model is downloaded, verified against the tested build, loaded with the largest context that stays on the GPU, benchmarked and checked before use.</p>
+  </section>
+
+  <section aria-labelledby="api">
+    <h2 id="api">API</h2>
+    <p>OpenAI-compatible, at <code>http://127.0.0.1:11435/v1</code>: chat completions (streaming, tool calls), embeddings, models. <a href="/finterm/">finterm</a> detects it automatically and asks before connecting.</p>
   </section>
 
   <section aria-labelledby="client">
-    <h2 id="client">The window and the terminal</h2>
-    <p>Click <b>Hearth</b> in the app menu for the chat window: your own tools through MCP, voice in and out, a language tutor. Leave it out with <code>--no-client</code>.</p>
-    <p>Type <code>hearth</code> in a folder for a coding agent: it reads your files, and asks before it changes one, runs a command or goes to the web.</p>
+    <h2 id="client">Clients</h2>
+    <ul>
+      <li><b>Chat window</b> (<b>Hearth</b> in the app menu) — MCP tools, voice input and output, language tutor. Skip with <code>--no-client</code>.</li>
+      <li><b>Coding agent</b> (<code>hearth</code> in a folder) — reads files; asks before edits, commands and web access.</li>
+    </ul>
   </section>
 
   <section aria-labelledby="needs">
-    <h2 id="needs">What it runs on</h2>
+    <h2 id="needs">Requirements</h2>
     <table>
-      <thead><tr><th scope="col">Computer</th><th scope="col">What to expect</th></tr></thead>
+      <thead><tr><th scope="col">Hardware</th><th scope="col">Model</th></tr></thead>
       <tbody>
-        <tr><td>Graphics card with 11&nbsp;GB or more, or a Mac with 24&nbsp;GB</td><td>A capable model, entirely on the GPU</td></tr>
-        <tr><td>Graphics card with 3&nbsp;to&nbsp;11&nbsp;GB, or a Mac with 8&nbsp;GB or more</td><td>A smaller model, entirely on the GPU</td></tr>
-        <tr><td>16&nbsp;GB of memory and no such card</td><td>A small model, slowly</td></tr>
+        <tr><td>GPU with 11&nbsp;GB or more, or Mac with 24&nbsp;GB</td><td>Larger, fully on GPU</td></tr>
+        <tr><td>GPU with 3–11&nbsp;GB, or Mac with 8&nbsp;GB or more</td><td>Smaller, fully on GPU</td></tr>
+        <tr><td>16&nbsp;GB RAM, no such GPU</td><td>Small, on CPU (slow)</td></tr>
       </tbody>
     </table>
-    <p class="dim">Run by us on NVIDIA under Linux. AMD cards, Windows with a graphics card, and Macs are experimental until somebody has told us how they do.</p>
+    <p class="dim">Tested on NVIDIA under Linux. AMD, Windows with a GPU, and macOS are experimental.</p>
   </section>
 
   <section aria-labelledby="leave">
-    <h2 id="leave">Updating and removing</h2>
-    <p><code>hearth update</code> brings the newest release; one that does not start is taken back by itself. <code>hearth uninstall</code> removes it, and can keep the models.</p>
-    <p><a href="https://github.com/yumima/hearth">Source</a> · <a href="https://github.com/yumima/hearth/releases">Releases</a> · <a href="https://github.com/yumima/hearth/blob/main/THIRD_PARTY.md">What is installed, and its licences</a></p>
+    <h2 id="leave">Update and uninstall</h2>
+    <p><code>hearth update</code> installs the latest release and rolls back if it does not start. <code>hearth uninstall</code> removes hearth; <code>--keep-models</code> keeps the models.</p>
+    <p><a href="https://github.com/yumima/hearth">Source</a> · <a href="https://github.com/yumima/hearth/releases">Releases</a> · <a href="https://github.com/yumima/hearth/blob/main/THIRD_PARTY.md">Third-party components and licences</a></p>
   </section>
 </main>
 </body>

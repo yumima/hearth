@@ -10,53 +10,10 @@ This repository is all of it: `packages/hearth` (the engine and the command) and
 installed together, that speak over HTTP. [finterm](https://github.com/yumima/finterm) is one of hearth's
 users; hearth knows nothing of finance.
 
-## Today's commits (2026-11-24)
+## Today's commits (2026-11-25)
 
 Latest first.
 
-- [`1965523`](https://github.com/yumima/hearth/commit/1965523) site: version, date, and how many clones and downloads
-- [`d994b30`](https://github.com/yumima/hearth/commit/d994b30) site: deployed from main, also when a release starts it
-- [`6f3de8e`](https://github.com/yumima/hearth/commit/6f3de8e) stop: a pidfile of one that has ended is not talked about
-- [`d3c16c9`](https://github.com/yumima/hearth/commit/d3c16c9) Others do not reach the engine without a key, whatever the configuration says
-- [`8e8145a`](https://github.com/yumima/hearth/commit/8e8145a) restart restarts what answers
-- [`58f21f3`](https://github.com/yumima/hearth/commit/58f21f3) Where there is a service, start, stop, restart and logs are the service's
-- [`c7af466`](https://github.com/yumima/hearth/commit/c7af466) The command line: one word for one thing, in groups
-- [`d5a0b8f`](https://github.com/yumima/hearth/commit/d5a0b8f) One name: hearth is the engine, the window and the command
-- [`eac6206`](https://github.com/yumima/hearth/commit/eac6206) **test:** a stand-in takes a port that was in use a moment ago
-- [`71a9afc`](https://github.com/yumima/hearth/commit/71a9afc) Release: the list of hashes is of the files that are in it
-- [`f32fd67`](https://github.com/yumima/hearth/commit/f32fd67) mantel: its README says where it is now
-- [`9e867c2`](https://github.com/yumima/hearth/commit/9e867c2) Speech recognition: PyAV 17, which faster-whisper 1.2.1 can use; CI reads a recording
-- [`b68bb87`](https://github.com/yumima/hearth/commit/b68bb87) catalog: the 27B in 2 bits, measured
-- [`2d737a8`](https://github.com/yumima/hearth/commit/2d737a8) client install without uv: one that works is left alone
-- [`dc193dc`](https://github.com/yumima/hearth/commit/dc193dc) client install always puts mantel right, and needs no marker of its own; put_back is one function
-- [`6a22d58`](https://github.com/yumima/hearth/commit/6a22d58) Installer, client: a build cut short at any point leaves the one that works
-- [`a022eb0`](https://github.com/yumima/hearth/commit/a022eb0) Installer, client: what the review found
-- [`7938097`](https://github.com/yumima/hearth/commit/7938097) Windows: programs that are running do not stop mantel from being added
-- [`1531fc1`](https://github.com/yumima/hearth/commit/1531fc1) CI: the release's real Ollama and a small model, from download to removal
-- [`9ef6dbe`](https://github.com/yumima/hearth/commit/9ef6dbe) Installer: asked to end in the middle, it goes back; a closed window stops nothing
-- [`ccca8d7`](https://github.com/yumima/hearth/commit/ccca8d7) hearth client install; the installer recognises what is its own
-- [`d5778de`](https://github.com/yumima/hearth/commit/d5778de) catalog: the 9B, measured
-- [`5f4a48a`](https://github.com/yumima/hearth/commit/5f4a48a) Installer: what the review found
-- [`0d99546`](https://github.com/yumima/hearth/commit/0d99546) README, release and site workflows (a tag makes a draft), the site
-- [`5095592`](https://github.com/yumima/hearth/commit/5095592) Windows: stopping a stalled download; what is installed, and its licences
-- [`684cff7`](https://github.com/yumima/hearth/commit/684cff7) catalog: what was measured here; two models that failed leave it
-- [`1252e78`](https://github.com/yumima/hearth/commit/1252e78) Install, update, go back, remove — tested with the scripts themselves
-- [`23e1c91`](https://github.com/yumima/hearth/commit/23e1c91) Windows: a port in use is not shared
-- [`c98309d`](https://github.com/yumima/hearth/commit/c98309d) Models: what the review found; the installer's first parts
-- [`f22d302`](https://github.com/yumima/hearth/commit/f22d302) Models that suit this computer: found, ranked, checked here, then used
-- [`498a50c`](https://github.com/yumima/hearth/commit/498a50c) Ollama's owner, the stop, and the client: what the review found
-- [`0b6e65f`](https://github.com/yumima/hearth/commit/0b6e65f) stop: only a gateway's own process, not one that mentions hearth
-- [`07fad80`](https://github.com/yumima/hearth/commit/07fad80) One lock file, two environments; CI on Linux, macOS and Windows
-- [`0b702ff`](https://github.com/yumima/hearth/commit/0b702ff) Ollama kept running, one way to handle processes everywhere; the chat window is mantel
-- [`fccccf8`](https://github.com/yumima/hearth/commit/fccccf8) layout: hearth under packages/
-- [`279c827`](https://github.com/yumima/hearth/commit/279c827) start --background: what the review found
-- [`6d22b0c`](https://github.com/yumima/hearth/commit/6d22b0c) **ci:** the engine branch too
-- [`876842f`](https://github.com/yumima/hearth/commit/876842f) **ci:** the engine branch too
-- [`1edae77`](https://github.com/yumima/hearth/commit/1edae77) Voice and web search: what the review found
-- [`83f1dc3`](https://github.com/yumima/hearth/commit/83f1dc3) start --background: the gateway outlives whoever started it
-- [`0e41e46`](https://github.com/yumima/hearth/commit/0e41e46) Fresh installs work again (mcp 1.x); ask hearth for web search
-- [`efbb107`](https://github.com/yumima/hearth/commit/efbb107) 0.2.0: web search only for a request that asks; other web pages are refused
-- [`0db91e9`](https://github.com/yumima/hearth/commit/0db91e9) voice: choose the English voice; speech goes to a voice that can pronounce it
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 
