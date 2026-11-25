@@ -100,7 +100,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     service = None
     if not extra and _has_service():
         # Type=simple: started means forked, so what became of it is asked again.
-        service = background.Service(lambda: _systemctl("restart" if getattr(args, "again", False) else "start", _UNIT_NAME),
+        service = background.Service(lambda: _systemctl("start", _UNIT_NAME),
                                      lambda: _systemctl("is-active", "--quiet", _UNIT_NAME) == 0
                                      or _unit_is("activating"))
     elif cfg.bind_host not in ("127.0.0.1", "localhost", "::1"):
@@ -119,6 +119,10 @@ def _has_service() -> bool:
     address: one named in the environment is an engine of its own.)"""
     own = any(os.environ.get(n) for n in ("HEARTH_HOME", "HEARTH_CONFIG", "HEARTH_DATA"))
     return not own and _unit_path().exists() and bool(shutil.which("systemctl"))
+
+
+def _unit_runs() -> bool:
+    return any(_unit_is(x) for x in ("active", "activating", "reloading", "deactivating"))
 
 
 def _unit_is(state: str) -> bool:
@@ -1059,7 +1063,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
-    if _has_service() and any(_unit_is(x) for x in ("active", "activating", "reloading", "deactivating")):
+    if _has_service() and _unit_runs():
         # systemd's to end: what it keeps up, it would bring back.
         rc = _systemctl("stop", _UNIT_NAME)
         print("stopped the hearth service" if rc == 0 else f"the hearth service did not stop (exit {rc})",
@@ -1509,11 +1513,9 @@ def cmd_autostart(args: argparse.Namespace) -> int:
 
 def cmd_restart(args: argparse.Namespace) -> int:
     if _has_service():
-        start = build_parser().parse_args(["start"])
-        start.again = True
-        if not (_unit_is("active") or _unit_is("activating")) and _engine_pid()[0] is not None and (rc := cmd_stop(args)) != 0:
-            return rc  # one that was started beside it
-        return cmd_start(start)
+        if (_unit_runs() or _engine_pid()[0] is not None) and (rc := cmd_stop(args)) != 0:
+            return rc
+        return cmd_start(build_parser().parse_args(["start"]))
     pid, _ = _engine_pid()  # answering or not
     with_args: list[str] = []
     if pid is not None:

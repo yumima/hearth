@@ -318,12 +318,20 @@ def engine(monkeypatch):
     did, unit, pid = [], {"exists": False, "state": "inactive"}, [None]
     monkeypatch.setattr(cli, "_has_service", lambda: unit["exists"])
     monkeypatch.setattr(cli, "_unit_is", lambda state: unit["state"] == state)
-    monkeypatch.setattr(cli, "_systemctl", lambda *a: did.append(a[0]) or 0)
+
+    def systemctl(*a):
+        did.append(a[0])
+        unit["state"] = {"stop": "inactive", "start": "active"}[a[0]]
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
     monkeypatch.setattr(cli, "_engine_pid", lambda: (pid[0], "pidfile"))
-    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: None)
+    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: "hearth/9" if unit["state"] == "active" else None)
     from hearth import background
 
-    def start(cfg, argv, service=None):
+    def start(cfg, argv, service=None):  # as the real one: what runs is not started
+        if unit["state"] == "active":
+            return True, "already running"
         if service is not None:
             service.start()
         else:
@@ -339,13 +347,15 @@ def engine(monkeypatch):
 def test_where_there_is_a_service_it_is_the_service(engine):
     engine.unit.update(exists=True, state="active")
     assert cli.main(["stop"]) == 0 and cli.main(["restart"]) == 0 and cli.main(["start"]) == 0
-    assert engine.did == ["stop", "restart", "start"]
+    assert engine.did == ["stop", "start"]
+    engine.did.clear()
+    assert cli.main(["restart"]) == 0 and engine.did == ["stop", "start"]  # although it answers
     engine.did.clear()
     engine.unit["state"] = "activating"  # it ends and is started again, over and over
     assert cli.main(["stop"]) == 0 and engine.did == ["stop"]
     engine.did.clear()
     engine.unit["state"], engine.pid[0] = "inactive", 7  # one was started beside it
-    assert cli.main(["restart"]) == 0 and engine.did == ["end 7", "restart"]
+    assert cli.main(["restart"]) == 0 and engine.did == ["end 7", "start"]
 
 
 def test_restart_without_a_service(engine, monkeypatch):
@@ -368,7 +378,7 @@ def test_a_service_may_have_an_address_others_can_reach(engine, conf, monkeypatc
     monkeypatch.setattr(cli.cfgmod, "load", lambda *a, **k: cfg)
     assert cli.main(["start"]) == 2 and "unsafe-bind" in capsys.readouterr().err
     engine.unit.update(exists=True, state="active")
-    assert cli.main(["start"]) == 0 and cli.main(["restart"]) == 0 and engine.did == ["start", "restart"]
+    assert cli.main(["start"]) == 0 and cli.main(["restart"]) == 0 and engine.did == ["stop", "start"]
 
 
 def test_the_services_log_also_when_it_failed(engine, monkeypatch):
