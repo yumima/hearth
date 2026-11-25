@@ -1,10 +1,10 @@
 # hearth
 
-**Local AI engine.** Picks and checks a model for your hardware and serves it over
-an OpenAI-compatible API, with a chat window, coding agent, voice, web search and
-MCP tools. Free to use, 100% local, no signup. Built on open models (Qwen) and
-Ollama. Linux, Windows and macOS. Type `hearth` in a folder for the coding agent, or
-click **Hearth** for the chat window.
+**Local AI engine.** Local models fitted to the hardware (GPU, VRAM, RAM), verified
+and served over an OpenAI-compatible API. Chat window, coding agent, voice, web
+search, MCP tools. Free to use, 100% local, no signup. Open models (Qwen) on Ollama.
+Linux, Windows, macOS. `hearth` in a folder starts the coding agent; **Hearth** in
+the app menu, the chat window.
 
 This repository is all of it: `packages/hearth` (the engine and the command) and
 `packages/client` (the [chat window](packages/client/README.md)). Two programs,
@@ -15,6 +15,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`3a33359`](https://github.com/yumima/hearth/commit/3a33359) site: what hearth does, shorter
 - [`ddc5056`](https://github.com/yumima/hearth/commit/ddc5056) site: the counter is clones and downloads
 - [`65d5257`](https://github.com/yumima/hearth/commit/65d5257) site: the deploy is a job of its own and is tried again
 - [`1e25ea3`](https://github.com/yumima/hearth/commit/1e25ea3) site: a failed request for the count stops the deploy
