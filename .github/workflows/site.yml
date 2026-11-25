@@ -50,7 +50,8 @@ jobs:
           v=$(jq -r '.tagName | ltrimstr("v")' release.json)
           d=$(date -u -d "$(jq -r .publishedAt release.json)" '+%-d %B %Y')
           n=$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" --jq '.[].assets[] | select(.name | test("^hearth-.*[.]whl$")) | .download_count' | jq -s 'add // 0')
-          sed -i "s/@VERSION@/$v/; s/@DATE@/$d/; s/@DOWNLOADS@/$n/g" site/index.html
+          clones=$(sed -n 's/.*data-clones="\([0-9]*\)".*/\1/p' site/index.html)
+          sed -i "s/@VERSION@/$v/; s/@DATE@/$d/; s/@DOWNLOADS@/$n/; s/@TOTAL@/$((clones + n))/" site/index.html
           ! grep -n "@[A-Z]*@" site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

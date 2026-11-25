@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`65d5257`](https://github.com/yumima/hearth/commit/65d5257) site: the deploy is a job of its own and is tried again
 - [`1e25ea3`](https://github.com/yumima/hearth/commit/1e25ea3) site: a failed request for the count stops the deploy
 - [`40daa0f`](https://github.com/yumima/hearth/commit/40daa0f) site: the counter is downloads only; concise technical copy
 

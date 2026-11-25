@@ -13,12 +13,12 @@
   <h1>Local AI engine</h1>
   <p class="lead">Runs models on your own hardware and serves them through an OpenAI-compatible API on loopback. Includes a chat window and a terminal coding agent. Apache-2.0.</p>
 
-  <p class="dim">Version @VERSION@ · @DATE@ · Downloads: <span id="count" data-built="@DOWNLOADS@">@DOWNLOADS@</span></p>
+  <p class="dim">Version @VERSION@ · @DATE@ · Clones + Downloads: <span id="count" data-clones="13" data-built="@DOWNLOADS@">@TOTAL@</span></p>
   <script>
   (function () {
-    // Counts only rise: the page's own, the last shown in the past day, GitHub's current.
-    var el = document.getElementById("count"), key = "hearth-downloads", shown = +el.dataset.built;
-    function render() { el.textContent = shown.toLocaleString("en"); }
+    // Clones (GitHub gives them only to the owner) and downloads. Counts only rise: the page's own, the last shown in the past day, GitHub's current.
+    var el = document.getElementById("count"), key = "hearth-downloads", shown = +el.dataset.built, clones = +el.dataset.clones;
+    function render() { el.textContent = (clones + shown).toLocaleString("en"); }
     function refresh() {
       fetch("https://api.github.com/repos/yumima/hearth/releases?per_page=100")
         .then(function (x) { if (!x.ok) throw x.status; return x.json(); })
