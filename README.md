@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`d3c16c9`](https://github.com/yumima/hearth/commit/d3c16c9) Others do not reach the engine without a key, whatever the configuration says
 - [`8e8145a`](https://github.com/yumima/hearth/commit/8e8145a) restart restarts what answers
 - [`58f21f3`](https://github.com/yumima/hearth/commit/58f21f3) Where there is a service, start, stop, restart and logs are the service's
 - [`c7af466`](https://github.com/yumima/hearth/commit/c7af466) The command line: one word for one thing, in groups

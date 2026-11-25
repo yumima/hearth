@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import atexit
 import errno
+import io
+import atexit
 import json
 import os
 import platform
@@ -1108,6 +1109,9 @@ def _engine_pid() -> tuple[int | None, str]:
             print("invalid pidfile (removed)", file=sys.stderr)
             pid = None
         # Guard against a stale pidfile whose PID was reused by another process.
+        if pid is not None and not procs.alive(pid):
+            pid_file.unlink(missing_ok=True)  # it ended without taking it along
+            pid = None
         if pid is not None and not _pid_looks_like_hearth(pid):
             pid_file.unlink(missing_ok=True)
             print(f"stale pidfile: pid {pid} is not a hearth gateway (removed, did not signal)",
@@ -1536,7 +1540,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
     argv = procs.argv(pid)
     how = argv[argv.index("serve") + 1:] if "serve" in argv else []
     try:
-        with contextlib.redirect_stderr(None):
+        with contextlib.redirect_stderr(io.StringIO()):
             served = build_parser().parse_args(["serve", *how])
             start = build_parser().parse_args(["start", *how])
     except SystemExit:
