@@ -1,10 +1,10 @@
 # hearth
 
-**Local AI engine.** Local models fitted to the hardware (GPU, VRAM, RAM), verified
-and served over an OpenAI-compatible API. Chat window, coding agent, voice, web
-search, MCP tools. Free to use, 100% local, no signup. Open models (Qwen) on Ollama.
-Linux, Windows, macOS. `hearth` in a folder starts the coding agent; **Hearth** in
-the app menu, the chat window.
+**Local AI engine.** Local models fitted to the hardware (GPU, VRAM, RAM),
+OpenAI-compatible API, chat window, coding agent, voice, web search, MCP tools. Free
+to use, no signup. Open-weight models (Qwen) on Ollama. Linux, Windows, macOS.
+`hearth` in a folder starts the coding agent; **Hearth** in the app menu, the chat
+window.
 
 This repository is all of it: `packages/hearth` (the engine and the command) and
 `packages/client` (the [chat window](packages/client/README.md)). Two programs,
@@ -15,6 +15,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`8069845`](https://github.com/yumima/hearth/commit/8069845) site: the lead, dry and technical
 - [`3a33359`](https://github.com/yumima/hearth/commit/3a33359) site: what hearth does, shorter
 - [`ddc5056`](https://github.com/yumima/hearth/commit/ddc5056) site: the counter is clones and downloads
 - [`65d5257`](https://github.com/yumima/hearth/commit/65d5257) site: the deploy is a job of its own and is tried again
