@@ -1,21 +1,37 @@
 name: site
 
 # https://yumima.github.io/hearth/ : site/, and the latest release's install scripts.
+# Only main may deploy it, and a release runs from its tag: that starts a run on main.
 on:
   release:
     types: [published]
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["site/**"]
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
 
 jobs:
+  again-on-main:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run site.yml --repo "${{ github.repository }}" --ref main
+
   deploy:
+    if: github.event_name != 'release'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
     runs-on: ubuntu-latest
     environment:
       name: github-pages
