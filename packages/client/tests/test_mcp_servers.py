@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mantel.mcp_servers import rag, web
+from hearth_client.mcp_servers import rag, web
 
 
 def test_web_ssrf_blocks_internal_allows_public():

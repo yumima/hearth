@@ -24,15 +24,11 @@ def _dispatch(argv):
 
 # ── command dispatch ──────────────────────────────────────────────────────────
 
-def test_bare_hearth_is_terminal_chat():
-    assert _dispatch([])[0] == "cmd_chat"
-
-
-def test_client_subcommands_dispatch():
-    assert _dispatch(["client"]) == ("cmd_client", None)            # bare → open
-    assert _dispatch(["client", "open"]) == ("cmd_client", "open")
-    assert _dispatch(["client", "install"]) == ("cmd_client", "install")
-    assert _dispatch(["client", "uninstall"]) == ("cmd_client", "uninstall")
+def test_bare_hearth_is_the_coding_agent():
+    assert _dispatch([])[0] == "cmd_code"
+    a = build_parser().parse_args(["-p", "do it", "-q"])
+    assert (a.func.__name__, a.prompt, a.quiet, a.path, a.yolo) == ("cmd_code", "do it", True, ".", False)
+    assert build_parser().parse_args(["code", "sub", "-p", "x"]).path == "sub"
 
 
 def test_chat_and_service_still_dispatch():
@@ -48,23 +44,6 @@ def test_chat_and_service_still_dispatch():
 def test_removed_commands_are_rejected(argv):
     with pytest.raises(SystemExit):
         build_parser().parse_args(argv)
-
-
-# ── the chat window is mantel (test_client.py has the rest) ───────────────────
-
-def test_the_window_needs_the_engine(monkeypatch, capsys):
-    from hearth import client
-
-    ran = []
-    monkeypatch.setattr(client, "program", lambda: "/x/mantel")
-    monkeypatch.setattr(cli, "cmd_start", lambda a: ran.append(("start", a.background)) or 0)
-    monkeypatch.setattr(cli.subprocess, "run", lambda a, **k: ran.append(a) or type("R", (), {"returncode": 7})())
-    for argv in (["client"], ["client", "open"]):
-        ran.clear()
-        assert cli.main(argv) == 7 and ran == [("start", True), ["/x/mantel"]]
-    monkeypatch.setattr(client, "program", lambda: None)
-    ran.clear()
-    assert cli.main(["client"]) == 1 and ran == [] and "hearth client install" in capsys.readouterr().err
 
 
 def test_swap_alias_accepts_context_like_bind():

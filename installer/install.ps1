@@ -1,8 +1,8 @@
-# Install hearth, a local AI engine, and mantel, its chat window - for this user,
+# Install hearth, a local AI engine, and its chat window - for this user,
 # without administrator rights (Windows PowerShell 5.1 or later).
 #
 #   irm https://yumima.github.io/hearth/install.ps1 | iex
-#   & ([scriptblock]::Create((irm https://yumima.github.io/hearth/install.ps1))) --no-mantel
+#   & ([scriptblock]::Create((irm https://yumima.github.io/hearth/install.ps1))) --no-client
 #
 # Everything goes into one folder, and `hearth uninstall` removes it. An Ollama, a
 # hearth or a Python that is already here is not touched. This script fetches uv

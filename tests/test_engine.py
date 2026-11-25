@@ -39,7 +39,7 @@ def _gateway(world, path: str, body: dict) -> dict:
 
 def test_01_installed_with_the_ollama_of_the_release(world):
     world.release("0.2.0")
-    world.install("0.2.0", "--no-open", "--no-mantel", "--no-autostart")
+    world.install("0.2.0", "--no-open", "--no-client", "--no-autostart")
     assert world.version() == "0.2.0"
     v = httpx.get(f"http://127.0.0.1:{world.ollama_port}/api/version", timeout=10).json()["version"]
     assert f'"{v}"' in (ROOT / "installer" / "pins.json").read_text()

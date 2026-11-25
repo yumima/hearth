@@ -1,16 +1,16 @@
-"""mantel CLI.
+"""hearth's chat window, from the command line. People run it as `hearth client …`;
+`hearth-client …` is the program behind that.
 
-  mantel            open the desktop chat window (starts mantel's local server)
-  mantel serve      run the local server in the foreground (headless / dev)
-  mantel stop       stop the local server
-  mantel restart    restart the local server
-  mantel logs [-f]  show (or follow) the local server log
-  mantel install    add a clickable desktop launcher (app menu / Start menu)
-  mantel uninstall  remove the launcher
+  hearth client            open the window (starts the window's local server)
+  hearth client serve      run the local server in the foreground (headless / dev)
+  hearth client stop       stop the local server (the engine goes on)
+  hearth client restart    restart the local server
+  hearth client logs [-f]  show (or follow) the local server log
+  hearth client install    build it, and add it to the app menu / Start menu
+  hearth client uninstall  take it out of the menu
 
-mantel is a *client*: bare `mantel` opens the window. The window runs mantel's
-own loopback server (a daemon thread) which serves the UI and proxies to the
-configured backend (default: local hearth on :11435).
+It is a *client*: the window shows its own loopback server, which serves the UI
+and proxies to the configured backend (default: the hearth engine on :11435).
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -35,17 +34,17 @@ def _server_url(cfg: cfgmod.Config) -> str:
 
 
 def _server_up(cfg: cfgmod.Config, timeout: float = 0.5) -> bool:
-    """True only if *mantel* is serving on the port — not some other app that
+    """True only if *this client* is serving on the port — not some other app that
     happens to answer /api/health (so we never reuse a foreign server)."""
     try:
         r = httpx.get(f"http://{cfg.host}:{cfg.port}/api/health", timeout=timeout)
-        return r.status_code == 200 and r.json().get("app") == "mantel"
+        return r.status_code == 200 and r.json().get("app") == "hearth-client"
     except (httpx.HTTPError, ValueError):
         return False
 
 
 def _read_pid() -> int | None:
-    """The PID of a live mantel server from the pidfile, or None if the file is
+    """The PID of a live client server from the pidfile, or None if the file is
     absent/garbage, the process is gone, or it is another program's by now."""
     try:
         pid = int(cfgmod.pid_path().read_text(encoding="utf-8").strip())
@@ -62,12 +61,12 @@ def _read_pid() -> int | None:
 
 
 def _is_server(args: list[str]) -> bool:
-    """Is this command line `mantel serve`, by its name or as `python -m mantel`?
-    Not merely one that mentions mantel: a Python in a folder of that name does."""
+    """Is this command line `hearth client serve`, by its name or as `python -m hearth_client`?
+    Not merely one that mentions it: a Python in a folder of that name does."""
     for i, a in enumerate(args):
         name = a.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe").removesuffix("-script.py")
-        if name == "mantel" and (i == 0 or args[i - 1] == "-m" or "/" in a or "\\" in a):
-            return "serve" in args[i + 1:]
+        if name in ("hearth-client", "hearth_client") and (i == 0 or args[i - 1] == "-m" or "/" in a or "\\" in a):
+            return args[i + 1:i + 2] == ["serve"]
     return False
 
 
@@ -91,10 +90,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from .app import create_app
 
     cfg = cfgmod.load()
-    print(f"[mantel] serving http://{cfg.host}:{cfg.port}  (backend: {cfg.active().base_url})")
-    print(f"[mantel] open the UI at {_server_url(cfg)}")
+    print(f"[hearth client] serving http://{cfg.host}:{cfg.port}  (backend: {cfg.active().base_url})")
+    print(f"[hearth client] open the UI at {_server_url(cfg)}")
 
-    # Record our PID so `mantel stop`/`restart` can find this server (works whether
+    # Record our PID so `hearth client stop`/`restart` can find this server (works whether
     # we were launched in the foreground or detached by _ensure_server). Remove it
     # on exit, but only if it's still ours — a racing restart may have replaced it.
     pid_file = cfgmod.pid_path()
@@ -123,19 +122,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _ensure_server(cfg: cfgmod.Config) -> bool:
-    """Ensure mantel's server is up, starting it as a DETACHED process if needed.
+    """Ensure the client's server is up, starting it as a DETACHED process if needed.
 
     The server must outlive the launcher. Chrome's single-instance reuse makes the
     spawned browser process exit immediately when a window for the profile already
     exists (e.g. a leftover Chrome from a prior session), and the previous
     in-process daemon-thread server died with it — the freshly-opened window then
     loaded a dead port ("first launch refused, second works"). A detached
-    `mantel serve` survives independently and is reused on the next open, so the
+    `hearth client serve` survives independently and is reused on the next open, so the
     window always finds a live server. Returns True once it's serving."""
     if _server_up(cfg):
         return True
     # Send the detached server's output to a log file (was DEVNULL — which left no
-    # way to see why a start failed). `mantel logs` tails it.
+    # way to see why a start failed). `hearth client logs` tails it.
     log = _open_server_log()
     out = log or subprocess.DEVNULL
     try:
@@ -143,7 +142,7 @@ def _ensure_server(cfg: cfgmod.Config) -> bool:
             detached = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
         else:
             detached = {"start_new_session": True}
-        subprocess.Popen([sys.executable, "-m", "mantel", "serve"], **detached,
+        subprocess.Popen([sys.executable, "-m", "hearth_client", "serve"], **detached,
                          stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
     finally:
         if log is not None:
@@ -160,9 +159,9 @@ def _ensure_server(cfg: cfgmod.Config) -> bool:
 def cmd_open(args: argparse.Namespace) -> int:
     cfg = cfgmod.load()
     if not _ensure_server(cfg):
-        print(f"mantel's server didn't come up on {cfg.host}:{cfg.port}. "
-              f"Run `mantel serve` to see the error, or change `port` via "
-              f"`mantel config edit`.", file=sys.stderr)
+        print(f"the client's server didn't come up on {cfg.host}:{cfg.port}. "
+              f"Run `hearth client serve` to see the error, or change `port` via "
+              f"`hearth client config edit`.", file=sys.stderr)
         return 1
     from . import desktop
     return desktop.open_window(_server_url(cfg))
@@ -174,10 +173,10 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if pid is None:
         cfgmod.pid_path().unlink(missing_ok=True)  # clear a stale pidfile
         if _server_up(cfg):
-            print("a mantel server is running but no pid file was found "
+            print("the window's server is running but no pid file was found "
                   "(started by an older build?); stop it manually.", file=sys.stderr)
             return 1
-        print("mantel is not running.")
+        print("The window's server is not running.")
         return 0
     # Asked first, so it ends in order; then made to.
     try:
@@ -194,10 +193,10 @@ def cmd_stop(args: argparse.Namespace) -> int:
         except psutil.Error:  # not ended yet, or not ours to end
             continue
     if _read_pid() == pid:
-        print(f"could not stop mantel (pid {pid}) — another user's?", file=sys.stderr)
+        print(f"could not stop the window's server (pid {pid}) — another user's?", file=sys.stderr)
         return 1
     cfgmod.pid_path().unlink(missing_ok=True)
-    print(f"stopped mantel (pid {pid}).")
+    print(f"stopped the window's server (pid {pid}).")
     return 0
 
 
@@ -205,9 +204,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
     cmd_stop(args)
     cfg = cfgmod.load()
     if _ensure_server(cfg):
-        print(f"mantel restarted on {cfg.host}:{cfg.port}  ·  logs: {cfgmod.log_path()}")
+        print(f"restarted on {cfg.host}:{cfg.port}  ·  logs: {cfgmod.log_path()}")
         return 0
-    print(f"mantel didn't come back up on {cfg.host}:{cfg.port} — see {cfgmod.log_path()}",
+    print(f"it didn't come back up on {cfg.host}:{cfg.port} — see {cfgmod.log_path()}",
           file=sys.stderr)
     return 1
 
@@ -215,7 +214,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
 def cmd_logs(args: argparse.Namespace) -> int:
     lp = cfgmod.log_path()
     if not lp.exists():
-        print(f"no log yet at {lp}  (start the server with `mantel` or `mantel serve`).")
+        print(f"no log yet at {lp}  (start the server with `hearth client` or `hearth client serve`).")
         return 0
     if getattr(args, "follow", False):
         tail = shutil.which("tail")
@@ -232,7 +231,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 def cmd_install(args: argparse.Namespace) -> int:
     from . import desktop
-    return desktop.install(_mantel_exec_argv())
+    return desktop.install(_launch_command())
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -240,39 +239,15 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return desktop.uninstall()
 
 
-def _mantel_exec_argv() -> list[str]:
-    """argv a launcher uses to invoke mantel — bare `mantel` opens the window.
-    Prefers a `mantel` on PATH, else the console script next to this interpreter
-    (the venv's bin/mantel), routed through a stable ~/.local/bin/mantel symlink.
-    Falls back to ``<this python> -m mantel``.
+def _launch_command() -> list[str]:
+    """What a click on the icon runs: hearth, which starts the engine and opens the
+    window, if hearth said where it is; else this program itself.
 
     NB: do NOT realpath the interpreter — a venv python is a symlink to the base
-    python, which doesn't have mantel (or its deps) installed."""
-    if program := os.environ.get("MANTEL_PROGRAM"):
-        return [program]  # hearth's installer keeps a stable one, and the links to it
-    found = shutil.which("mantel")
-    if not found:
-        cand = Path(sys.executable).with_name("mantel")
-        if cand.exists():
-            found = str(cand)
-    if found:
-        return [_stable_link(os.path.realpath(found))]
-    return [sys.executable, "-m", "mantel"]
-
-
-def _stable_link(real: str) -> str:
-    link = Path.home() / ".local" / "bin" / "mantel"
-    try:
-        link.parent.mkdir(parents=True, exist_ok=True)
-        if link.exists() and not link.is_symlink():
-            return str(link)  # a real file already sits there — trust it
-        if not link.exists() or os.path.realpath(link) != real:
-            if link.is_symlink():
-                link.unlink()
-            link.symlink_to(real)
-        return str(link)
-    except OSError:
-        return real
+    python, which doesn't have the client (or its deps) installed."""
+    if program := os.environ.get("HEARTH_PROGRAM"):
+        return [program, "client"]
+    return [sys.executable, "-m", "hearth_client"]
 
 
 # ── environment management (hearth-style) ─────────────────────────────────────
@@ -328,7 +303,7 @@ def _live_or_transient_tools(cfg: cfgmod.Config) -> tuple[list[dict], dict]:
 
 def _example_mcp_servers() -> dict:
     """Safe, **disabled** servers to seed the config: two Node/npx examples plus
-    mantel's built-in RAG server (local embeddings-backed search over your files)."""
+    the client's built-in RAG server (local embeddings-backed search over your files)."""
     from .mcp_host import ServerConfig
     home = str(Path.home())
     return {
@@ -339,17 +314,17 @@ def _example_mcp_servers() -> dict:
             command="npx", args=["-y", "@modelcontextprotocol/server-memory"],
             enabled=False, auto_approve=["*"]),
         # Built-in: RAG over the user's files via the backend's embeddings.
-        # sys.executable is the venv python running mantel → `import mantel` works.
+        # sys.executable is the venv python running this → `import hearth_client` works.
         "rag": ServerConfig(
-            command=sys.executable, args=["-m", "mantel.mcp_servers.rag"],
+            command=sys.executable, args=["-m", "hearth_client.mcp_servers.rag"],
             enabled=False, auto_approve=["*"]),
         # Built-in: fetch a web page/API by URL (readable text).
         "web": ServerConfig(
-            command=sys.executable, args=["-m", "mantel.mcp_servers.web"],
+            command=sys.executable, args=["-m", "hearth_client.mcp_servers.web"],
             enabled=False, auto_approve=["*"]),
         # Built-in: text-to-image (ComfyUI/SDXL via hearth /v1/images/generations).
         "image": ServerConfig(
-            command=sys.executable, args=["-m", "mantel.mcp_servers.image"],
+            command=sys.executable, args=["-m", "hearth_client.mcp_servers.image"],
             enabled=False, auto_approve=["*"]),
     }
 
@@ -357,7 +332,7 @@ def _example_mcp_servers() -> dict:
 def cmd_setup(args: argparse.Namespace) -> int:
     """First-run wizard: find a backend, pick a model, seed MCP examples."""
     cfg = cfgmod.load()
-    print("mantel setup\n")
+    print("hearth client setup\n")
     url = cfgmod.DEFAULT_HEARTH_URL
     print(f"Looking for a local hearth engine at {url} …")
     ok, models = _probe_models(url)
@@ -369,14 +344,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print(f"  ✓ found hearth ({len(models)} models) — using model '{cfg.model}'")
     else:
         print("  · none found. Run a local hearth (github.com/yumima/hearth), or edit the")
-        print("    config to point at a cloud backend (`mantel config edit`).")
+        print("    config to point at a cloud backend (`hearth client config edit`).")
 
     if not cfg.mcp_servers and shutil.which("npx"):
         cfg.mcp_servers = _example_mcp_servers()
         print("\nMCP: `npx` found — seeded two safe, disabled example servers")
-        print("     (filesystem, memory). Enable with `mantel mcp enable <name>`.")
+        print("     (filesystem, memory). Enable with `hearth client mcp enable <name>`.")
     elif not cfg.mcp_servers:
-        print("\nMCP: no `npx`/`uvx` runtime found — add servers later with `mantel config edit`.")
+        print("\nMCP: no `npx`/`uvx` runtime found — add servers later with `hearth client config edit`.")
 
     p = cfgmod.save(cfg)
     print(f"\n✓ wrote {p}")
@@ -384,9 +359,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         import webview  # type: ignore  # noqa: F401
     except Exception:  # noqa: BLE001
         print("\nTip: for a native window (instead of a Chromium --app window), install")
-        print("     pywebview:  pip install 'mantel[gui]'  (the chrome fallback works without it)")
-    print("\nNext:  mantel        # open the chat window")
-    print("       mantel status # check backend + tools")
+        print("     pywebview:  pip install 'hearth-client[gui]'  (the chrome fallback works without it)")
+    print("\nNext:  hearth client        # open the chat window")
+    print("       hearth client status # check backend + tools")
     return 0
 
 
@@ -394,7 +369,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     cfg = cfgmod.load()
     prov = cfg.active()
     ok, models = _probe_models(prov.base_url)
-    print(f"mantel  ·  config: {cfgmod.config_path()}"
+    print(f"hearth client  ·  config: {cfgmod.config_path()}"
           f"{'' if cfgmod.config_path().exists() else '  (defaults)'}")
     pid = _read_pid()
     print(f"  server:  http://{cfg.host}:{cfg.port}  "
@@ -405,7 +380,7 @@ def cmd_status(args: argparse.Namespace) -> int:
           f"({str(len(models)) + ' models' if ok else 'unreachable'})")
     print(f"  model:   {cfg.model}")
     if not cfg.mcp_servers:
-        print("  mcp:     no servers (run `mantel setup` or `mantel config edit`)")
+        print("  mcp:     no servers (run `hearth client setup` or `hearth client config edit`)")
     else:
         enabled = [n for n, s in cfg.mcp_servers.items() if s.enabled]
         print(f"  mcp:     {len(cfg.mcp_servers)} server(s), {len(enabled)} enabled"
@@ -419,7 +394,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     cfg = cfgmod.load()
-    print("mantel doctor — environment check\n")
+    print("hearth client doctor — environment check\n")
     ok, models = _probe_models(cfg.active().base_url)
     print(f"  [{_mark(ok)}] backend  {cfg.provider} ({cfg.active().base_url})"
           + (f" — {len(models)} models" if ok else " — unreachable"))
@@ -435,7 +410,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     have_chrome = any(shutil.which(b) for b in
                       ("google-chrome", "chromium", "chromium-browser", "microsoft-edge", "brave-browser"))
     print(f"  [{_mark(have_pw)}] window   pywebview (native)"
-          + ("" if have_pw else "  — pip install 'mantel[gui]'"))
+          + ("" if have_pw else "  — pip install 'hearth-client[gui]'"))
     print(f"  [{_mark(have_chrome)}] window   chromium/edge --app fallback")
     return 0
 
@@ -465,7 +440,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     if p.exists():
         print(f"# {p}\n{p.read_text(encoding='utf-8').rstrip()}")
     else:
-        print(f"# {p}  (defaults — not written yet; `mantel setup` or `mantel config edit` to create)")
+        print(f"# {p}  (defaults — not written yet; `hearth client setup` or `hearth client config edit` to create)")
     return 0
 
 
@@ -474,7 +449,7 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     action = args.action
     if action == "list":
         if not cfg.mcp_servers:
-            print("no MCP servers configured  (run `mantel setup`).")
+            print("no MCP servers configured  (run `hearth client setup`).")
             return 0
         for n, s in cfg.mcp_servers.items():
             print(f"  {'●' if s.enabled else '○'} {n:14s} {s.command} {' '.join(s.args)}")
@@ -488,15 +463,15 @@ def cmd_mcp(args: argparse.Namespace) -> int:
         for n, e in errs.items():
             print(f"  ! {n}: {e}", file=sys.stderr)
         if not tools and not errs:
-            print("no tools — enable a server with `mantel mcp enable <name>`.")
+            print("no tools — enable a server with `hearth client mcp enable <name>`.")
         return 0
     if action in ("enable", "disable"):
         if args.name not in cfg.mcp_servers:
-            print(f"no such server '{args.name}'  (see `mantel mcp list`)", file=sys.stderr)
+            print(f"no such server '{args.name}'  (see `hearth client mcp list`)", file=sys.stderr)
             return 1
         cfg.mcp_servers[args.name].enabled = (action == "enable")
         cfgmod.save(cfg)
-        print(f"✓ {args.name} {action}d — restart mantel to apply.")
+        print(f"✓ {args.name} {action}d — `hearth client restart` to apply.")
         return 0
     print(f"unknown mcp action {action!r}", file=sys.stderr)
     return 2
@@ -511,11 +486,11 @@ def cmd_provider(args: argparse.Namespace) -> int:
         return 0
     if action == "use":
         if args.name not in cfg.providers:
-            print(f"no such provider '{args.name}'  (see `mantel provider list`)", file=sys.stderr)
+            print(f"no such provider '{args.name}'  (see `hearth client provider list`)", file=sys.stderr)
             return 1
         cfg.provider = args.name
         cfgmod.save(cfg)
-        print(f"✓ active provider → {args.name} — restart mantel to apply.")
+        print(f"✓ active provider → {args.name} — `hearth client restart` to apply.")
         return 0
     print(f"unknown provider action {action!r}", file=sys.stderr)
     return 2
@@ -523,9 +498,9 @@ def cmd_provider(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="mantel",
+        prog="hearth client",
         description="Universal, MCP-native chat client — defaults to a local hearth engine.")
-    p.set_defaults(func=cmd_open)  # bare `mantel` opens the window
+    p.set_defaults(func=cmd_open)  # bare `hearth client` opens the window
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("setup", help="first-run wizard — find a backend, pick a model, seed MCP examples") \

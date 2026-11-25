@@ -1,4 +1,4 @@
-"""Mantel's local app server.
+"""The client's local app server.
 
 Serves the chat UI at ``/`` and, under ``/api/*``, runs the **agent loop**: it
 calls the configured backend with the aggregated **MCP** tools, executes any
@@ -6,8 +6,8 @@ tool calls the model makes (deny-by-default, via the MCP host), feeds the
 results back, and loops until the model answers — streaming the answer and the
 tool activity to the UI.
 
-The UI is **same-origin** with mantel, so streaming ``fetch`` works with no
-CORS; mantel talks to the backend **server-to-server** (so a loopback-only
+The UI is **same-origin** with it, so streaming ``fetch`` works with no
+CORS; it talks to the backend **server-to-server** (so a loopback-only
 engine like hearth, with no CORS, works fine). When no MCP servers are
 configured the loop runs once → it's a plain streaming chat.
 """
@@ -38,7 +38,7 @@ from . import tutor
 MAX_TOOL_ROUNDS = 8
 _STOP = object()  # sentinel: tell the host runner to stop
 
-# mantel binds loopback, but loopback alone doesn't stop a malicious web page in
+# It binds loopback, but loopback alone doesn't stop a malicious web page in
 # the user's browser from POSTing to 127.0.0.1 (DNS-rebinding / CSRF). Since the
 # server hosts MCP tools and mutates config, guard it: require a localhost Host
 # (defeats rebinding) and refuse what another page sent (defeats CSRF) — another
@@ -92,7 +92,7 @@ class _BackendError(Exception):
 
 def _index_html() -> str | None:
     try:
-        return resources.files("mantel").joinpath("webui/index.html").read_text(encoding="utf-8")
+        return resources.files("hearth_client").joinpath("webui/index.html").read_text(encoding="utf-8")
     except (FileNotFoundError, OSError, ModuleNotFoundError):
         return None
 
@@ -156,7 +156,7 @@ _CHATS_SCHEMA_VERSION = 1
 
 
 def _open_chats_db() -> sqlite3.Connection:
-    """Open the SQLite store (~/.local/share/mantel/chats.db) and ensure its schema
+    """Open the SQLite store (~/.local/share/hearth-client/chats.db) and ensure its schema
     exists. Called ONCE (at startup, or lazily on first use under tests that skip
     the lifespan); the connection is then kept on ``app.state`` and reused.
 
@@ -164,7 +164,7 @@ def _open_chats_db() -> sqlite3.Connection:
     ``asyncio.to_thread`` worker pool — writes are serialized with a lock to keep
     that safe (sqlite connections aren't concurrency-safe across threads)."""
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    d = Path(base) / "mantel"
+    d = Path(base) / "hearth-client"
     d.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(d / "chats.db", timeout=10.0, check_same_thread=False)
     con.execute("PRAGMA busy_timeout=5000")
@@ -312,7 +312,7 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                 task.cancel()
             await _shutdown_shared(app)
 
-    app = FastAPI(title="mantel", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="hearth client", version=__version__, lifespan=lifespan)
     app.add_middleware(_LocalGuard)
     app.state.cfg = cfg
     app.state.host = None
@@ -346,16 +346,16 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
     async def index() -> HTMLResponse:
         html = _index_html()
         if html is None:
-            return HTMLResponse("<h1>Mantel</h1><p>UI asset missing from this install.</p>",
+            return HTMLResponse("<h1>Hearth</h1><p>UI asset missing from this install.</p>",
                                 status_code=500)
         return HTMLResponse(html)
 
     @app.post("/api/shutdown", include_in_schema=False)
     async def shutdown() -> JSONResponse:
-        """End this server as `mantel stop` means it (Windows has no signal for it)."""
+        """End this server as `hearth client stop` means it (Windows has no signal for it)."""
         end = app.state.shutdown
         if end is None:
-            return JSONResponse({"error": "not run by `mantel serve`"}, status_code=409)
+            return JSONResponse({"error": "not run by `hearth client serve`"}, status_code=409)
         end()
         return JSONResponse({"stopping": True})
 
@@ -363,7 +363,7 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
     async def health() -> dict:
         h = app.state.host
         n = len(h.openai_tools()) if h else 0
-        return {"ok": True, "app": "mantel", "version": __version__, "tools": n}
+        return {"ok": True, "app": "hearth-client", "version": __version__, "tools": n}
 
     @app.get("/api/config")
     async def api_config() -> dict:
@@ -768,7 +768,7 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                             delta = choices[0].get("delta") or {}
                             # hearth runs web_search/web_fetch inside the completion,
                             # announcing each one on this non-standard field. Re-emit
-                            # it as a mantel tool event so engine-side tools render in
+                            # it as a client tool event so engine-side tools render in
                             # the same card as our own MCP calls — otherwise the work
                             # is invisible and the answer looks like it came from
                             # nowhere. The "hearth:" prefix keeps these ids clear of
@@ -823,7 +823,7 @@ def create_app(cfg: cfgmod.Config | None = None, host=None) -> FastAPI:
                     yield _tool_frame("note", "", "", {"content": f"stopped after {MAX_TOOL_ROUNDS} tool rounds"})
                 yield b"data: [DONE]\n\n"
             except Exception as e:  # never crash the stream
-                yield _err_frame(f"mantel error: {e}")
+                yield _err_frame(f"client error: {e}")
                 yield b"data: [DONE]\n\n"
 
         return StreamingResponse(gen(), media_type="text/event-stream")
@@ -895,7 +895,7 @@ def _reasoning_frame(text: str) -> bytes:
 
 
 def _tool_frame(phase: str, cid: str, name: str, payload: dict) -> bytes:
-    evt = {"mantel_tool": {"phase": phase, "id": cid, "name": name, **payload}}
+    evt = {"client_tool": {"phase": phase, "id": cid, "name": name, **payload}}
     return f"data: {json.dumps(evt)}\n\n".encode("utf-8")
 
 

@@ -1,4 +1,4 @@
-# The workspace: hearth (the engine) and mantel (its chat client), locked and
+# The workspace: hearth (the engine) and hearth-client (its chat window), locked and
 # released together. Two packages, two environments (installer/), two processes;
 # neither imports the other.
 [tool.uv.workspace]

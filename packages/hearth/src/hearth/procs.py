@@ -36,7 +36,7 @@ def runs(args: list[str], program: str, command: str) -> bool:
     for i, a in enumerate(args):
         name = a.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe").removesuffix("-script.py")
         if name == program and (i == 0 or args[i - 1] == "-m" or "/" in a or "\\" in a):
-            return command in args[i + 1:]
+            return args[i + 1:i + 2] == [command]
     return False
 
 

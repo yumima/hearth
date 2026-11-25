@@ -364,7 +364,7 @@ def test_the_terminal_chat_asks_as_configured(monkeypatch, capsys):
 
         monkeypatch.setattr(cli.cfgmod, "load", lambda *a, **k: cfg)
         monkeypatch.setattr(cli.httpx, "stream", stream)
-        monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: None)
+        monkeypatch.setattr(cli, "_engine_ready", lambda cfg, role, model: "http://127.0.0.1:1")
         monkeypatch.setattr(cli, "_chat_models", lambda base: (["primary_chat"], []))
         monkeypatch.setattr("builtins.input", iter_input("hello"))
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))

@@ -226,7 +226,7 @@ async def embeddings(request: Request):
 
 # ── Text-to-speech (Piper) ────────────────────────────────────────────────────
 # Not an Ollama capability — Piper is a standalone local engine. Exposed in the
-# OpenAI /v1/audio/speech shape so any client (incl. mantel) works unmodified.
+# OpenAI /v1/audio/speech shape so any client (incl. the chat window) works unmodified.
 # Voices are provisioned by `hearth voice <id>` into paths.voices_dir("piper").
 
 
@@ -526,7 +526,7 @@ def _sdxl_workflow(prompt: str, negative: str, w: int, h: int,
             "scheduler": "normal", "denoise": 1.0,
             "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "mantel", "images": ["8", 0]}},
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "hearth", "images": ["8", 0]}},
     }
 
 

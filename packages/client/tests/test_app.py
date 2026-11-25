@@ -1,18 +1,18 @@
-"""Mantel server tests — UI route + the /api proxy, against an UNREACHABLE
+"""Hearth server tests — UI route + the /api proxy, against an UNREACHABLE
 backend so they're deterministic and fast (no real engine needed)."""
 
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from mantel import config as cfgmod
-from mantel.app import create_app
+from hearth_client import config as cfgmod
+from hearth_client.app import create_app
 
 
 def _client() -> TestClient:
     cfg = cfgmod.Config()
     # Point the backend at a closed port so proxy calls fail fast (refused),
-    # exercising mantel's graceful-degradation paths without a running engine.
+    # exercising the client's graceful-degradation paths without a running engine.
     cfg.provider = "hearth"
     cfg.providers = {"hearth": cfgmod.Provider(base_url="http://127.0.0.1:1/v1")}
     # base_url=localhost so the localhost-only guard accepts the request.
@@ -41,7 +41,7 @@ def test_index_serves_ui():
     r = _client().get("/")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
-    assert "<title>Mantel</title>" in r.text
+    assert "<title>Hearth</title>" in r.text
     assert "/api/chat" in r.text                 # same-origin wiring
     assert 'src="http' not in r.text and "<link" not in r.text  # self-contained
 
@@ -124,7 +124,7 @@ def test_hearth_engine_tools_surface_as_tool_events(monkeypatch):
     engine's work invisible in the UI and made answers look unsourced."""
     import json
 
-    from mantel import app as appmod
+    from hearth_client import app as appmod
 
     frames = [
         {"choices": [{"delta": {"hearth_tool": {
@@ -148,7 +148,7 @@ def test_hearth_engine_tools_surface_as_tool_events(monkeypatch):
 
     events = [json.loads(ln[5:]) for ln in body.splitlines()
               if ln.startswith("data:") and ln[5:].strip() not in ("", "[DONE]")]
-    tools = [e["mantel_tool"] for e in events if "mantel_tool" in e]
+    tools = [e["client_tool"] for e in events if "client_tool" in e]
     assert [t["phase"] for t in tools] == ["call", "result"]
     # Both phases must carry the SAME id or the UI cannot resolve "running…".
     assert tools[0]["id"] == tools[1]["id"] == "hearth:call_1"
@@ -165,7 +165,7 @@ def _sent(monkeypatch, cfg, **body) -> dict:
     """The request /api/chat sends to the backend."""
     import json
 
-    from mantel import app as appmod
+    from hearth_client import app as appmod
 
     sent = {}
 

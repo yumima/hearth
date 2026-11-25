@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = {"hearth": ROOT / "packages" / "hearth", "mantel": ROOT / "packages" / "mantel"}
+# folder, what it is imported as
+PACKAGES = {"hearth": (ROOT / "packages" / "hearth", "hearth"), "hearth-client": (ROOT / "packages" / "client", "hearth_client")}
 
 
 def _imports(path: Path) -> set[str]:
@@ -23,34 +24,50 @@ def _imports(path: Path) -> set[str]:
     return out
 
 
-@pytest.mark.parametrize("name,other", [("hearth", "mantel"), ("mantel", "hearth")])
+@pytest.mark.parametrize("name,other", [("hearth", "hearth-client"), ("hearth-client", "hearth")])
 def test_neither_imports_the_other(name, other):
     """They are two programs: the engine holds no tools, files or keys of the
     chat's, and the chat works with other engines. HTTP is all they share."""
-    files = list((PACKAGES[name] / "src").rglob("*.py"))
+    files = list((PACKAGES[name][0] / "src").rglob("*.py"))
     assert len(files) > 5
-    assert not [str(f) for f in files if other in _imports(f)]
-    project = tomllib.loads((PACKAGES[name] / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert not [str(f) for f in files if PACKAGES[other][1] in _imports(f)]
+    project = tomllib.loads((PACKAGES[name][0] / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     deps = [*project["dependencies"], *(d for extra in project["optional-dependencies"].values() for d in extra)]
     assert len(deps) > 5
     assert [d for d in deps if re.split(r"[^a-z0-9-]", d.lower())[0] == other] == []
 
 
 def _version(name: str) -> str:
-    text = (PACKAGES[name] / "src" / name / "__init__.py").read_text(encoding="utf-8")
+    text = (PACKAGES[name][0] / "src" / PACKAGES[name][1] / "__init__.py").read_text(encoding="utf-8")
     return re.search(r'^__version__ = "([^"]+)"', text, re.M).group(1)
 
 
 def test_one_version():
-    assert _version("hearth") == _version("mantel")
+    assert _version("hearth") == _version("hearth-client")
 
 
 def test_everything_in_the_lock_is_checked_by_hash():
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     packages = {p["name"]: p for p in lock["package"]}
-    assert {"hearth", "mantel", "fastapi", "mcp", "kokoro-onnx"} <= set(packages)
+    assert {"hearth", "hearth-client", "fastapi", "mcp", "kokoro-onnx"} <= set(packages)
     for p in packages.values():
         files = [*p.get("wheels", []), *([p["sdist"]] if "sdist" in p else [])]
         assert all(f["hash"].startswith("sha256:") for f in files), p["name"]
         assert files or "virtual" in p["source"] or "editable" in p["source"], p["name"]
-    assert packages["mcp"]["version"].startswith("1.")  # 2.x renamed what mantel's servers are written for
+    assert packages["mcp"]["version"].startswith("1.")  # 2.x renamed what the client's servers are written for
+
+
+def test_one_name():
+    """The window was a project of its own once, under another name."""
+    was = "man" + "tel"
+    skip = {".git", "vendor", "build", "__pycache__", ".pytest_cache", ".claude"}
+    text = {".py", ".html", ".md", ".toml", ".sh", ".ps1", ".yml", ".json", ".css", ".svg", ".txt", ""}
+    found = []
+    for p in ROOT.rglob("*"):
+        rel = p.relative_to(ROOT)
+        if skip & set(rel.parts) or any(x.endswith(".egg-info") or x.startswith(".venv") for x in rel.parts) or not p.is_file() or p.suffix not in text:
+            continue
+        for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if was in line.lower() and "](https://github.com/yumima/hearth/commit/" not in line:  # (README's list of commits)
+                found.append(f"{rel}:{n}")
+    assert found == []

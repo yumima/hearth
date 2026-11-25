@@ -26,6 +26,7 @@ from . import __version__
 from . import config as cfgmod
 from . import catalog, hardware, ollama_supervisor, paths, procs
 from .background import gateway_identity as _gateway_identity
+from .term import ask
 
 
 def _admin_base(cfg: cfgmod.Config) -> str:
@@ -808,30 +809,108 @@ _CODE_HELP = """\
 {dim}commands:
   /add <file>     pin a file into the conversation context
   /model [name]   show/switch the model or role (default: coding)
-  /auto           toggle auto-approve for file writes + shell (off by default)
+  /auto           toggle auto-approve for edits, commands and the web (off by default)
+  /chat           talk without files (/code comes back here)
   /clear          forget the conversation (keep the project context)
-  /help  /exit
+  /help  /exit    (Ctrl-C ends the task, not the session)
 just type a request — the agent greps, reads, edits, runs shell and searches
-the web to do it. non-interactive:  hearth code . -p "fix the failing test"{reset}"""
+the web to do it. non-interactive:  hearth -p "fix the failing test"{reset}"""
+
+_SWITCH = -1  # from one interactive mode to the other
+
+
+def _modes(mode: str, args: argparse.Namespace) -> int:
+    """The terminal's two modes: the coding agent (plain `hearth`), and the chat.
+    Each keeps its conversation while the other is used."""
+    try:
+        import readline  # noqa: F401  (line editing and history; not on Windows)
+    except ImportError:
+        pass
+    first = mode
+    while True:
+        if mode != first:
+            args.model = None  # the one asked for was for the mode it was started in
+        rc = (_chat_mode if mode == "chat" else _code_mode)(args)
+        if rc != _SWITCH:
+            return rc
+        mode = "code" if mode == "chat" else "chat"
+
+
+def _engine_ready(cfg: cfgmod.Config, role: str, model: str | None) -> str | None:
+    """The engine's address, started if it was not. None, and said, if there is no
+    engine or no model to talk to."""
+    from . import background
+
+    base = _admin_base(cfg)
+    if background.gateway_identity(cfg) is None:
+        print("Starting hearth…", file=sys.stderr)
+        if cmd_start(build_parser().parse_args(["start", "--background"])) != 0:
+            return None
+    try:
+        roles = httpx.get(f"{base}/admin/roles", timeout=10.0).json().get("roles", {})
+    except (httpx.HTTPError, ValueError) as e:
+        print(f"hearth does not answer at {base}: {str(e) or type(e).__name__}", file=sys.stderr)
+        return None
+    if model is None and role not in roles:
+        print(f"No model is chosen yet. Choose one at {base}/ , or run `hearth setup`.", file=sys.stderr)
+        return None
+    return base
+
+
+def _trusted_path() -> Path:
+    return cfgmod.config_path().parent / "trusted.json"
+
+
+def _trusts(root: Path) -> bool:
+    """Whether the person said so, of this folder or one it is in; asked if not."""
+    try:
+        known = [str(p) for p in json.loads(_trusted_path().read_text(encoding="utf-8"))]
+    except (OSError, ValueError, TypeError):
+        known = []
+    if any(root == Path(k) or Path(k) in root.parents for k in known):
+        return True
+    wide = root == Path.home() or root in Path.home().parents
+    print(f"hearth will work in {root}" + (
+        "\nThat is everything you have: better to start it in a project's folder." if wide else ""))
+    print("It can read what is in there. It asks before it changes a file, runs a command or goes to the web.")
+    try:
+        if input("Do you trust what is in this folder? [y/N] ").strip().lower() not in ("y", "yes"):
+            return False
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if not wide:  # home is asked for each time, and does not answer for what is in it
+        p = _trusted_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps([*known, str(root)], indent=1), encoding="utf-8")
+        tmp.replace(p)
+    return True
 
 
 def cmd_code(args: argparse.Namespace) -> int:
-    """Coding agent REPL: the model edits files + runs shell in a project dir."""
-    cfg = cfgmod.load()
-    base = _admin_base(cfg)
-    try:
-        httpx.get(f"{base}/admin/health", timeout=3.0)
-    except httpx.HTTPError:
-        print(f"hearth gateway not reachable at {base} — run `hearth start` first", file=sys.stderr)
-        return 1
+    """Coding agent: the model reads and edits files + runs shell in a folder."""
+    return _modes("code", args)
 
-    from .code_agent import CodeAgent
-    root = Path(args.path or ".").resolve()
+
+def _code_mode(args: argparse.Namespace) -> int:
+    root = Path(getattr(args, "path", None) or ".").resolve()
     if not root.is_dir():
         print(f"not a directory: {root}", file=sys.stderr)
         return 2
-    model = args.model or "coding"
     prompt = getattr(args, "prompt", None)
+    if not prompt and not (sys.stdin and sys.stdin.isatty()):
+        print('hearth asks before it changes something, and there is nobody here to ask. '
+              'For one task without asking: hearth -p "…"', file=sys.stderr)
+        return 2
+    if not prompt and not hasattr(args, "agent") and not _trusts(root):
+        return 1
+    base = _engine_ready(cfgmod.load(), "coding", args.model)
+    if base is None:
+        return 1
+
+    from .code_agent import CodeAgent
+    model = args.model or "coding"
     # Non-interactive mode: one task, then exit. This is what makes the agent
     # scriptable — usable from a Makefile, a git hook, or another agent — and
     # it implies auto-approve because there is nobody at the terminal to ask.
@@ -841,22 +920,26 @@ def cmd_code(args: argparse.Namespace) -> int:
         out = agent.ask(prompt)
         if args.quiet and out:
             print(out)
-        return 0
+        return 0 if out else 1
 
-    agent = CodeAgent(str(root), base, model, auto=bool(args.yolo),
-                      max_rounds=args.max_rounds)
+    agent = getattr(args, "agent", None)
+    if agent is None:
+        agent = args.agent = CodeAgent(str(root), base, model, auto=bool(getattr(args, "yolo", False)),
+                                       max_rounds=getattr(args, "max_rounds", 60))
 
     bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
-    print(f"{dim}hearth code — {root} · model {model}"
+    print(f"{dim}hearth — {agent.root} · model {agent.model}"
           f"{' · AUTO-APPROVE' if agent.auto else ''} · /help · /exit{reset}")
     while True:
         try:
-            user = input(f"\n{bold}code>{reset} ").strip()
+            user = ask(f"\n{bold}hearth>{reset} ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
         if not user:
             continue
+        if user == "/chat":
+            return _SWITCH
         if user in ("/exit", "/quit"):
             break
         if user in ("/help", "/?"):
@@ -995,6 +1078,7 @@ _CHAT_HELP = """\
   /status             model, deep-think, gateway health, turn count
   /retry              regenerate the last reply
   /save [file]        save the transcript (default: hearth-chat.md)
+  /code               the coding agent, in this folder (/chat comes back here)
   /clear              clear the screen and the conversation
   /reset              clear the conversation (keep the screen)
   /exit  /quit        leave{reset}"""
@@ -1014,15 +1098,15 @@ def _chat_models(base: str) -> tuple[list[str], list[str]]:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
+    return _modes("chat", args)
+
+
+def _chat_mode(args: argparse.Namespace) -> int:
     """A tiny streaming REPL against the local gateway — like ChatGPT in the
     terminal, but fully local."""
     cfg = cfgmod.load()
-    base = _admin_base(cfg)
-    try:
-        httpx.get(f"{base}/admin/health", timeout=3.0)
-    except httpx.HTTPError:
-        print(f"hearth gateway not reachable at {base} — run `hearth start` first",
-              file=sys.stderr)
+    base = _engine_ready(cfg, "primary_chat", args.model)
+    if base is None:
         return 1
 
     model = args.model or "primary_chat"
@@ -1031,18 +1115,21 @@ def cmd_chat(args: argparse.Namespace) -> int:
     bold, dim, reset = "\033[1m", "\033[2m", "\033[0m"
     print(f"{dim}hearth chat — model {model} · deep-think {'on' if think_on else 'off'} · "
           f"/help for commands · /exit to quit{reset}")
-    history: list[dict] = []
-    if args.system:
+    history: list[dict] = getattr(args, "history", [])
+    if not history and getattr(args, "system", None):
         history.append({"role": "system", "content": args.system})
 
     while True:
         try:
-            user = input(f"\n{bold}you>{reset} ").strip()
+            user = ask(f"\n{bold}you>{reset} ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
         if not user:
             continue
+        if user == "/code":
+            args.history = history
+            return _SWITCH
         if user in ("/exit", "/quit"):
             break
         if user in ("/help", "/?", "/commands"):
@@ -1083,7 +1170,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 tag = " (current)" if m == model else (" ·role" if m in roles else "")
                 print(f"  {dim}{i:>2}{reset} {m}{dim}{tag}{reset}")
             try:
-                sel = input(f"{bold}model #/name>{reset} ").strip()
+                sel = ask(f"{bold}model #/name>{reset} ").strip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 sel = ""
@@ -1421,36 +1508,35 @@ def cmd_service(args: argparse.Namespace) -> int:
     return 2
 
 
-# ---- the desktop chat app: mantel ---------------------------------------
+# ---- the chat window: hearth-client -------------------------------------
 
 
 def cmd_client(args: argparse.Namespace) -> int:
-    """hearth's chat window is mantel, a program of its own (client.py)."""
+    """hearth's chat window, a program of its own (client.py). What is not about
+    having it is its own command, and passed on."""
     from . import client, install
     from .provision import Problem
 
-    say = install.say
-    action = getattr(args, "action", None) or "open"
+    rest = list(getattr(args, "rest", []))
+    if rest[:1] not in (["install"], ["uninstall"]):
+        # A chat window without an engine is of no use; the other commands do not need one.
+        start = build_parser().parse_args(["start", "--background"])
+        return client.open_window((lambda: cmd_start(start)) if rest in ([], ["open"]) else None, rest)
+    p = argparse.ArgumentParser(prog=f"hearth client {rest[0]}")
+    if rest[0] == "install":
+        p.description = "Build the chat window, if it is not as it should be, and add it to the app menu."
+        p.add_argument("--build", action="store_true", help="build it again")
+    a = p.parse_args(rest[1:])
     try:
-        if action == "install":
+        if rest[0] == "install":
             install.ended_in_order()
-            client.add(args.build, args.replace, say)
-            return 0
-        if action == "uninstall":
-            client.remove(say)
-            return 0
+            client.add(a.build, install.say)
+        else:
+            client.remove(install.say)
+        return 0
     except (Problem, *install.ERRORS, httpx.HTTPError) as e:
         print(str(e) or type(e).__name__, file=sys.stderr)
         return 1
-    program = client.program()
-    if program is None:
-        print("mantel, hearth's chat window, is not here — `hearth client install` builds it; "
-              "`hearth chat` is in the terminal", file=sys.stderr)
-        return 1
-    start = build_parser().parse_args(["start", "--background"])  # a chat window without an engine is of no use
-    if cmd_start(start) != 0:
-        print("opening the window without the engine", file=sys.stderr)
-    return subprocess.run([program]).returncode
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -1521,9 +1607,11 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hearth", description="Local OpenAI-compatible AI engine")
-    # Bare `hearth` (no subcommand) launches the chat REPL, like bare `claude`.
-    # A subcommand's own set_defaults(func=...) overrides these.
-    p.set_defaults(func=cmd_chat, model=None, system=None, no_think=False, show_thinking=False)
+    # Bare `hearth` (no subcommand) is the coding agent in this folder, like bare
+    # `claude`. A subcommand's own set_defaults(func=...) overrides these.
+    p.set_defaults(func=cmd_code, model=None, path=".", yolo=False, max_rounds=60)
+    p.add_argument("-p", "--prompt", help="one task for the coding agent in this folder, without asking; its answer, and exit")
+    p.add_argument("-q", "--quiet", action="store_true", help="with -p: only the final answer")
     sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("start", help="serve the gateway (brings up Ollama)")
@@ -1658,7 +1746,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="with 'on': also start at boot, before login (linger)")
     sp.set_defaults(func=cmd_service)
 
-    s = sub.add_parser("update", help="update hearth (and mantel), or go back")
+    s = sub.add_parser("update", help="update hearth and its chat window, or go back")
     s.add_argument("--check", action="store_true", help="only say whether there is one")
     s.add_argument("--yes", "-y", action="store_true", help="don't ask")
     s.add_argument("--rollback", action="store_true", help="go back to the version before")
@@ -1670,18 +1758,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--keep-settings", action="store_true", help="keep ~/.hearth")
     s.set_defaults(func=cmd_uninstall)
 
-    cp = sub.add_parser("client", help="open the chat window (mantel), or add/remove its launcher")
-    cp_sub = cp.add_subparsers(dest="action")
-    cp_sub.add_parser("open", help="open the chat window")
-    ci = cp_sub.add_parser("install", help="build mantel if it is not here, and add it to the app menu")
-    ci.add_argument("--build", action="store_true", help="build it again")
-    ci.add_argument("--replace", action="store_true", help="have ~/.local/bin/mantel, if that is another one")
-    cp_sub.add_parser("uninstall", help="remove it from your app menu")
-    cp.set_defaults(func=cmd_client, action=None)  # bare `hearth client` → open
+    # (Its arguments are its own: main() passes them on unread.)
+    sub.add_parser("client", add_help=False,
+                   help="open the chat window; `client install` adds it to the app menu; "
+                        "`client --help` lists its other commands").set_defaults(func=cmd_client, rest=[])
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["client"]:
+        return cmd_client(argparse.Namespace(rest=argv[1:]))
     args = build_parser().parse_args(argv)
     return args.func(args)
 

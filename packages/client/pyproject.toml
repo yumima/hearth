@@ -1,5 +1,5 @@
 [project]
-name = "mantel"
+name = "hearth-client"
 dynamic = ["version"]
 description = "A universal, MCP-native desktop chat client — defaults to a local hearth engine, talks to any OpenAI-compatible or cloud backend."
 readme = "README.md"
@@ -21,25 +21,25 @@ dependencies = [
 
 [project.optional-dependencies]
 # Desktop window via the OS's native webview (no bundled browser). Without it,
-# `mantel` falls back to a Chromium/Edge --app window or the default browser.
+# `hearth client` falls back to a Chromium/Edge --app window or the default browser.
 gui = ["pywebview>=5.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-timeout"]
 
 [project.scripts]
-mantel = "mantel.cli:main"
+hearth-client = "hearth_client.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
-version = { attr = "mantel.__version__" }
+version = { attr = "hearth_client.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-mantel = ["webui/*.html", "assets/*.svg"]
+hearth_client = ["webui/*.html", "assets/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

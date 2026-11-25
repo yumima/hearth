@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from mantel import config as cfgmod
-from mantel.cli import build_parser
+from hearth_client import config as cfgmod
+from hearth_client.cli import build_parser
 
 
 def _d(argv):
@@ -40,7 +40,7 @@ def test_invalid_commands_rejected(argv):
 
 def test_config_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from mantel.mcp_host import ServerConfig
+    from hearth_client.mcp_host import ServerConfig
 
     cfg = cfgmod.Config()
     cfg.provider = "hearth"

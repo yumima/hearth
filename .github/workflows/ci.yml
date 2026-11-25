@@ -44,10 +44,10 @@ jobs:
         run: |
           uv sync --frozen --package hearth --extra dev
           uv run --frozen --package hearth --extra dev pytest -q --durations=5 packages/hearth tests
-      - name: mantel
+      - name: hearth-client
         run: |
-          uv sync --frozen --package mantel --extra dev
-          uv run --frozen --package mantel --extra dev pytest -q packages/mantel
+          uv sync --frozen --package hearth-client --extra dev
+          uv run --frozen --package hearth-client --extra dev pytest -q packages/client
       - name: The built hearth starts, answers and stops
         run: |
           uv build --wheel --package hearth -o dist
@@ -80,17 +80,17 @@ jobs:
       - name: Everything a release needs has a wheel for this system, and works
         run: |
           python3 tools/release.py out || python tools/release.py out
-          for name in hearth mantel; do
+          for name in hearth client; do
             uv venv -q "env-$name"
             uv pip install -q --python "env-$name" --require-hashes --only-binary :all: -r "out/$name-requirements.txt"
-            uv pip install -q --python "env-$name" --no-deps --no-index out/$name-*.whl
+            uv pip install -q --python "env-$name" --no-deps --no-index out/$([ $name = client ] && echo hearth_client || echo hearth)-0*.whl
           done
           PY=bin/python; [ -d env-hearth/Scripts ] && PY=Scripts/python.exe
           env-hearth/$PY -c "import hearth.app, kokoro_onnx, faster_whisper; from hearth import provision as p, kokoro_tts as k; assert p.stt_possible() and k.package_present()"
           # (a recording is read: importing it says nothing about what it is read with)
           env-hearth/$PY -c "import io, wave; from faster_whisper.audio import decode_audio as d; b = io.BytesIO(); w = wave.open(b, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(bytes(32000)); w.close(); b.seek(0); assert len(d(b)) == 16000"
-          env-mantel/$PY -c "import mantel.app, mantel.mcp_servers.rag, mantel.mcp_servers.web, mantel.mcp_servers.image"
-          rm -rf env-hearth env-mantel out
+          env-client/$PY -c "import hearth_client.app, hearth_client.mcp_servers.rag, hearth_client.mcp_servers.web, hearth_client.mcp_servers.image"
+          rm -rf env-hearth env-client out
       - name: Install, update, go back, remove
         run: |
           uv sync --frozen --package hearth --extra dev

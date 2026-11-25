@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mantel</title>
+<title>Hearth</title>
 <!--
-  Mantel chat UI. Served by mantel's local server (same-origin), which proxies
+  Hearth chat UI. Served by the client's local server (same-origin), which proxies
   /api/chat + /api/models to the configured backend (default: local hearth). No
   external/CDN resources — everything (styles, icons, the small Markdown
   renderer, the voice engine) is inline.
@@ -445,12 +445,12 @@
   <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
   <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
   <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></symbol>
-  <symbol id="i-mantel" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="3" rx="1.5" fill="currentColor" stroke="none"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" stroke-width="2"/><circle cx="12" cy="15" r="2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-hearth" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="3" rx="1.5" fill="currentColor" stroke="none"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" stroke-width="2"/><circle cx="12" cy="15" r="2" fill="currentColor" stroke="none"/></symbol>
 </svg>
 
 <aside id="sidebar" aria-label="Sidebar">
   <div class="sideHead">
-    <div class="brand"><svg class="ico"><use href="#i-mantel"/></svg>Mantel</div>
+    <div class="brand"><svg class="ico"><use href="#i-hearth"/></svg>Hearth</div>
     <button class="iconbtn" id="sideClose" data-tip="Close sidebar" aria-label="Close sidebar"><svg class="ico"><use href="#i-side"/></svg></button>
   </div>
   <nav class="sideNav">
@@ -484,7 +484,7 @@
         <div id="attachBar" class="attachbar hidden"></div>
         <input type="file" id="file" multiple hidden
                accept="image/*,.pdf,.docx,.txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.log,.py,.js,.ts,.tsx,.html,.css,.sh,.c,.cpp,.h,.rs,.go,.java,.rb,.toml,.ini,.xml,.sql">
-        <textarea id="input" rows="1" placeholder="Message Mantel" autofocus aria-label="Message"></textarea>
+        <textarea id="input" rows="1" placeholder="Message Hearth" autofocus aria-label="Message"></textarea>
         <div class="compRow">
           <button class="iconbtn" id="attach" data-tip="Attach files" aria-label="Attach files"><svg class="ico"><use href="#i-clip"/></svg></button>
           <select id="model" class="pillsel" aria-label="Model"></select>
@@ -553,8 +553,8 @@ const icon = (name, cls) => `<svg class="ico${cls ? " " + cls : ""}"><use href="
 
 // ── preferences (per-viewer conveniences — safe to lose) ─────────────────────
 const PREF_DEFAULTS = { theme: "system", turn: "auto", barge: true, patience: "normal", sideCollapsed: false };
-const prefs = (() => { try { return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("mantel.prefs") || "{}") }; } catch { return { ...PREF_DEFAULTS }; } })();
-function savePrefs(){ try { localStorage.setItem("mantel.prefs", JSON.stringify(prefs)); } catch {} }
+const prefs = (() => { try { return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("hearth.prefs") || "{}") }; } catch { return { ...PREF_DEFAULTS }; } })();
+function savePrefs(){ try { localStorage.setItem("hearth.prefs", JSON.stringify(prefs)); } catch {} }
 let orbColors = null;     // resolved from CSS on first orb frame; reset on theme change
 function applyTheme(){ if (prefs.theme === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.dataset.theme = prefs.theme; orbColors = null; }
 applyTheme();
@@ -885,7 +885,7 @@ document.addEventListener("click", (e) => {
   if (t) { sayPhrase(t.dataset.say, t.closest("#thread") ? t : null); }
 });
 
-// ── backend plumbing (mantel's /api/* proxy) ─────────────────────────────────
+// ── backend plumbing (the client's /api/* proxy) ─────────────────────────────────
 let cfgInfo = null;
 async function loadConfig(){
   try { cfgInfo = await (await fetch("/api/config")).json(); } catch {}
@@ -1277,7 +1277,7 @@ async function _streamTurn(userContent, displayText, atts, opts){
         if (payload === "[DONE]") return true;
         let obj; try { obj = JSON.parse(payload); } catch { return false; }
         if (obj.error) { err = (obj.error && obj.error.message) || String(obj.error); return true; }
-        if (obj.mantel_tool) { renderTool(wrap, obj.mantel_tool); scrollDown(); return false; }
+        if (obj.client_tool) { renderTool(wrap, obj.client_tool); scrollDown(); return false; }
         const d = (obj.choices && obj.choices[0] && obj.choices[0].delta) || {};
         let reason = d.reasoning || d.reasoning_content || "";
         // hearth narrates engine-side tools into `reasoning` for clients without
@@ -1355,7 +1355,7 @@ const VE = {
 };
 const WORKLET = `class C extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(1024);this.n=0}
 process(i){const c=i[0]&&i[0][0];if(c){for(let k=0;k<c.length;k++){this.b[this.n++]=c[k];if(this.n===1024){this.port.postMessage(this.b.slice(0));this.n=0}}}return true}}
-registerProcessor("mantel-cap",C);`;
+registerProcessor("client-cap",C);`;
 function veEnsureCtx(){
   if (!VE.ctx) {
     VE.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1384,7 +1384,7 @@ async function _veOpen(){
   try {
     const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
     await ctx.audioWorklet.addModule(url); URL.revokeObjectURL(url);
-    node = new AudioWorkletNode(ctx, "mantel-cap");
+    node = new AudioWorkletNode(ctx, "client-cap");
     node.port.onmessage = (e) => veChunk(e.data);
   } catch {
     node = ctx.createScriptProcessor(1024, 1, 1);
@@ -1869,7 +1869,7 @@ async function renderLangTabs(){
   try { knownLangs = (await (await fetch("/api/tutor/languages")).json()).languages || []; } catch {}
   const keys = [...new Set([...knownLangs, ...PRESETS.map(p => p.code)])];
   if (!learnLang) {
-    let last = null; try { last = localStorage.getItem("mantel.learnLang"); } catch {}
+    let last = null; try { last = localStorage.getItem("hearth.learnLang"); } catch {}
     learnLang = langFromKey(last && keys.includes(last) ? last : (knownLangs[0] || "it"));
   }
   if (!keys.includes(learnLang.key)) keys.push(learnLang.key);
@@ -1877,7 +1877,7 @@ async function renderLangTabs(){
   keys.forEach(k => {
     const l = langFromKey(k), b = document.createElement("button");
     b.className = "ltab" + (k === learnLang.key ? " on" : ""); b.textContent = l.name;
-    b.addEventListener("click", () => { learnLang = l; try { localStorage.setItem("mantel.learnLang", k); } catch {} renderLangTabs(); loadLearn(l); });
+    b.addEventListener("click", () => { learnLang = l; try { localStorage.setItem("hearth.learnLang", k); } catch {} renderLangTabs(); loadLearn(l); });
     el.appendChild(b);
   });
   const add = document.createElement("button"); add.className = "ltab add"; add.textContent = "+ Add language";
@@ -1888,7 +1888,7 @@ async function renderLangTabs(){
       e.preventDefault(); const v = f.querySelector("input").value.trim(); if (!v) return;
       const preset = PRESETS.find(p => p.name.toLowerCase() === v.toLowerCase() || (v.toLowerCase() === "chinese" && p.code === "zh"));
       learnLang = preset ? { ...preset, key: preset.code } : langFromKey(v.toLowerCase());
-      try { localStorage.setItem("mantel.learnLang", learnLang.key); } catch {}
+      try { localStorage.setItem("hearth.learnLang", learnLang.key); } catch {}
       renderLangTabs(); loadLearn(learnLang);
     });
     add.replaceWith(f); f.querySelector("input").focus();
@@ -1904,7 +1904,7 @@ async function loadLearn(lang){
   const ov = await fetchOverview(lang);
   if (learnLang !== lang) return;
   learnOv = ov;
-  if (!ov) { body.innerHTML = `<div class="card emptyNote">Couldn't load your ${escapeHtml(lang.name)} progress — is mantel's server running?</div>`; return; }
+  if (!ov) { body.innerHTML = `<div class="card emptyNote">Couldn't load your ${escapeHtml(lang.name)} progress — is the client's server running?</div>`; return; }
   const p = ov.profile || {}, c = ov.counts || {};
   const band = (p.level || "A")[0];
   if (learnMode === "roleplay" && !learnScenario) learnScenario = SCENARIOS[band][0];
@@ -2006,7 +2006,7 @@ async function startLesson(lang, spoken){
 function showLessonChip(){
   $("lessonChip").classList.toggle("hidden", !lesson);
   if (lesson) $("lessonLabel").textContent = `${lesson.lang.name} · ${MODES[lesson.mode].name}${lesson.ov?.profile?.level ? " · " + lesson.ov.profile.level : ""}`;
-  $("input").placeholder = lesson ? `Reply to your ${lesson.lang.name} tutor` : "Message Mantel";
+  $("input").placeholder = lesson ? `Reply to your ${lesson.lang.name} tutor` : "Message Hearth";
 }
 // Corrections the tutor marks inline (✏️ …) are saved immediately, so they reach
 // review even if the end-of-lesson assessment can't run.
@@ -2273,7 +2273,7 @@ async function renderSettings(){
       const [s, t] = await Promise.all([fetch("/api/servers").then(r => r.json()), fetch("/api/tools").then(r => r.json())]);
       let html = `<p class="muted">MCP servers give the model tools. Tools run only if allowed by the server's auto_approve list.</p>`;
       html += (s.servers || []).length ? s.servers.map(x => `<div class="setrow"><div class="lbl"><div class="t">${escapeHtml(x.name)}</div><div class="s">${escapeHtml(x.command)} ${escapeHtml((x.args || []).join(" "))}${(s.errors || {})[x.name] ? ` · ⚠ ${escapeHtml(s.errors[x.name])}` : ""}</div></div><button class="sw${x.enabled ? " on" : ""}" role="switch" aria-checked="${x.enabled}" data-s="${escapeHtml(x.name)}" data-on="${x.enabled}" aria-label="${escapeHtml(x.name)}"></button></div>`).join("")
-        : `<div class="muted">No MCP servers configured — add them in config.yaml (<code>mantel config edit</code>).</div>`;
+        : `<div class="muted">No MCP servers configured — add them in config.yaml (<code>hearth client config edit</code>).</div>`;
       if ((t.tools || []).length) html += `<h4 class="muted" style="margin:18px 0 4px">${t.tools.length} tools available</h4>` + t.tools.map(x => `<div class="setrow"><div class="lbl"><div class="t"><code class="inline">${escapeHtml(x.name)}</code></div><div class="s">${escapeHtml((x.description || "").slice(0, 110))}</div></div></div>`).join("");
       el.innerHTML = html;
       el.querySelectorAll("[data-s]").forEach(b => b.addEventListener("click", async () => {

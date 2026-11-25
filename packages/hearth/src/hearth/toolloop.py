@@ -162,7 +162,7 @@ def _progress(cid: str, created: int, model: str, mode: str, phase: str,
     """A frame announcing an engine tool call starting or finishing.
 
     The structured ``hearth_tool`` object is what a UI renders as a tool card
-    (mantel matches call→result on ``id``); the text line in content/reasoning
+    (the chat window matches call→result on ``id``); the text line in content/reasoning
     is the fallback for clients that only know the OpenAI fields. Emitting a
     result phase as well as a call is what lets a UI show "running…" resolve to
     a real outcome instead of leaving a spinner that never completes.

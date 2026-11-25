@@ -1,6 +1,6 @@
 # What hearth installs, and its licences
 
-hearth and mantel are Apache-2.0. Their releases contain only their own code:
+hearth and its chat window are Apache-2.0. Their releases contain only their own code:
 everything below is downloaded from its publisher, onto the user's computer, by
 the installer or when it is chosen on the setup page. (A summary to find your way
 by, not legal advice; each part's own licence text is what counts.)

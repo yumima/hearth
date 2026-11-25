@@ -86,7 +86,7 @@ class SearchError(RuntimeError):
 def host_is_blocked(host: str, allow_local: bool = False) -> bool:
     """Block hosts resolving to private/loopback/link-local/reserved space.
 
-    On this box Ollama, hearth, mantel and finterm all listen on loopback, and
+    On this box Ollama, hearth, its window and finterm all listen on loopback, and
     cloud metadata sits at 169.254.169.254 — a model-driven fetch must not reach
     them by default. ``allow_local`` is the operator's explicit opt-in (config
     ``search.allow_localhost``) for the "let it debug my local services" case;

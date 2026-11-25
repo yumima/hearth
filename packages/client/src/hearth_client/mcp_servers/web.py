@@ -5,7 +5,7 @@ stripped, script/style dropped). No API key, no search provider — just retriev
 of pages/APIs the agent (on the user's behalf) asks for. The user enables it from
 the Tools & Settings panel; tool calls remain deny-by-default in the host.
 
-Run standalone over stdio:  python -m mantel.mcp_servers.web
+Run standalone over stdio:  python -m hearth_client.mcp_servers.web
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ from mcp.server.fastmcp import FastMCP
 MAX_CHARS = 20000
 _MAX_REDIRECTS = 5
 # Allow fetching private/loopback hosts only with an explicit opt-in.
-_ALLOW_PRIVATE = os.environ.get("MANTEL_FETCH_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes")
+_ALLOW_PRIVATE = os.environ.get("HEARTH_CLIENT_FETCH_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes")
 _SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "head"}
 
 
 def _host_is_blocked(host: str) -> bool:
     """SSRF guard: block hosts that resolve to a private/loopback/link-local/
-    reserved address. On this box hearth, Ollama, finterm and mantel itself all
+    reserved address. On this box hearth, Ollama, finterm and the client itself all
     listen on loopback — an LLM-driven fetch must not be able to reach them (or
     cloud metadata at 169.254.169.254). Unresolvable → blocked."""
     if _ALLOW_PRIVATE:
@@ -87,14 +87,14 @@ def _do_fetch(url: str, max_chars: int = MAX_CHARS) -> dict:
     target = url
     try:
         with httpx.Client(timeout=30.0, follow_redirects=False,
-                          headers={"User-Agent": "mantel-fetch/0.1"}) as client:
+                          headers={"User-Agent": "hearth-client-fetch/0.1"}) as client:
             for _ in range(_MAX_REDIRECTS + 1):
                 if not re.match(r"^https?://", target, re.I):
                     return {"error": "only http(s) URLs are allowed"}
                 host = urlparse(target).hostname or ""
                 if _host_is_blocked(host):
                     return {"error": f"refused: '{host}' resolves to a private/loopback/"
-                                     f"reserved address (set MANTEL_FETCH_ALLOW_PRIVATE=1 to override)"}
+                                     f"reserved address (set HEARTH_CLIENT_FETCH_ALLOW_PRIVATE=1 to override)"}
                 r = client.get(target)
                 if r.is_redirect and r.headers.get("location"):
                     target = str(r.url.join(r.headers["location"]))

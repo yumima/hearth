@@ -1,9 +1,9 @@
 #!/bin/sh
-# Install hearth, a local AI engine, and mantel, its chat window — for this user,
+# Install hearth, a local AI engine, and its chat window — for this user,
 # without administrator rights.
 #
 #   curl -fsSL https://yumima.github.io/hearth/install.sh | sh
-#   … | sh -s -- --no-mantel --no-autostart
+#   … | sh -s -- --no-client --no-autostart
 #
 # Everything goes into one folder, and `hearth uninstall` removes it. An Ollama,
 # a hearth or a Python that is already here is not touched. This script fetches
@@ -63,7 +63,7 @@ main() {
     fi
 
     # (hearth looks for more of these itself; this one saves the download.)
-    for name in hearth mantel; do
+    for name in hearth; do
         link="$HOME/.local/bin/$name"
         if [ -h "$link" ]; then
             case "$(readlink "$link")" in

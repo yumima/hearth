@@ -9,9 +9,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from mantel import app as appmod
-from mantel import config as cfgmod
-from mantel.mcp_host import ServerConfig
+from hearth_client import app as appmod
+from hearth_client import config as cfgmod
+from hearth_client.mcp_host import ServerConfig
 
 _SERVER = str(Path(__file__).parent / "_mcp_test_server.py")
 
@@ -67,7 +67,7 @@ def test_agent_loop_executes_a_tool(monkeypatch):
     cfg.mcp_servers = {"t": ServerConfig(command=sys.executable, args=[_SERVER],
                                          enabled=True, auto_approve=["add"])}
     body = _post_chat(appmod.create_app(cfg))
-    assert '"mantel_tool"' in body                    # tool activity surfaced
+    assert '"client_tool"' in body                    # tool activity surfaced
     assert "t__add" in body                           # the right tool
     assert '"phase": "result"' in body and "5" in body  # executed → 5
     assert _answer(body) == "The sum is 5."           # streamed final answer (reassembled)
@@ -76,7 +76,7 @@ def test_agent_loop_executes_a_tool(monkeypatch):
 def test_plain_chat_when_no_mcp_servers(monkeypatch):
     monkeypatch.setattr(appmod, "_backend_chat_stream", _fake_plain)
     body = _post_chat(appmod.create_app(cfgmod.Config()))   # no mcp_servers
-    assert _answer(body) == "hello" and '"mantel_tool"' not in body
+    assert _answer(body) == "hello" and '"client_tool"' not in body
 
 
 def test_enable_disable_server_live(monkeypatch, tmp_path):

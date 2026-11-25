@@ -1,4 +1,4 @@
-"""`mantel serve` / `mantel stop`: real processes, no backend."""
+"""`hearth client serve` / `hearth client stop`: real processes, no backend."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import httpx
 import psutil
 import pytest
 
-from mantel import cli
-from mantel import config as cfgmod
+from hearth_client import cli
+from hearth_client import config as cfgmod
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def served(monkeypatch):
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     cfgmod.save(cfgmod.Config(port=port, providers={"hearth": cfgmod.Provider(base_url="http://127.0.0.1:1/v1")}))
-    p = subprocess.Popen([sys.executable, "-m", "mantel", "serve"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    p = subprocess.Popen([sys.executable, "-m", "hearth_client", "serve"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline and not cli._server_up(cfgmod.load()):
         time.sleep(0.2)
@@ -45,11 +45,12 @@ def test_stop_ends_it_in_order(served, capsys):
 
 
 def test_which_command_lines_are_a_servers():
-    for yes in (["/v/bin/python", "/v/bin/mantel", "serve"], ["python", "-m", "mantel", "serve"],
-                ["C:\\m\\Scripts\\mantel.exe", "serve"]):
+    for yes in (["/v/bin/python", "/v/bin/hearth-client", "serve"], ["python", "-m", "hearth_client", "serve"],
+                ["C:\\m\\Scripts\\hearth-client.exe", "serve"]):
         assert cli._is_server(yes), yes
-    for no in (["/home/u/mantel/.venv/bin/python", "-m", "pytest"], ["vim", "mantel", "serve"],
-               ["python", "-c", "mantel serve"], ["/v/bin/mantel"], []):
+    for no in (["/home/u/hearth-client/.venv/bin/python", "-m", "pytest"], ["vim", "hearth-client", "serve"],
+               ["python", "-c", "hearth client serve"], ["/v/bin/hearth-client"],
+               ["/v/bin/python", "/v/bin/hearth", "start"], ["python", "-m", "hearth", "start"], []):
         assert not cli._is_server(no), no
 
 
@@ -60,7 +61,7 @@ def test_another_page_cannot_stop_it(served):
 
 
 def test_a_pid_of_another_program_is_not_ours():
-    cfgmod.save(cfgmod.Config(port=1))  # not the port of a mantel this machine may be running
+    cfgmod.save(cfgmod.Config(port=1))  # not the port of a client this machine may be running
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         cfgmod.pid_path().parent.mkdir(parents=True, exist_ok=True)
@@ -93,5 +94,5 @@ def test_a_server_that_cannot_start_says_so(monkeypatch):
         s.bind(("127.0.0.1", 0))
         s.listen()
         cfgmod.save(cfgmod.Config(port=s.getsockname()[1]))
-        r = subprocess.run([sys.executable, "-m", "mantel", "serve"], capture_output=True, timeout=60)
+        r = subprocess.run([sys.executable, "-m", "hearth_client", "serve"], capture_output=True, timeout=60)
     assert r.returncode != 0

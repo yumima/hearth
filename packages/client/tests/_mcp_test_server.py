@@ -6,7 +6,7 @@ server over stdio and exercise list_tools / call_tool deterministically.
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("mantel-test")
+mcp = FastMCP("client-test")
 
 
 @mcp.tool()

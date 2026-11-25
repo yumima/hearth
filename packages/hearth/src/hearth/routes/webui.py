@@ -29,4 +29,4 @@ async def setup_page() -> HTMLResponse:
 
 @router.get("/app", include_in_schema=False)
 async def old_chat_page() -> RedirectResponse:
-    return RedirectResponse(url="/")  # chat is mantel's now
+    return RedirectResponse(url="/")  # chat is hearth-client's now

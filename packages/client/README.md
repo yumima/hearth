@@ -1,8 +1,8 @@
-# mantel
+# hearth client
 
 **A universal, MCP-native desktop chat client — local-first, any backend.**
 
-Mantel is a clickable chat app that talks to **any** model backend and defaults
+Hearth is a clickable chat app that talks to **any** model backend and defaults
 to a **local [hearth](https://github.com/yumima/hearth) engine** on loopback. It
 (will) host **MCP servers** so the model can use *your* tools — files, search,
 databases, your own services — with **you** deciding which tools, regardless of
@@ -25,49 +25,49 @@ into a cloud backend or a remote server.
   MCP servers + system prompt.
 
 ## Quick start
-mantel is part of [hearth](https://github.com/yumima/hearth) and comes with its
+It is part of [hearth](https://github.com/yumima/hearth) and comes with its
 installer: https://yumima.github.io/hearth/. From a source checkout of it:
 
 ```bash
 hearth client install       # builds it and adds it to the app menu
-mantel                      # opens the desktop chat window
-mantel serve                # headless — open http://127.0.0.1:8765 in a browser
+hearth client               # opens the desktop chat window
+hearth client serve                # headless — open http://127.0.0.1:8765 in a browser
 ```
-Without `[gui]`/pywebview, `mantel` falls back to a Chromium/Edge `--app` window,
+Without `[gui]`/pywebview, `hearth client` falls back to a Chromium/Edge `--app` window,
 then your default browser.
 
 ## Commands
 | Command | What it does |
 |---|---|
-| `mantel` | open the desktop chat window (starts mantel's local server) |
-| `mantel setup` | first-run wizard — find a backend, pick a model, seed MCP examples |
-| `mantel status` | backend reachability, model, MCP servers + tool counts |
-| `mantel doctor` | diagnose the environment (backend, MCP runtimes, window) |
-| `mantel models` | list models from the active backend |
-| `mantel config [show\|path\|edit]` | show / locate / edit the config file |
-| `mantel mcp list\|tools\|enable <n>\|disable <n>` | manage MCP servers |
-| `mantel provider list\|use <n>` | manage backends |
-| `mantel serve` | run the local server in the foreground (headless / dev) |
-| `mantel stop` / `restart` | stop / restart the local server |
-| `mantel logs [-f]` | show (or follow) the local server log |
-| `mantel install` / `uninstall` | add / remove the clickable desktop launcher |
+| `hearth client` | open the desktop chat window (starts the client's local server) |
+| `hearth client setup` | first-run wizard — find a backend, pick a model, seed MCP examples |
+| `hearth client status` | backend reachability, model, MCP servers + tool counts |
+| `hearth client doctor` | diagnose the environment (backend, MCP runtimes, window) |
+| `hearth client models` | list models from the active backend |
+| `hearth client config [show\|path\|edit]` | show / locate / edit the config file |
+| `hearth client mcp list\|tools\|enable <n>\|disable <n>` | manage MCP servers |
+| `hearth client provider list\|use <n>` | manage backends |
+| `hearth client serve` | run the local server in the foreground (headless / dev) |
+| `hearth client stop` / `restart` | stop / restart the local server |
+| `hearth client logs [-f]` | show (or follow) the local server log |
+| `hearth client install` / `uninstall` | add / remove the clickable desktop launcher |
 
 ## Architecture
-Mantel runs a tiny **local server** (FastAPI) that serves the chat UI and proxies
+Hearth runs a tiny **local server** (FastAPI) that serves the chat UI and proxies
 chat/models to the configured backend under `/api/*`. The UI is **same-origin**
-with mantel, so streaming `fetch` works with no CORS; mantel talks to the backend
+with it, so streaming `fetch` works with no CORS; it talks to the backend
 **server-to-server** (so a loopback-only engine like hearth, with no CORS, works
 fine). That proxy is exactly where the **MCP host + tool-call loop** land (M2).
 
 ```
-window (pywebview)  →  mantel server (FastAPI)  →  backend (hearth / OpenAI / …)
+window (pywebview)  →  its server (FastAPI)  →  backend (hearth / OpenAI / …)
    UI at  /               /api/chat  /api/models      /v1/chat/completions
                           + MCP host + agent loop ───→ MCP servers (your tools)
 ```
 
 ## Tools (MCP)
-Mantel is an **MCP host**: the enabled servers' tools are offered to the model,
-and mantel runs the **tool-calling loop** for you — executing calls, feeding
+Hearth is an **MCP host**: the enabled servers' tools are offered to the model,
+and the client runs the **tool-calling loop** for you — executing calls, feeding
 results back, looping until the model answers. Tool activity streams live into
 the chat.
 
@@ -76,14 +76,14 @@ its server's `auto_approve` globs — anything else is refused, so an autonomous
 model can't touch files / shells / networks you didn't allow.
 
 ```bash
-mantel setup                  # seeds safe, *disabled* example servers (needs npx)
-mantel mcp list               # see configured servers
-mantel mcp enable filesystem  # turn one on
-mantel mcp tools              # what tools are now available
-mantel                        # (re)open the window to pick up the change
+hearth client setup                  # seeds safe, *disabled* example servers (needs npx)
+hearth client mcp list               # see configured servers
+hearth client mcp enable filesystem  # turn one on
+hearth client mcp tools              # what tools are now available
+hearth client                 # (re)open the window to pick up the change
 ```
 
-Add your own with `mantel config edit`:
+Add your own with `hearth client config edit`:
 ```yaml
 mcp_servers:
   filesystem:
@@ -104,7 +104,7 @@ your backends, `/model ` the available models — so there's nothing to memorize
 `/status`, `/clear`, `/help`.
 
 ## Voice
-Press the waveform button (shown when the composer is empty) to talk. Mantel
+Press the waveform button (shown when the composer is empty) to talk. Hearth
 answers when you pause, speaks sentence by sentence as the reply streams, and
 stops the moment you start talking or tap the orb. **Hold to talk** (Space, or
 press-and-hold the orb) suits noisy rooms or long pauses; **M** mutes, **Esc**
@@ -133,7 +133,7 @@ due. Lessons are spoken (or typed), and the tutor remembers you between them:
   **Pronunciation** compares what you said to the target phrase word by word.
 
 ## Config
-`~/.config/mantel/config.yaml` (optional — absent ⇒ local hearth defaults):
+`~/.config/hearth-client/config.yaml` (optional — absent ⇒ local hearth defaults):
 ```yaml
 host: 127.0.0.1
 port: 8765
@@ -145,7 +145,7 @@ providers:
 ```
 
 ## Security
-mantel binds **loopback only** and runs a **localhost guard** — a Host-header
+It binds **loopback only** and runs a **localhost guard** — a Host-header
 allowlist plus cross-origin refusal — so a malicious web page in your browser
 can't reach the server (DNS-rebinding / CSRF). That matters because the server
 executes MCP tools and mutates config. Tool execution is **deny-by-default**;

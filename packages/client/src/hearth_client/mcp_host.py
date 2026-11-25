@@ -1,7 +1,7 @@
 """MCP host — connect to configured MCP servers, aggregate their tools, and
 execute tool calls on the model's behalf.
 
-mantel is an MCP *host*: for each enabled server it opens a long-lived stdio
+The client is an MCP *host*: for each enabled server it opens a long-lived stdio
 session, lists the tools, and exposes them to the backend model as OpenAI
 function tools (namespaced ``<server>__<tool>``). Tool calls route back to the
 owning server.

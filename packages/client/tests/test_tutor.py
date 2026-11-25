@@ -9,9 +9,9 @@ import time
 
 from fastapi.testclient import TestClient
 
-from mantel import config as cfgmod
-from mantel import tutor
-from mantel.app import create_app
+from hearth_client import config as cfgmod
+from hearth_client import tutor
+from hearth_client.app import create_app
 
 
 def _con():

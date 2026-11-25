@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mantel.mcp_host import MCPHost, ServerConfig
+from hearth_client.mcp_host import MCPHost, ServerConfig
 
 _SERVER = str(Path(__file__).parent / "_mcp_test_server.py")
 

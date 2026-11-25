@@ -1,7 +1,7 @@
-"""Mantel configuration — providers + the active model.
+"""Hearth configuration — providers + the active model.
 
 M0 scope: a single default provider (local **hearth**, OpenAI-compatible on
-loopback) and the active model. Stored at ``~/.config/mantel/config.yaml``;
+loopback) and the active model. Stored at ``~/.config/hearth-client/config.yaml``;
 sensible defaults apply when it's absent, so a fresh install Just Works against
 a running hearth with zero config.
 
@@ -48,7 +48,7 @@ class Provider:
 
 @dataclass
 class Config:
-    host: str = "127.0.0.1"       # mantel's own local server (loopback only)
+    host: str = "127.0.0.1"       # the client's own local server (loopback only)
     port: int = 8765
     provider: str = "hearth"      # the active provider key
     model: str = "primary_chat"   # hearth role alias by default
@@ -61,7 +61,7 @@ class Config:
                                   # false keeps a chat (and your tools' results) off the web
     providers: dict[str, Provider] = field(default_factory=lambda: {"hearth": Provider()})
     # name -> mcp_host.ServerConfig (kept as Any to avoid importing the MCP SDK
-    # at config-import time; empty by default → mantel behaves as a plain chat).
+    # at config-import time; empty by default → it behaves as a plain chat).
     mcp_servers: dict = field(default_factory=dict)
 
     def active(self) -> Provider:
@@ -70,27 +70,27 @@ class Config:
 
 def config_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "mantel" / "config.yaml"
+    return Path(base) / "hearth-client" / "config.yaml"
 
 
 def state_dir() -> Path:
     """Per-user state dir for runtime files (pidfile, server log). XDG default
-    is ~/.local/state/mantel — separate from config so it can be wiped safely."""
+    is ~/.local/state/hearth-client — separate from config so it can be wiped safely."""
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    return Path(base) / "mantel"
+    return Path(base) / "hearth-client"
 
 
 def pid_path() -> Path:
-    return state_dir() / "mantel.pid"
+    return state_dir() / "hearth-client.pid"
 
 
 def log_path() -> Path:
-    return state_dir() / "mantel.log"
+    return state_dir() / "hearth-client.log"
 
 
 def load() -> Config:
     """Load config, falling back to all-defaults (hearth on :11435) when the file
-    is absent or unreadable — mantel must never fail to start over config."""
+    is absent or unreadable — it must never fail to start over config."""
     cfg = Config()
     p = config_path()
     if not p.exists():
@@ -146,7 +146,7 @@ def load() -> Config:
 
 
 def save(cfg: Config) -> Path:
-    """Write ``cfg`` back to ~/.config/mantel/config.yaml; returns the path."""
+    """Write ``cfg`` back to ~/.config/hearth-client/config.yaml; returns the path."""
     p = config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     data: dict = {

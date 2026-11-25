@@ -2,8 +2,8 @@
 
 Everything is in one folder (paths.data_dir()):
 
-    bin/            hearth, mantel, uv — stable names for what is current
-    versions/V/     hearth/ and mantel/, an environment each
+    bin/            hearth, hearth-client, uv — stable names for what is current
+    versions/V/     hearth/ and client/, an environment each
     python/         the Python they run on
     ollama/W/       the Ollama version V was tested with
     models/ voices/ what the person chose to download
@@ -12,7 +12,7 @@ Everything is in one folder (paths.data_dir()):
 
 A version is built beside the one in use and becomes current in one step, so an
 update that fails changes nothing, and the one before can come back. Outside the
-folder there are only ~/.hearth (settings, logs), a login entry, mantel's menu
+folder there are only ~/.hearth (settings, logs), a login entry, the client's menu
 entry and two links in ~/.local/bin; each is removed only if it is ours.
 
 The install scripts bring uv and the first environment, then run this file.
@@ -159,7 +159,7 @@ def conflicts() -> list[str]:
     out = []
     if f := service.foreign():
         out.append(f"{f} starts a hearth that this installer did not make")
-    for name in ("hearth", "mantel"):
+    for name in ("hearth",):
         link = Path.home() / ".local" / "bin" / name
         if not _WIN and (link.is_symlink() or link.exists()) and not _inside(link):
             out.append(f"{link} is another {name}" + (f" ({os.path.realpath(link)})" if link.is_symlink() else ""))
@@ -207,6 +207,7 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
     that is put back."""
     env = root() / "versions" / rel.version / name
     done, before = env / ".complete", env.with_name(name + ".before")
+    module = {"client": "hearth_client"}.get(name, name)
     put_back(env, replacing)
     if done.is_file() and not again:
         return env
@@ -235,7 +236,7 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
         _run([uv, "pip", "install", "--quiet", "--python", str(env), "--no-deps", "--no-index", str(files["wheel"])],
              f"Installing {name}", env_vars)
         _run([str(env_bin(env, "python")), "-I", "-c",
-              f"import {name}; assert {name}.__version__ == {rel.version!r}, {name}.__version__"], f"Starting {name}")
+              f"import {module}; assert {module}.__version__ == {rel.version!r}, {module}.__version__"], f"Starting {name}")
         done.write_text("")
     except BaseException:
         try:
@@ -343,18 +344,15 @@ class _Progress:
 
 # ── making a version the current one ──────────────────────────────────────────
 
-def link_programs(version: str, mantel: bool) -> None:
+def link_programs(version: str, client: bool) -> None:
     bin_dir = root() / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("hearth", "mantel", *(("hearthw",) if _WIN else ())):
-        target = env_bin(root() / "versions" / version / name.removesuffix("w"), name)
+    for name in ("hearth", "hearth-client", *(("hearthw",) if _WIN else ())):
+        target = env_bin(root() / "versions" / version / ("client" if name == "hearth-client" else "hearth"), name)
         link = bin_dir / exe(name)
-        if name == "mantel" and not mantel:
+        if name == "hearth-client" and not client:
             if link.exists():
-                _mantel("uninstall")
-            user = Path.home() / ".local" / "bin" / name
-            if not _WIN and user.is_symlink() and _inside(user):
-                user.unlink()
+                _menu("uninstall")
             link.unlink(missing_ok=True)
             continue
         new = not link.exists()
@@ -377,15 +375,15 @@ def link_programs(version: str, mantel: bool) -> None:
         else:
             tmp.symlink_to(os.path.relpath(target, bin_dir))
         os.replace(tmp, link)
-        if not _WIN:
+        if not _WIN and name == "hearth":  # (the client is `hearth client`)
             user = Path.home() / ".local" / "bin" / name
             user.parent.mkdir(parents=True, exist_ok=True)
             if user.is_symlink() and _inside(user):
                 user.unlink()
             if not (user.exists() or user.is_symlink()):
                 user.symlink_to(link)
-        if name == "mantel" and new:
-            _mantel("install")  # (a version without it took it out)
+        if name == "hearth-client" and new:
+            _menu("install")  # (a version without it took it out)
 
 
 def first_config() -> None:
@@ -469,7 +467,7 @@ def _serving(version: str) -> bool:
         return False
 
 
-def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: bool, say: Say) -> None:
+def finish(rel: Release, client: bool, autostart: bool, start: bool, open_page: bool, say: Say) -> None:
     """The rest of an installation, run from its own new environment. Over an
     earlier one it is an update; over the same version, a repair. One that is
     running goes on until everything is here, and runs again afterwards."""
@@ -485,10 +483,10 @@ def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: 
 
     try:
         build_env(rel, "hearth", say, replacing)
-        if mantel:
-            build_env(rel, "mantel", say, replacing)
+        if client:
+            build_env(rel, "client", say, replacing)
         ollama = get_ollama(rel, hardware.probe(), say, replacing)
-        new = {"version": rel.version, "ollama": ollama, "mantel": mantel}
+        new = {"version": rel.version, "ollama": ollama, "client": client}
         first_config()
         if old and old.get("version") != rel.version:
             _switch(new, old, run or start, say)
@@ -496,9 +494,9 @@ def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: 
             if old:
                 replacing()
             _set_current({**new, "previous": old.get("previous")})
-            link_programs(rel.version, mantel)
-        if mantel:
-            _mantel("install")
+            link_programs(rel.version, client)
+        if client:
+            _menu("install")
         if autostart:
             try:
                 service.enable(str(root() / "bin" / exe("hearthw" if _WIN else "hearth")))
@@ -525,14 +523,14 @@ def finish(rel: Release, mantel: bool, autostart: bool, start: bool, open_page: 
         webbrowser.open(url)
 
 
-def add_mantel(rebuild: bool, say: Say) -> None:
-    """mantel, for an installation made without it (or made again)."""
+def add_client(rebuild: bool, say: Say) -> None:
+    """The window, for an installation made without it (or made again)."""
     cur = current()
     version = cur["version"]
-    env = root() / "versions" / version / "mantel"
+    env = root() / "versions" / version / "client"
     prefixes = {os.path.abspath(env) + os.sep, os.path.realpath(env) + os.sep}
 
-    def end_mantel() -> None:
+    def end_client() -> None:
         import psutil
 
         pids = []
@@ -545,25 +543,25 @@ def add_mantel(rebuild: bool, say: Say) -> None:
         for pid in pids:
             procs.end_tree(pid)
 
-    put_back(env, end_mantel)
+    put_back(env, end_client)
     if rebuild or not (env / ".complete").is_file():
         rel = release(os.environ.get("HEARTH_RELEASE_URL") or f"{RELEASES}/download/v{version}/manifest.json")
         if rel.version != version:
             raise Problem(f"That release is {rel.version}, and hearth here is {version}: update hearth first.")
-        build_env(rel, "mantel", say, end_mantel, again=rebuild)
+        build_env(rel, "client", say, end_client, again=rebuild)
         shutil.rmtree(root() / "downloads", ignore_errors=True)
         shutil.rmtree(root() / "cache", ignore_errors=True)
-    _set_current({**cur, "mantel": True})
+    _set_current({**cur, "client": True})
     link_programs(version, True)
 
 
-def _mantel(action: str) -> None:
-    """Its entry in the app menu. Nothing that goes wrong there stops an installation."""
-    p = root() / "bin" / exe("mantel")
+def _menu(action: str) -> None:
+    """The window's entry in the app menu. Nothing that goes wrong there stops an installation."""
+    p = root() / "bin" / exe("hearth-client")
     if p.exists():
         try:
             subprocess.run([str(p), action], capture_output=True, check=False, timeout=60,
-                           env={**os.environ, "MANTEL_PROGRAM": str(p)})
+                           env={**os.environ, "HEARTH_PROGRAM": str(root() / "bin" / exe("hearthw" if _WIN else "hearth"))})
         except (OSError, subprocess.SubprocessError):
             pass
 
@@ -589,9 +587,9 @@ def _tidy() -> None:
 
 # ── update, and back ──────────────────────────────────────────────────────────
 
-def _mantel_files() -> list[Path]:
-    data = Path(os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")) / "mantel"
-    conf = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "mantel"
+def _client_files() -> list[Path]:
+    data = Path(os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")) / "hearth-client"
+    conf = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "hearth-client"
     return [*sorted(data.glob("*.db")), conf / "config.yaml"]
 
 
@@ -606,7 +604,7 @@ def backup() -> Path:
             break
         except FileExistsError:
             continue
-    files = [cfgmod.config_path(), paths.home() / "measured.json", *_mantel_files()]
+    files = [cfgmod.config_path(), paths.home() / "measured.json", *_client_files()]
     index = {}
     for i, f in enumerate(f for f in files if f.is_file()):
         copy = dest / f"{i}-{f.name}"
@@ -645,9 +643,9 @@ def _switch(new: dict, old: dict, run: bool, say: Say) -> None:
         _stop_everything()
         saved = backup()
         changed = True
-        _set_current({**new, "previous": {**{k: old[k] for k in ("version", "ollama")}, "mantel": bool(old.get("mantel")),
+        _set_current({**new, "previous": {**{k: old[k] for k in ("version", "ollama")}, "client": bool(old.get("client")),
                                           "backup": saved.name}})
-        link_programs(new["version"], bool(new.get("mantel")))
+        link_programs(new["version"], bool(new.get("client")))
         say("Starting it…")
         ok, message = _start(new["version"])
         if not ok:
@@ -679,7 +677,7 @@ def _back(old: dict, saved: Path | None, run: bool, changed: bool = True) -> tup
         if saved is not None and (saved / "index.json").is_file():
             step(restore, saved)  # before anything reads what the other version wrote
         step(_set_current, old)
-        step(link_programs, old["version"], bool(old.get("mantel")))
+        step(link_programs, old["version"], bool(old.get("client")))
     if run:
         def start() -> None:
             ok, message = _start(old["version"])
@@ -693,13 +691,13 @@ def update(rel: Release, say: Say) -> None:
     if not managed():
         raise Problem("This hearth was not made by its installer (a source checkout?): update it where it came from.")
     old = current()
-    mantel = bool(old.get("mantel"))
+    client = bool(old.get("client"))
     build_env(rel, "hearth", say)          # beside the one in use: what fails here changes nothing
-    if mantel:
-        build_env(rel, "mantel", say)
+    if client:
+        build_env(rel, "client", say)
     ollama = get_ollama(rel, hardware.probe(), say)
     run = _running()
-    _switch({"version": rel.version, "ollama": ollama, "mantel": mantel}, old, run, say)
+    _switch({"version": rel.version, "ollama": ollama, "client": client}, old, run, say)
     _tidy()
     say(f"hearth {rel.version} is ready.")
 
@@ -754,8 +752,8 @@ def uninstall(keep_models: bool, keep_settings: bool, say: Say) -> None:
         raise Problem(f"{base} cannot be hearth's folder; nothing was removed.")
     _stop_everything()
     service.disable(remove=True)
-    _mantel("uninstall")
-    for name in ("hearth", "mantel"):
+    _menu("uninstall")
+    for name in ("hearth",):
         link = Path.home() / ".local" / "bin" / name
         if not _WIN and link.is_symlink() and _inside(link):
             link.unlink()
@@ -770,7 +768,7 @@ def uninstall(keep_models: bool, keep_settings: bool, say: Say) -> None:
     parts = (*(() if keep_models else ("models", "voices")), *_PARTS, *_LAST)
     doomed = [base / p for p in parts if (base / p).exists()]
     kept = (f" Models and voices are kept in {base}." if keep_models else "") \
-        + " mantel's chats and settings are kept where they were."
+        + " The window's chats and settings are kept where they were."
     if _WIN:
         _remove_later(base, doomed)
         say("hearth is being removed; that takes a few seconds." + kept)
@@ -853,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("finish")
     s.add_argument("--release", required=True)
     s.add_argument("--sha256", default="")
-    s.add_argument("--no-mantel", action="store_true")
+    s.add_argument("--no-client", action="store_true")
     s.add_argument("--no-autostart", action="store_true")
     s.add_argument("--no-start", action="store_true")
     s.add_argument("--no-open", action="store_true")
@@ -866,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 3
         if a.cmd == "finish":
-            finish(release(a.release, a.sha256), not a.no_mantel, not a.no_autostart, not a.no_start, not a.no_open,
+            finish(release(a.release, a.sha256), not a.no_client, not a.no_autostart, not a.no_start, not a.no_open,
                    say)
         return 0
     except Problem as e:

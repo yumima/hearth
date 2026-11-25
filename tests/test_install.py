@@ -133,8 +133,8 @@ class World:
         """Build a release of this tree as `version`; its manifest's URL."""
         src = self.tmp / f"src-{version}"
         shutil.copytree(ROOT, src, ignore=shutil.ignore_patterns(".git", ".venv*", "__pycache__", "vendor", "*.egg-info", "build", "dist", "wheel*", "hearth-home"))
-        for name in ("hearth", "mantel"):
-            f = src / "packages" / name / "src" / name / "__init__.py"
+        for name, module in (("hearth", "hearth"), ("client", "hearth_client")):
+            f = src / "packages" / name / "src" / module / "__init__.py"
             f.write_text(re.sub(r'__version__ = "[^"]+"', f'__version__ = "{version}"', f.read_text(encoding="utf-8")), encoding="utf-8")
         if change:
             change(src)
@@ -224,17 +224,18 @@ def test_01_install(world):
     ollama = httpx.get(f"http://127.0.0.1:{world.ollama_port}/api/version").json()
     assert Path(ollama["dir"]) == world.data / "models"
     cur = json.loads((world.data / "current.json").read_text())
-    assert (cur["version"], cur["ollama"], cur["mantel"], cur["previous"]) == ("0.2.0", "0.0.1", True, None)
-    for name in ("hearth", "mantel"):
-        p = world.data / "bin" / (name + ".exe" if WIN else name)
-        assert p.exists()
-        if not WIN:
-            assert (world.home / ".local" / "bin" / name).resolve() == p.resolve()
+    assert (cur["version"], cur["ollama"], cur["client"], cur["previous"]) == ("0.2.0", "0.0.1", True, None)
+    for name in ("hearth", "hearth-client"):
+        assert (world.data / "bin" / (name + ".exe" if WIN else name)).exists()
+    if not WIN:
+        links = world.home / ".local" / "bin"
+        assert (links / "hearth").resolve() == (world.data / "bin" / "hearth").resolve()
+        assert [p.name for p in links.iterdir()] == ["hearth"]  # one command
     assert world.autostart()
     # two environments: neither has the other in it
-    for name, other in (("hearth", "mantel"), ("mantel", "hearth")):
+    for name, has, other in (("hearth", "hearth", "hearth_client"), ("client", "hearth_client", "hearth")):
         py = world.data / "versions" / "0.2.0" / name / ("Scripts/python.exe" if WIN else "bin/python")
-        assert _run([py, "-I", "-c", f"import {name}"])
+        assert _run([py, "-I", "-c", f"import {has}"])
         _run([py, "-I", "-c", f"import {other}"], ok=False)
     assert not (world.data / "downloads").exists() and not (world.data / "cache").exists()
     assert httpx.get(f"http://127.0.0.1:{world.port}/").status_code == 200
@@ -242,11 +243,11 @@ def test_01_install(world):
 
 
 def test_02_installing_again_repairs(world):
-    shutil.rmtree(world.data / "versions" / "0.2.0" / "mantel")
+    shutil.rmtree(world.data / "versions" / "0.2.0" / "client")
     world.hearth("stop")
     (world.data / "ollama" / "0.0.1" / ".complete").unlink()
     world.install("0.2.0", "--no-open")
-    assert world.version() == "0.2.0" and (world.data / "versions" / "0.2.0" / "mantel" / ".complete").exists()
+    assert world.version() == "0.2.0" and (world.data / "versions" / "0.2.0" / "client" / ".complete").exists()
 
 
 def test_03_update(world):
@@ -313,19 +314,18 @@ def test_06b_a_newer_script_over_a_running_one_is_an_update(world):
 
 def test_06bb_a_script_that_cannot_finish_leaves_the_running_one_running(world):
     url = world.release("0.6.0")
-    wheel = next((world.releases / "v0.6.0").glob("mantel-*.whl"))
+    wheel = next((world.releases / "v0.6.0").glob("hearth_client-*.whl"))
     wheel.write_bytes(wheel.read_bytes() + b"x")
     r = world.install("0.6.0", "--no-open", ok=False)
     assert "not the published file" in r.stderr + r.stdout and url
     assert world.version() == "0.3.0"
 
 
-def test_06bd_without_mantel_there_is_no_link_left_to_it(world):
-    world.install("0.3.0", "--no-open", "--no-mantel")
-    assert world.version() == "0.3.0" and not (world.data / "bin" / ("mantel.exe" if WIN else "mantel")).exists()
-    assert not (world.home / ".local" / "bin" / "mantel").is_symlink()
+def test_06bd_without_the_window_nothing_of_it_is_left(world):
+    world.install("0.3.0", "--no-open", "--no-client")
+    assert world.version() == "0.3.0" and not (world.data / "bin" / ("hearth-client.exe" if WIN else "hearth-client")).exists()
     if sys.platform.startswith("linux"):
-        assert not (world.home / ".local" / "share" / "applications" / "mantel.desktop").exists()
+        assert not (world.home / ".local" / "share" / "applications" / "hearth-client.desktop").exists()
 
 
 def test_06be_a_program_with_a_file_of_it_open_is_not_ended(world):
@@ -362,34 +362,36 @@ def test_07_removing_keeps_what_was_asked_for(world):
     assert _until(lambda: world.processes() == []), world.processes()
 
 
-def test_08_installing_beside_kept_models_and_without_mantel(world):
-    world.install("0.2.0", "--no-open", "--no-mantel", "--no-autostart")
+def test_08_installing_beside_kept_models_and_without_the_window(world):
+    world.install("0.2.0", "--no-open", "--no-client", "--no-autostart")
     assert world.version() == "0.2.0" and not world.autostart()
     assert (world.data / "models" / "a-model").exists()
-    assert not (world.data / "bin" / ("mantel.exe" if WIN else "mantel")).exists()
-    assert not (world.data / "versions" / "0.2.0" / "mantel").exists()
+    assert not (world.data / "bin" / ("hearth-client.exe" if WIN else "hearth-client")).exists()
+    assert not (world.data / "versions" / "0.2.0" / "client").exists()
 
 
-def test_08b_mantel_can_be_added_later(world):
+def test_08b_the_window_can_be_added_later(world):
     url = f"{world.url}/v0.2.0/manifest.json"
     world.hearth("client", "install", HEARTH_RELEASE_URL=url)
-    assert (world.data / "bin" / ("mantel.exe" if WIN else "mantel")).exists()
-    assert json.loads((world.data / "current.json").read_text())["mantel"] is True
+    assert (world.data / "bin" / ("hearth-client.exe" if WIN else "hearth-client")).exists()
+    assert json.loads((world.data / "current.json").read_text())["client"] is True
     if sys.platform.startswith("linux"):
-        entry = (world.home / ".local" / "share" / "applications" / "mantel.desktop").read_text()
-        assert str(world.data / "bin" / "mantel") in entry
+        entry = (world.home / ".local" / "share" / "applications" / "hearth-client.desktop").read_text()
+        assert f"Exec={world.data / 'bin' / 'hearth'} client\n" in entry and "Name=Hearth\n" in entry
+        assert world.autostart() is False  # (that is another file, and not this one's business)
+    assert "manage MCP servers" in world.hearth("client", "--help").stdout  # its own commands are passed on
     world.hearth("client", "uninstall")
     world.hearth("client", "install", HEARTH_RELEASE_URL=f"{world.url}/nothing")  # it is here: nothing is fetched
     world.hearth("client", "install", "--build", HEARTH_RELEASE_URL=url)  # with hearth running
     assert world.version() == "0.2.0"
-    assert _run([world.data / "bin" / ("mantel.exe" if WIN else "mantel"), "--help"], env=world.env).returncode == 0
+    assert _run([world.data / "bin" / ("hearth-client.exe" if WIN else "hearth-client"), "--help"], env=world.env).returncode == 0
 
 
 def test_09_removing_leaves_nothing(world):
     world.hearth("uninstall", "--yes")
     assert _until(lambda: not world.data.exists(), 60), list(world.data.rglob("*"))[:10]
     assert not (world.home / ".hearth").exists()
-    assert not any((world.home / ".local" / "bin" / n).is_symlink() for n in ("hearth", "mantel"))
+    assert not (world.home / ".local" / "bin" / "hearth").is_symlink()
     assert _until(lambda: world.processes() == []), world.processes()
     assert (world.home / "mine.txt").exists()
 

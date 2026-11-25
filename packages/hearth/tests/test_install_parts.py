@@ -16,7 +16,7 @@ from hearth import install, service
 from hearth.hardware import Gpu, Hardware
 from hearth.provision import Problem
 
-MANIFEST = {"schema": 1, "version": "1.2.3", "python": "3.12", "files": {"mantel-wheel": {"name": "mantel-1.2.3.whl", "sha256": "ab"}},
+MANIFEST = {"schema": 1, "version": "1.2.3", "python": "3.12", "files": {"client-wheel": {"name": "hearth_client-1.2.3.whl", "sha256": "ab"}},
             "ollama": {"version": "9", "archives": {"linux-x86_64": [{"url": "a"}], "linux-x86_64-amd": [{"url": "rocm"}]}}}
 
 
@@ -42,7 +42,7 @@ def test_a_releases_files_are_beside_its_manifest_wherever_that_was_served_from(
     tag = "https://github.com/yumima/hearth/releases/download/v1.2.3/"
     for url in (tag + "manifest.json", "https://github.com/yumima/hearth/releases/latest/download/manifest.json", ""):
         rel = install.release(url)
-        assert rel.file("mantel-wheel") == (tag + "mantel-1.2.3.whl", "ab"), url
+        assert rel.file("client-wheel") == (tag + "hearth_client-1.2.3.whl", "ab"), url
     assert install.release("", hashlib.sha256(raw).hexdigest()).version == "1.2.3"
 
 
@@ -109,14 +109,14 @@ def test_settings_and_chats_are_put_aside_and_back(monkeypatch, tmp_path):
     monkeypatch.setenv("HEARTH_HOME", str(tmp_path / "h"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "x"))
     (tmp_path / "h").mkdir()
-    (tmp_path / "x" / "mantel").mkdir(parents=True)
-    conf, db = tmp_path / "h" / "config.yaml", tmp_path / "x" / "mantel" / "chats.db"
+    (tmp_path / "x" / "hearth-client").mkdir(parents=True)
+    conf, db = tmp_path / "h" / "config.yaml", tmp_path / "x" / "hearth-client" / "chats.db"
     conf.write_text("old")
     con = sqlite3.connect(db)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("CREATE TABLE t (x)")
     con.execute("INSERT INTO t VALUES ('before')")
-    con.commit()  # in the -wal file, with the database open: as mantel leaves it
+    con.commit()  # in the -wal file, with the database open: as the window leaves it
     saved = install.backup()
     assert install.backup() != saved  # two in one second are two
     con.execute("INSERT INTO t VALUES ('after')")
@@ -166,7 +166,7 @@ def test_whatever_fails_the_old_version_is_tried_for(monkeypatch, tmp_path):
     monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
     monkeypatch.setenv("HEARTH_HOME", str(tmp_path / "h"))
     (tmp_path / "d").mkdir()
-    old, new = {"version": "1", "ollama": "a", "mantel": True}, {"version": "2", "ollama": "b", "mantel": True}
+    old, new = {"version": "1", "ollama": "a", "client": True}, {"version": "2", "ollama": "b", "client": True}
 
     def no(*a, **k):
         raise OSError(28, "No space left on device")
@@ -206,7 +206,7 @@ def test_asked_to_end_in_the_middle_it_goes_back(monkeypatch, tmp_path, name):
     monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
     monkeypatch.setenv("HEARTH_HOME", str(tmp_path / "h"))
     (tmp_path / "d").mkdir()
-    old, started = {"version": "1", "ollama": "a", "mantel": True}, []
+    old, started = {"version": "1", "ollama": "a", "client": True}, []
     monkeypatch.setattr(install, "_stop_everything", lambda: None)
     monkeypatch.setattr(install, "link_programs", lambda *a: None)
 
@@ -256,11 +256,11 @@ def test_nohup_stays():
 
 def test_one_that_cannot_be_made_again_is_put_back(monkeypatch, tmp_path):
     monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
-    env = tmp_path / "d" / "versions" / "1.2.3" / "mantel"
+    env = tmp_path / "d" / "versions" / "1.2.3" / "client"
     env.mkdir(parents=True)
     (env / ".complete").write_text("")
     (env / "it").write_text("works")
-    rel = install.Release({**MANIFEST, "files": {f"mantel-{k}": {"name": k, "sha256": ""} for k in ("wheel", "requirements")}}, "")
+    rel = install.Release({**MANIFEST, "files": {f"client-{k}": {"name": k, "sha256": ""} for k in ("wheel", "requirements")}}, "")
     monkeypatch.setattr(install, "fetch", lambda *a: None)
     monkeypatch.setattr(install, "_uv", lambda: "uv")
     stopped = []
@@ -272,37 +272,37 @@ def test_one_that_cannot_be_made_again_is_put_back(monkeypatch, tmp_path):
 
     monkeypatch.setattr(install, "_run", run)
     with pytest.raises(Problem, match="no disk"):
-        install.build_env(rel, "mantel", lambda t: None, lambda: stopped.append(1), again=True)
+        install.build_env(rel, "client", lambda t: None, lambda: stopped.append(1), again=True)
     assert (env / "it").read_text() == "works" and stopped == [1]
     # killed in the middle: the next one finds the one that works, whatever it then does
-    env.rename(env.with_name("mantel.before"))
+    env.rename(env.with_name("client.before"))
     env.mkdir()
     with pytest.raises(Problem, match="no disk"):
-        install.build_env(rel, "mantel", lambda t: None, lambda: stopped.append(1), again=True)
-    assert (env / "it").read_text() == "works" and not env.with_name("mantel.before").exists()
-    env.rename(env.with_name("mantel.before"))
-    assert install.build_env(rel, "mantel", lambda t: None) == env and (env / "it").exists()
+        install.build_env(rel, "client", lambda t: None, lambda: stopped.append(1), again=True)
+    assert (env / "it").read_text() == "works" and not env.with_name("client.before").exists()
+    env.rename(env.with_name("client.before"))
+    assert install.build_env(rel, "client", lambda t: None) == env and (env / "it").exists()
     # a leftover that is not complete is nobody's copy
-    (env.with_name("mantel.before")).mkdir()
-    assert install.build_env(rel, "mantel", lambda t: None) == env and (env / "it").exists()
+    (env.with_name("client.before")).mkdir()
+    assert install.build_env(rel, "client", lambda t: None) == env and (env / "it").exists()
     stopped[:] = [1]
     # what cannot be fetched is not even stopped for
     monkeypatch.setattr(install, "fetch", lambda *a: (_ for _ in ()).throw(Problem("no network")))
     with pytest.raises(Problem, match="no network"):
-        install.build_env(rel, "mantel", lambda t: None, lambda: stopped.append(1), again=True)
+        install.build_env(rel, "client", lambda t: None, lambda: stopped.append(1), again=True)
     assert (env / "it").exists() and stopped == [1]
 
 
 def test_a_leftover_that_cannot_be_removed_costs_nothing(monkeypatch, tmp_path):
     monkeypatch.setenv("HEARTH_DATA", str(tmp_path / "d"))
-    env = tmp_path / "d" / "versions" / "1.2.3" / "mantel"
-    for p in (env, env.with_name("mantel.before")):
+    env = tmp_path / "d" / "versions" / "1.2.3" / "client"
+    for p in (env, env.with_name("client.before")):
         p.mkdir(parents=True)
     (env / ".complete").write_text("")
-    rel = install.Release({**MANIFEST, "files": {f"mantel-{k}": {"name": k, "sha256": ""} for k in ("wheel", "requirements")}}, "")
+    rel = install.Release({**MANIFEST, "files": {f"client-{k}": {"name": k, "sha256": ""} for k in ("wheel", "requirements")}}, "")
     monkeypatch.setattr(install, "fetch", lambda *a: None)
     monkeypatch.setattr(install, "_uv", lambda: "uv")
     monkeypatch.setattr(install.shutil, "rmtree", lambda *a, **k: None)
     with pytest.raises(Problem, match="could not be removed"):
-        install.build_env(rel, "mantel", lambda t: None, again=True)
+        install.build_env(rel, "client", lambda t: None, again=True)
     assert (env / ".complete").is_file()

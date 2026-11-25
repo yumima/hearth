@@ -2,17 +2,19 @@
 
 **AI models on your own computer.** hearth picks a model that suits the machine,
 checks that it works there, and serves it to your programs on one local address —
-the API they already speak, OpenAI's. **mantel** is its chat window.
+the API they already speak, OpenAI's. Type `hearth` in a folder for a coding agent
+in the terminal, or click **Hearth** for the chat window.
 
-This repository is both: `packages/hearth` (the engine) and `packages/mantel` (the
-[chat client](packages/mantel/README.md)). Two programs, installed together, that
-speak over HTTP. [finterm](https://github.com/yumima/finterm) is one of hearth's
+This repository is all of it: `packages/hearth` (the engine and the command) and
+`packages/client` (the [chat window](packages/client/README.md)). Two programs,
+installed together, that speak over HTTP. [finterm](https://github.com/yumima/finterm) is one of hearth's
 users; hearth knows nothing of finance.
 
 ## Today's commits (2026-11-24)
 
 Latest first.
 
+- [`eac6206`](https://github.com/yumima/hearth/commit/eac6206) **test:** a stand-in takes a port that was in use a moment ago
 - [`71a9afc`](https://github.com/yumima/hearth/commit/71a9afc) Release: the list of hashes is of the files that are in it
 - [`f32fd67`](https://github.com/yumima/hearth/commit/f32fd67) mantel: its README says where it is now
 - [`9e867c2`](https://github.com/yumima/hearth/commit/9e867c2) Speech recognition: PyAV 17, which faster-whisper 1.2.1 can use; CI reads a recording
@@ -67,7 +69,7 @@ irm https://yumima.github.io/hearth/install.ps1 | iex
 For one user, without administrator rights, into one folder. An Ollama, Python or
 hearth that is already there is not touched. The script fetches exactly the files
 whose hashes it carries. Then the setup page opens: it says what the computer can
-do, and lists the models that suit it. Options: `--no-mantel`, `--no-autostart`,
+do, and lists the models that suit it. Options: `--no-client`, `--no-autostart`,
 `--no-open`.
 
 | | |
@@ -97,11 +99,13 @@ it. What was in use stays in use if that fails.
 | `hearth setup` | install the recommended one, and natural voices |
 | `hearth install <model>` · `remove <model>` | what the setup page does, here |
 | `hearth start` · `start --background` · `stop` · `status` | the gateway (the service, where one is installed) |
-| `hearth` · `hearth chat` | chat in the terminal (`/help`) |
-| `hearth client` | mantel's window, with the engine started |
-| `hearth client install` | build mantel (from this source tree, or the release) and add it to the app menu; `--build` to make it anew, `--replace` to take over `~/.local/bin/mantel` |
+| `hearth` · `hearth code [folder]` | a coding agent for the folder you are in: it reads, and asks before it changes a file, runs a command or goes to the web. It asks once whether you trust the folder. Starts the engine if need be |
+| `hearth -p "…"` | one task, without asking, and the answer; for scripts |
+| `hearth chat` | chat in the terminal, without files (`/chat` and `/code` go from one to the other) |
+| `hearth client` | the chat window, with the engine started |
+| `hearth client install` | build the window (from this source tree, or the release) and add **Hearth** to the app menu; `--build` to make it anew |
 | `hearth client uninstall` | take it out of the app menu |
-| `hearth code` | a coding agent for a folder |
+| `hearth client …` | the window's own commands: `setup`, `status`, `mcp`, … (`hearth client --help`) |
 | `hearth bind <role> <model>` · `roles` · `models` | which model answers for what |
 | `hearth backend …` | add a cloud or other OpenAI-compatible server |
 | `hearth voice --voice kokoro` | natural voices |
@@ -169,9 +173,9 @@ itself; `search.enabled: false` turns all of it off.
 With [uv](https://docs.astral.sh/uv):
 
 ```bash
-make build     # hearth in .venv, mantel in .venv-mantel
+make build     # the engine in .venv, the window in .venv-client
 make test      # both, as CI runs them
-hearth client install    # mantel from this tree, in the app menu
+hearth client install    # the window from this tree, in the app menu
 make start     # the gateway; Ollama from vendor/ollama, or on PATH
 HEARTH_E2E=1 .venv/bin/python -m pytest tests/test_install.py   # the install scripts, with real environments
 python3 tools/release.py OUT                                    # a release's files
@@ -181,7 +185,7 @@ Dependencies are locked with hashes (`uv.lock`); `make lock` after changing one.
 An installed hearth and a checkout do not replace each other: the installer steps
 aside for a hearth it did not make.
 
-The consumer contract (what finterm and mantel rely on) is versioned:
+The consumer contract (what finterm and the window rely on) is versioned:
 `GET /admin/version` says `contract`. Its major number rises when a consumer has
 to change; additions raise the minor one.
 

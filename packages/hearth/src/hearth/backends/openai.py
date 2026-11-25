@@ -2,7 +2,7 @@
 
 Fronts any OpenAI-style HTTP API — OpenAI, Zhipu GLM, Together, Groq, OpenRouter,
 a remote vLLM, … — behind hearth's role registry, so a cloud model can be bound
-to a role and used by every local client (finterm, mantel) through the same
+to a role and used by every local client (finterm, the chat window) through the same
 loopback API with no client reconfiguration: just
 
     hearth backend add zhipu --type openai \\
@@ -121,7 +121,7 @@ class OpenAIBackend:
     async def list_models(self) -> list[ModelInfo]:
         """Remote catalogue, cached — GET /v1/models fans out to every backend.
 
-        A consumer polling the gateway's model list (mantel does, every 5s)
+        A consumer polling the gateway's model list (the chat window does, every 5s)
         would otherwise turn each poll into an outbound provider call: ~17k
         Google requests/day from an idle app, against a free tier of ~1.5k
         requests/day. A provider's catalogue changes on the order of weeks, so

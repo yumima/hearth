@@ -16,13 +16,16 @@ matter more than the rest:
 * **read_file with line numbers and a window** — so a large file can be read in
   parts and referred to precisely.
 
-Every path is confined to the project root, and writes/shell ask for approval
-unless auto-approve is on.
+Every path is confined to the project root, links included. Reading there is free
+(the person was asked once whether they trust the folder, cli.py); a change, a
+command and the web each ask first, and show what they would do: a file that was
+read may hold instructions of somebody else's, and a web address is a way out.
 """
 
 from __future__ import annotations
 
 import asyncio
+import difflib
 import fnmatch
 import json
 import os
@@ -30,11 +33,13 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
 from . import config as cfgmod
-from . import toolloop, webtools
+from . import procs, toolloop, webtools
+from .term import ask
 
 _BOLD, _DIM, _YEL, _CYAN, _RST = "\033[1m", "\033[2m", "\033[33m", "\033[36m", "\033[0m"
 
@@ -48,6 +53,8 @@ _READ_MAX_CHARS = 40000
 _GREP_MAX = 120
 _LIST_MAX = 600
 _SHELL_MAX_CHARS = 16000
+_FILE_MAX_BYTES = 20_000_000
+_DIFF_LINES = 60
 
 _FILE_TOOLS = [
     {"type": "function", "function": {
@@ -112,6 +119,39 @@ def _fmt_size(n: int) -> str:
     return f"{n/1000:.1f}k" if n >= 1000 else str(n)
 
 
+def _plain(text: str) -> str:
+    """As it is shown to somebody who decides on it: nothing in it moves the cursor,
+    changes a colour or writes over what was there."""
+    return "".join(c if c == "\n" or c == "\t" or (c.isprintable() and not "\u202a" <= c <= "\u202e"
+                                                  and not "\u2066" <= c <= "\u2069") else f"\\x{ord(c):02x}" for c in text)
+
+
+def _diff(old: str, new: str, name: str) -> str:
+    lines = list(difflib.unified_diff(old.splitlines(), new.splitlines(), name, name, lineterm="", n=2))[2:]
+    more = len(lines) - _DIFF_LINES
+    out = []
+    for line in lines[:_DIFF_LINES]:
+        colour = {"+": "\033[32m", "-": "\033[31m"}.get(line[:1], _DIM)
+        out.append(f"    {colour}{_plain(line)[:200]}{_RST}")
+    if more > 0:
+        out.append(f"    {_DIM}… {more} more lines{_RST}")
+    return "\n".join(out)
+
+
+def _read_text(p: Path) -> str:
+    """A text file as it is. ValueError if it is not one: what cannot be read
+    faithfully must not be written back."""
+    if p.stat().st_size > _FILE_MAX_BYTES:
+        raise ValueError(f"{p.name} is too large ({p.stat().st_size / 1e6:.0f} MB)")
+    raw = p.read_bytes()
+    if b"\0" in raw[:4096]:
+        raise ValueError(f"{p.name} is not a text file")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{p.name} is not UTF-8") from e
+
+
 class CodeAgent:
     def __init__(self, root: str, base: str, model: str, auto: bool = False,
                  max_rounds: int = 60, quiet: bool = False):
@@ -129,6 +169,7 @@ class CodeAgent:
         self.tools = _FILE_TOOLS + (
             webtools.tool_specs(self.search_cfg) if self.search_cfg.enabled else [])
         self.messages: list[dict] = [{"role": "system", "content": self._system()}]
+        self._always: set[str] = set()  # what was answered with "always", this session
 
     def _system(self) -> str:
         return (
@@ -161,22 +202,34 @@ class CodeAgent:
         except ValueError:
             return str(p)
 
-    def _approve(self, what: str) -> bool:
-        if self.auto:
-            print(f"  {_DIM}↳ {what}{_RST}")
+    def _approve(self, what: str, shown: str = "", always: str = "", always_is: str = "") -> bool:
+        """Asked of the person, once for `always` if they say so. `shown` is what
+        it comes to, in full."""
+        if self.auto or (always and always in self._always):
+            if not self.quiet:
+                print(f"  {_DIM}↳ {_plain(what)}{_RST}")
             return True
+        if shown:
+            print(shown)
+        choices = f"[y]es / [a]lways {always_is} / [N]o" if always else "[y/N]"
         try:
-            ans = input(f"  {_YEL}⚠ {what}?{_RST} [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+            ans = ask(f"  {_YEL}⚠ {_plain(what)}?{_RST} {choices} ").strip().lower()
+        except EOFError:
             print()
             return False
+        if always and ans in ("a", "always"):
+            self._always.add(always)
+            return True
         return ans in ("y", "yes")
 
     def _walk(self, base: Path):
         for dp, dns, fns in os.walk(base):
             dns[:] = [d for d in dns if d not in _SKIP_DIRS and not d.startswith(".")]
             for f in fns:
-                yield Path(dp) / f
+                p = Path(dp) / f
+                if p.is_symlink() and self.root not in p.resolve().parents:
+                    continue  # leads out of the project
+                yield p
 
     # ── tools ─────────────────────────────────────────────────────────────────
     def _t_list_files(self, args: dict) -> str:
@@ -238,6 +291,8 @@ class CodeAgent:
             return f"ERROR: no such file: {args['path']}"
         if p.is_dir():
             return f"ERROR: {args['path']} is a directory — use list_files"
+        if p.stat().st_size > _FILE_MAX_BYTES:
+            return f"ERROR: {args['path']} is too large to read — grep it"
         text = p.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         offset = max(1, int(args.get("offset") or 1))
@@ -260,7 +315,9 @@ class CodeAgent:
         old, new = args.get("old_string", ""), args.get("new_string", "")
         if not old:
             return "ERROR: old_string is required and must not be empty"
-        text = p.read_text(encoding="utf-8", errors="replace")
+        text = _read_text(p)
+        if "\r\n" in text and "\r\n" not in old:  # as it was shown to the model: without
+            old, new = old.replace("\n", "\r\n"), new.replace("\r\n", "\n").replace("\n", "\r\n")
         count = text.count(old)
         if count == 0:
             return ("ERROR: old_string not found. It must match the file EXACTLY, including "
@@ -269,37 +326,64 @@ class CodeAgent:
         if count > 1 and not replace_all:
             return (f"ERROR: old_string appears {count} times — the edit would be ambiguous. "
                     "Include surrounding lines to make it unique, or set replace_all.")
-        if not self._approve(f"edit {self._rel(p)} ({count} occurrence{'s' if count > 1 else ''})"):
+        rel = self._rel(p)
+        after = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        if not self._approve(f"edit {rel} ({count} occurrence{'s' if count > 1 else ''})", _diff(text, after, rel),
+                             "edit", "edits"):
             return "DENIED by user"
-        p.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1),
-                     encoding="utf-8")
-        return f"edited {self._rel(p)} ({count if replace_all else 1} replacement(s))"
+        if _read_text(p) != text:
+            return "ERROR: the file changed meanwhile — read it again"
+        p.write_bytes(after.encode("utf-8"))
+        return f"edited {rel} ({count if replace_all else 1} replacement(s))"
 
     def _t_write_file(self, args: dict) -> str:
         p = self._safe(args["path"])
         content = args.get("content", "")
-        verb = "overwrite" if p.exists() else "create"
-        if not self._approve(f"{verb} {self._rel(p)} ({_fmt_size(len(content))} bytes)"):
+        there = p.exists()
+        verb = "overwrite" if there else "create"
+        rel = self._rel(p)
+        try:
+            before = _read_text(p) if there else ""
+        except ValueError:
+            before = ""  # not a text: it is replaced as a whole, and that is what is asked
+        if not self._approve(f"{verb} {rel} ({_fmt_size(len(content))} bytes)", _diff(before, content, rel),
+                             "edit", "edits"):
             return "DENIED by user"
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        return f"{verb}d {self._rel(p)} ({len(content)} bytes)"
+        p.write_bytes(content.encode("utf-8"))
+        return f"{verb}d {rel} ({len(content)} bytes)"
 
     def _t_run_shell(self, args: dict) -> str:
         cmd = args["command"]
         timeout = max(1, min(600, int(args.get("timeout") or 120)))
-        if not self._approve(f"run: {cmd}"):
+        if not self._approve(f"run: {cmd}", always=f"run {cmd}", always_is="this command"):
             return "DENIED by user"
+        # In a group of its own, so that all it started ends with it: at the
+        # timeout, and at a Ctrl-C (which is for us, not for it).
+        p = subprocess.Popen(cmd, shell=True, cwd=self.root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", **procs.own_group())
         try:
-            r = subprocess.run(cmd, shell=True, cwd=self.root, capture_output=True,
-                               text=True, timeout=timeout)
+            out, _ = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            procs.end_tree(p.pid)
             return f"ERROR: command timed out after {timeout}s"
-        body = (r.stdout + r.stderr).strip()
+        except BaseException:
+            procs.end_tree(p.pid)
+            raise
+        body = out.strip()
         if len(body) > _SHELL_MAX_CHARS:
             half = _SHELL_MAX_CHARS // 2
             body = body[:half] + "\n… (output truncated) …\n" + body[-half:]
-        return (body or "(no output)") + f"\n[exit {r.returncode}]"
+        return (body or "(no output)") + f"\n[exit {p.returncode}]"
+
+    def _web(self, name: str, args: dict) -> str:
+        if name == "web_fetch":
+            url = str(args.get("url", ""))
+            host = urlsplit(url).netloc
+            ok = self._approve(f"fetch {url}", always=f"fetch {host}", always_is=f"from {_plain(host)}")
+        else:
+            ok = self._approve(f"search the web: {args.get('query', '')}", always="search", always_is="search")
+        return asyncio.run(webtools.dispatch(name, args, self.search_cfg)) if ok else "DENIED by user"
 
     def _exec_tool(self, name: str, args: dict) -> str:
         handlers = {
@@ -312,7 +396,7 @@ class CodeAgent:
             if fn is not None:
                 return fn(args)
             if name in webtools.TOOL_NAMES:
-                return asyncio.run(webtools.dispatch(name, args, self.search_cfg))
+                return self._web(name, args)
         except KeyError as e:
             return f"ERROR: missing required argument {e}"
         except Exception as e:  # surface tool errors so the model can recover
@@ -348,34 +432,51 @@ class CodeAgent:
 
     # ── one turn ──────────────────────────────────────────────────────────────
     def ask(self, user_text: str) -> str:
-        """Run one task to completion. Returns the final assistant text."""
+        """Run one task to completion. Returns the final assistant text. A Ctrl-C
+        ends the task, and leaves a conversation that can be gone on with."""
         self.messages.append({"role": "user", "content": user_text})
+        start, pending = len(self.messages), []
         final = ""
-        for _ in range(self.max_rounds):
-            self._compact()
-            content, calls = self._stream_turn()
-            if content is None:  # request failed; message already printed
-                return ""
-            self.messages.append({"role": "assistant", "content": content or None,
-                                  **({"tool_calls": calls} if calls else {})})
-            if not calls:
-                final = (content or "").strip()
-                if not final and not self.quiet:
-                    print(f"{_DIM}(no reply){_RST}")
-                return final
-            for tc in calls:
-                fn = tc.get("function") or {}
-                name = fn.get("name", "")
-                args = toolloop._parse_args(fn.get("arguments") or "{}")
-                if not self.quiet:
-                    print(f"  {_CYAN}→ {name}{_RST} {_DIM}{_tool_label(name, args)}{_RST}")
-                result = self._exec_tool(name, args)
-                self.messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
-                                      "name": name, "content": result})
+        try:
+            for _ in range(self.max_rounds):
+                self._compact()
+                content, calls = self._stream_turn()
+                if content is None:  # request failed; message already printed
+                    if len(self.messages) == start:
+                        self.messages.pop()  # nothing came of it: not asked twice next time
+                    return ""
+                self.messages.append({"role": "assistant", "content": content or None,
+                                      **({"tool_calls": calls} if calls else {})})
+                if not calls:
+                    final = (content or "").strip()
+                    if not final and not self.quiet:
+                        print(f"{_DIM}(no reply){_RST}")
+                    return final
+                pending = list(calls)
+                while pending:
+                    tc = pending[0]
+                    fn = tc.get("function") or {}
+                    name = fn.get("name", "")
+                    args = toolloop._parse_args(fn.get("arguments") or "{}")
+                    if not self.quiet:
+                        print(f"  {_CYAN}→ {_plain(name)}{_RST} {_DIM}{_plain(_tool_label(name, args))}{_RST}")
+                    self._result(tc, self._exec_tool(name, args))
+                    pending.pop(0)
+        except KeyboardInterrupt:
+            for tc in pending:
+                self._result(tc, "INTERRUPTED by user")
+            if self.messages[-1]["role"] != "assistant":
+                self.messages.append({"role": "assistant", "content": "(interrupted by the user)"})
+            print(f"\n  {_DIM}(interrupted){_RST}")
+            return ""
         if not self.quiet:
             print(f"  {_DIM}(stopped after {self.max_rounds} tool rounds — "
                   f"ask me to continue){_RST}")
         return final
+
+    def _result(self, tc: dict, text: str) -> None:
+        self.messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                              "name": (tc.get("function") or {}).get("name", ""), "content": text})
 
     def _stream_turn(self) -> tuple[str | None, list[dict]]:
         """Stream one assistant turn, printing text as it arrives.
@@ -437,9 +538,6 @@ def _tool_label(name: str, args: dict) -> str:
         return str(args.get("query", ""))
     if name == "web_fetch":
         return str(args.get("url", ""))
-    if name == "edit_file":
-        first = str(args.get("old_string", "")).strip().splitlines()
-        return f"{args.get('path', '')}  {_DIM}{first[0][:50] if first else ''}{_RST}"
     return str(args.get("path", ""))
 
 

@@ -1,4 +1,4 @@
-"""mantel — a universal, MCP-native desktop chat client.
+"""hearth's client — a universal, MCP-native desktop chat client.
 
 Talks to any OpenAI-compatible backend (and, later, cloud providers + an MCP
 tool layer) and defaults to a local hearth engine. A tiny FastAPI server serves

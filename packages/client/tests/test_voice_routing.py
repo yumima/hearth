@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-PAGE = Path(__file__).resolve().parents[1] / "src" / "mantel" / "webui" / "index.html"
+PAGE = Path(__file__).resolve().parents[1] / "src" / "hearth_client" / "webui" / "index.html"
 FR, ES, DE, IT, ZH = ("fr_FR-siwis-medium", "es_ES-davefx-medium", "de_DE-thorsten-medium",
                       "it_IT-paola-medium", "zh_CN-huayan-medium")
 EN = ""  # no lesson: the chosen voice, which the server fills in

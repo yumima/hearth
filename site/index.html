@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hearth</title>
-<meta name="description" content="hearth runs AI models on your own computer and serves them to your programs; mantel is its chat window.">
+<meta name="description" content="hearth runs AI models on your own computer and serves them to your programs, with a chat window and a coding agent.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<nav aria-label="Projects"><a href="/">yumima</a><a href="/finterm/">finterm</a><a href="/hearth/" aria-current="page">hearth</a><a href="/hearth/#mantel">mantel</a></nav>
+<nav aria-label="Projects"><a href="/">yumima</a><a href="/finterm/">finterm</a><a href="/hearth/" aria-current="page">hearth</a></nav>
 <main>
   <h1>AI models on your own computer</h1>
-  <p class="lead">hearth finds a model that suits your machine, checks that it works there, and serves it to your programs on one local address. mantel is its chat window. Nothing you type leaves the computer.</p>
+  <p class="lead">hearth finds a model that suits your machine, checks that it works there, and serves it to your programs on one local address. It comes with a chat window, and a coding agent in the terminal. Nothing you type leaves the computer.</p>
 
   <section aria-labelledby="install">
     <h2 id="install">Install</h2>
@@ -28,9 +28,10 @@
     <p>Programs reach it at <code>http://127.0.0.1:11435/v1</code>, where they expect OpenAI. <a href="/finterm/">finterm</a> finds it by itself and asks.</p>
   </section>
 
-  <section aria-labelledby="mantel">
-    <h2 id="mantel">mantel</h2>
-    <p>The chat window that comes with it: your own tools through MCP, voice in and out, a language tutor. It also works with other engines. Leave it out with <code>--no-mantel</code>.</p>
+  <section aria-labelledby="client">
+    <h2 id="client">The window and the terminal</h2>
+    <p>Click <b>Hearth</b> in the app menu for the chat window: your own tools through MCP, voice in and out, a language tutor. Leave it out with <code>--no-client</code>.</p>
+    <p>Type <code>hearth</code> in a folder for a coding agent: it reads your files, and asks before it changes one, runs a command or goes to the web.</p>
   </section>
 
   <section aria-labelledby="needs">

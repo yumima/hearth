@@ -5,10 +5,10 @@ which the chat UI displays inline. Backed by the backend's OpenAI
 ``/v1/images/generations`` (hearth → ComfyUI). The user enables it from the Tools
 & Settings panel; generation temporarily swaps the chat model out of VRAM.
 
-NB: mantel substitutes a short placeholder for the data URL in the text fed back
+NB: the client substitutes a short placeholder for the data URL in the text fed back
 to the model (a 2 MB base64 string would blow up the context) — see app.py.
 
-Run standalone over stdio:  python -m mantel.mcp_servers.image
+Run standalone over stdio:  python -m hearth_client.mcp_servers.image
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import os
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-IMAGES_URL = os.environ.get("MANTEL_IMAGES_URL", "http://127.0.0.1:11435/v1/images/generations")
+IMAGES_URL = os.environ.get("HEARTH_CLIENT_IMAGES_URL", "http://127.0.0.1:11435/v1/images/generations")
 
 
 def _do_generate(prompt: str, width: int = 1024, height: int = 1024) -> dict:

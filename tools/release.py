@@ -20,9 +20,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = "3.12.11"
-# Not mantel's "gui": it needs a package that has no wheel, and nothing is built on
+# Not the client's "gui": it needs a package that has no wheel, and nothing is built on
 # the user's computer. Its window is a browser's, without the browser around it.
-EXTRAS = {"hearth": ["tts", "stt"], "mantel": []}
+EXTRAS = {"hearth": ["tts", "stt"], "client": []}
+PACKAGES = {"hearth": "hearth", "client": "hearth-client"}
 
 
 def sh(*cmd: str) -> str:
@@ -40,7 +41,7 @@ def version() -> str:
 
 def requirements(name: str) -> str:
     extras = [x for e in EXTRAS[name] for x in ("--extra", e)]
-    text = sh("uv", "export", "--quiet", "--frozen", "--package", name, "--no-emit-project", "--no-emit-workspace",
+    text = sh("uv", "export", "--quiet", "--frozen", "--package", PACKAGES[name], "--no-emit-project", "--no-emit-workspace",
               "--no-dev", "--no-header", "--no-annotate", *extras)
     assert "-e " not in text and "file:" not in text, "something is not from the index"
     lock = {p["name"]: p for p in tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))["package"]}
@@ -63,10 +64,10 @@ def main() -> None:
     base = args.base_url or f"https://github.com/yumima/hearth/releases/download/v{v}/"
     sh("uv", "lock", "--check")
     files = {}
-    for name in ("hearth", "mantel"):
-        sh("uv", "build", "--quiet", "--wheel", "--package", name, "-o", str(out))
+    for name, package in PACKAGES.items():
+        sh("uv", "build", "--quiet", "--wheel", "--package", package, "-o", str(out))
         (out / f"{name}-requirements.txt").write_text(requirements(name), encoding="utf-8", newline="\n")
-        wheel = out / f"{name}-{v}-py3-none-any.whl"
+        wheel = out / f"{package.replace('-', '_')}-{v}-py3-none-any.whl"
         for kind, p in (("wheel", wheel), ("requirements", out / f"{name}-requirements.txt")):
             files[f"{name}-{kind}"] = {"name": p.name, "sha256": digest(p), "size": p.stat().st_size}
     pins = json.loads(args.pins.read_text(encoding="utf-8"))

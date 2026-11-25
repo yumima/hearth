@@ -10,7 +10,7 @@ answers in the user's notes/docs:
   stats()            — how much is indexed
   forget(source)     — drop a file (or everything under a dir) from the store
 
-Run standalone over stdio:  python -m mantel.mcp_servers.rag
+Run standalone over stdio:  python -m hearth_client.mcp_servers.rag
 Everything is local: the only network call is to the loopback embeddings endpoint.
 """
 
@@ -26,8 +26,8 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 # ── config (env-overridable; loopback defaults match hearth) ──────────────────
-EMBED_URL = os.environ.get("MANTEL_EMBED_URL", "http://127.0.0.1:11435/v1/embeddings")
-EMBED_MODEL = os.environ.get("MANTEL_EMBED_MODEL", "embedding")
+EMBED_URL = os.environ.get("HEARTH_CLIENT_EMBED_URL", "http://127.0.0.1:11435/v1/embeddings")
+EMBED_MODEL = os.environ.get("HEARTH_CLIENT_EMBED_MODEL", "embedding")
 MAX_FILE_BYTES = 20 * 1024 * 1024
 CHUNK_CHARS = 1000
 CHUNK_OVERLAP = 150
@@ -44,7 +44,7 @@ _INDEXABLE = _TEXT_EXTS | {".pdf", ".docx"}
 
 def _db_path() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    d = Path(base) / "mantel"
+    d = Path(base) / "hearth-client"
     d.mkdir(parents=True, exist_ok=True)
     return d / "rag.db"
 
