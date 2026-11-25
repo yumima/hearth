@@ -90,9 +90,6 @@ def cmd_start(args: argparse.Namespace) -> int:
     if args.bind:
         host, _, port = args.bind.rpartition(":")
         cfg.bind_host, cfg.bind_port = host or cfg.bind_host, int(port)
-    if cfg.bind_host not in ("127.0.0.1", "localhost", "::1"):
-        print("an address others can reach is for `hearth serve --unsafe-bind --api-key …`", file=sys.stderr)
-        return 2
     extra = []
     if args.bind:
         extra += ["--bind", args.bind]
@@ -100,21 +97,28 @@ def cmd_start(args: argparse.Namespace) -> int:
         extra.append("--no-manage")
     if args.log_level != "info":
         extra += ["--log-level", args.log_level]
-    # The service serves its own config at its own address: anything asked for
-    # here, in the command or the environment, is a gateway of its own.
-    own = extra or any(os.environ.get(n) for n in ("HEARTH_HOME", "HEARTH_CONFIG", "HEARTH_DATA"))
     service = None
-    if not own and _unit_path().exists() and shutil.which("systemctl"):
+    if not extra and _has_service():
         # Type=simple: started means forked, so what became of it is asked again.
-        service = background.Service(lambda: _systemctl("start", _UNIT_NAME),
+        service = background.Service(lambda: _systemctl("restart" if getattr(args, "again", False) else "start", _UNIT_NAME),
                                      lambda: _systemctl("is-active", "--quiet", _UNIT_NAME) == 0
                                      or _unit_is("activating"))
+    elif cfg.bind_host not in ("127.0.0.1", "localhost", "::1"):
+        print("an address others can reach is for `hearth serve --unsafe-bind --api-key …`", file=sys.stderr)
+        return 2
     # This interpreter, as it was called: not _hearth_exec_argv(), which keeps
     # the launcher link — starting the engine must not change what is installed.
     # -P: the folder it runs in is no place to import from.
     ok, message = background.start(cfg, [sys.executable, "-P", "-m", "hearth", "serve", *extra], service)
     print(f"[hearth] {message}", file=sys.stdout if ok else sys.stderr)
     return 0 if ok else 1
+
+
+def _has_service() -> bool:
+    """Is the engine a service's here? (The service serves its own config at its own
+    address: one named in the environment is an engine of its own.)"""
+    own = any(os.environ.get(n) for n in ("HEARTH_HOME", "HEARTH_CONFIG", "HEARTH_DATA"))
+    return not own and _unit_path().exists() and bool(shutil.which("systemctl"))
 
 
 def _unit_is(state: str) -> bool:
@@ -274,16 +278,22 @@ def cmd_model_list(args: argparse.Namespace) -> int:
             pass
     from .provision import same_model
 
-    used: dict[str, list[str]] = {}
+    used: dict[tuple[str, str], list[str]] = {}
     for role, r in cfg.roles.items():
-        name = next((n for n in here if same_model(n, r.model)), r.model) if not cfg.role_is_remote(role) else r.model
-        used.setdefault(name, []).append(role)
+        name = r.model
+        if ollama is not None and r.backend == ollama.name:
+            name = next((n for n in here if same_model(n, r.model)), r.model)
+        used.setdefault((r.backend, name), []).append(role)
     for name, size in here.items():
-        print(f"{name:52s} {size / 1e9:6.1f} GB  {', '.join(used.pop(name, [])) or '—'}")
-    for name, roles in used.items():
-        far = cfg.role_is_remote(roles[0])
-        print(f"{name:52s} {'⚠ ' + cfg.roles[roles[0]].backend if far else 'not here':>9s}  {', '.join(roles)}")
-    if any(cfg.role_is_remote(r) for r in cfg.roles):
+        roles = used.pop((ollama.name, name), [])
+        print(f"{name:52s} {size / 1e9:6.1f} GB  {', '.join(roles) or '—'}")
+    far = False
+    for (backend, name), roles in used.items():
+        remote = cfg.role_is_remote(roles[0])
+        far |= remote
+        where = ("⚠ " if remote else "") + backend if ollama is None or backend != ollama.name else "not here"
+        print(f"{name:52s} {where:>9s}  {', '.join(roles)}")
+    if far:
         print("\n⚠ a provider's model: what is sent to it leaves this computer.")
     if ollama is None:
         print("(Ollama is not running: what is on this computer is not known)", file=sys.stderr)
@@ -522,11 +532,11 @@ def cmd_voice_list(args: argparse.Namespace) -> int:
 
 def cmd_voice_remove(args: argparse.Namespace) -> int:
     engine, name = (_KOKORO, "") if args.name == _KOKORO else ("piper", args.name)
-    if name and (Path(name).name != name or name.startswith(".")):
+    if engine != _KOKORO and (not name or Path(name).name != name or name.startswith(".")):
         print(f"not a voice: {name!r}", file=sys.stderr)
         return 2
     d = paths.voices_dir(engine)
-    doomed = [p for p in ([d] if not name else [d / f"{name}.onnx", d / f"{name}.onnx.json"]) if p.exists()]
+    doomed = [p for p in ([d] if engine == _KOKORO else [d / f"{name}.onnx", d / f"{name}.onnx.json"]) if p.exists()]
     if not doomed:
         elsewhere = [x for x in paths.voice_dirs(engine) if x != d and (not name or (x / f"{name}.onnx").exists())]
         print(f"{args.name} is not in {d}" + (f"; it is in {elsewhere[0]}, which is not hearth's own" if elsewhere else ""),
@@ -942,7 +952,10 @@ def _code_mode(args: argparse.Namespace) -> int:
         return 2
     if not prompt and not hasattr(args, "agent") and not _trusts(root):
         return 1
-    base = _engine_ready(cfgmod.load(), "coding", args.model)
+    if hasattr(args, "agent"):
+        base = _admin_base(cfgmod.load())  # come back to: what was said stays, whatever became of the engine
+    else:
+        base = _engine_ready(cfgmod.load(), "coding", args.model)
     if base is None:
         return 1
 
@@ -1046,6 +1059,32 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
+    if _has_service() and any(_unit_is(x) for x in ("active", "activating", "reloading", "deactivating")):
+        # systemd's to end: what it keeps up, it would bring back.
+        rc = _systemctl("stop", _UNIT_NAME)
+        print("stopped the hearth service" if rc == 0 else f"the hearth service did not stop (exit {rc})",
+              file=sys.stdout if rc == 0 else sys.stderr)
+        if rc != 0 or not _gateway_identity(cfgmod.load()):
+            return rc
+        # …and one that was started beside it
+    pid, via = _engine_pid()
+    if pid is None:
+        print(f"no running hearth gateway found "
+              f"(no pidfile; nothing hearth-like listening on :{cfgmod.load().bind_port})",
+              file=sys.stderr)
+        return 1
+    if not _ask_to_stop(cfgmod.load(), pid):
+        procs.end_tree(pid)
+    if procs.alive(pid):
+        print(f"could not stop pid {pid} (another user's?)", file=sys.stderr)
+        return 1
+    print(f"stopped hearth gateway (pid {pid}, via {via})")
+    _pid_path().unlink(missing_ok=True)
+    return 0
+
+
+def _engine_pid() -> tuple[int | None, str]:
+    """The engine's process, and how it was found."""
     pid_file = _pid_path()
     pid: int | None = None
     via = "pidfile"
@@ -1064,24 +1103,12 @@ def cmd_stop(args: argparse.Namespace) -> int:
             pid = None
     if pid is None:
         # No (valid) pidfile — the gateway may have been started outside this
-        # CLI (e.g. `python -m hearth start`). Find it by the port it serves.
+        # CLI (e.g. `python -m hearth serve`). Find it by the port it serves.
         port = cfgmod.load().bind_port
         found = procs.listening_on(port)
         if found is not None and _pid_looks_like_hearth(found):
             pid, via = found, f"port {port}"
-        else:
-            print(f"no running hearth gateway found "
-                  f"(no pidfile; nothing hearth-like listening on :{port})",
-                  file=sys.stderr)
-            return 1
-    if not _ask_to_stop(cfgmod.load(), pid):
-        procs.end_tree(pid)
-    if procs.alive(pid):
-        print(f"could not stop pid {pid} (another user's?)", file=sys.stderr)
-        return 1
-    print(f"stopped hearth gateway (pid {pid}, via {via})")
-    pid_file.unlink(missing_ok=True)
-    return 0
+    return pid, via
 
 
 def _ask_to_stop(cfg: cfgmod.Config, pid: int, wait_s: float = 15.0) -> bool:
@@ -1139,7 +1166,7 @@ def _chat_mode(args: argparse.Namespace) -> int:
     """A tiny streaming REPL against the local gateway — like ChatGPT in the
     terminal, but fully local."""
     cfg = cfgmod.load()
-    base = _engine_ready(cfg, "primary_chat", args.model)
+    base = _admin_base(cfg) if hasattr(args, "history") else _engine_ready(cfg, "primary_chat", args.model)
     if base is None:
         return 1
 
@@ -1481,9 +1508,23 @@ def cmd_autostart(args: argparse.Namespace) -> int:
 
 
 def cmd_restart(args: argparse.Namespace) -> int:
-    if _gateway_identity(cfgmod.load()) is not None and (rc := cmd_stop(args)) != 0:
-        return rc
-    return cmd_start(build_parser().parse_args(["start"]))
+    if _has_service():
+        start = build_parser().parse_args(["start"])
+        start.again = True
+        if not (_unit_is("active") or _unit_is("activating")) and _engine_pid()[0] is not None and (rc := cmd_stop(args)) != 0:
+            return rc  # one that was started beside it
+        return cmd_start(start)
+    pid, _ = _engine_pid()  # answering or not
+    with_args: list[str] = []
+    if pid is not None:
+        argv = procs.argv(pid)
+        with_args = argv[argv.index("serve") + 1:] if "serve" in argv else []  # as it was started
+        if {"--unsafe-bind", "--api-key"} & {a.split("=")[0] for a in with_args}:
+            print("it was started by `hearth serve --unsafe-bind`: end that, and run it again", file=sys.stderr)
+            return 2
+        if (rc := cmd_stop(args)) != 0:
+            return rc
+    return cmd_start(build_parser().parse_args(["start", *with_args]))
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
@@ -1491,7 +1532,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
     from . import background
 
     jc = shutil.which("journalctl")
-    if jc and _unit_path().exists() and _systemctl("is-active", "--quiet", _UNIT_NAME) == 0:
+    if jc and _has_service():  # running or not: it is where it says why
         tail = ["-f"] if args.follow else ["-n", "200", "--no-pager"]
         return subprocess.run([jc, "--user", "-u", _UNIT_NAME, *tail], env=_sc_env()).returncode
     p = background.log_path()

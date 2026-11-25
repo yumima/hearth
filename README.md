@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`c7af466`](https://github.com/yumima/hearth/commit/c7af466) The command line: one word for one thing, in groups
 - [`d5a0b8f`](https://github.com/yumima/hearth/commit/d5a0b8f) One name: hearth is the engine, the window and the command
 - [`eac6206`](https://github.com/yumima/hearth/commit/eac6206) **test:** a stand-in takes a port that was in use a moment ago
 - [`71a9afc`](https://github.com/yumima/hearth/commit/71a9afc) Release: the list of hashes is of the files that are in it

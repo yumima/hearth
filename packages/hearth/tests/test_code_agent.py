@@ -463,8 +463,9 @@ def test_each_mode_keeps_its_model_and_settings(terminal, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_engine_ready", lambda cfg, role, model: asked.append((role, model)) or "http://127.0.0.1:1")
     terminal("/model other", "/think off", "/code", "y", "/model coder", "/chat", "/status", "/code", "/exit")
     assert cli.main(["chat", "--model", "big"]) == 0
-    assert asked == [("primary_chat", "big"), ("coding", None), ("primary_chat", "other"), ("coding", "coder")]
-    assert "model: other · deep-think: off" in capsys.readouterr().out
+    assert asked == [("primary_chat", "big"), ("coding", None)]  # (come back to, the engine is not asked again)
+    out = capsys.readouterr().out
+    assert "model: other · deep-think: off" in out and "· model coder ·" in out
 
 
 def test_the_answer_is_all_there_is_on_stdout(monkeypatch, capsys, tmp_path):
@@ -480,3 +481,11 @@ def test_the_answer_is_all_there_is_on_stdout(monkeypatch, capsys, tmp_path):
     assert cli.main(["-q", "-p", "x"]) == 0
     got = capsys.readouterr()
     assert got.out == "the answer\n" and "running" in got.err
+
+
+def test_an_engine_that_died_does_not_end_the_session(terminal, monkeypatch, capsys):
+    ups = [True]
+    monkeypatch.setattr(cli, "_engine_ready", lambda cfg, role, model: "http://127.0.0.1:1" if ups.pop(0) else None)
+    ups += [False]  # asked for by the mode it cannot go to, and not by the one it comes back to
+    terminal("y", "/chat", "/exit")
+    assert cli.main([]) == 0 and ups == []

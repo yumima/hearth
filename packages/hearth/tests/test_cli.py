@@ -306,26 +306,80 @@ def test_voices_come_and_go(conf, tmp_path, monkeypatch, capsys):
     assert cli.main(["voice", "list"]) == 0 and "ab " in capsys.readouterr().out
     assert cli.main(["voice", "remove", "a"]) == 0 and [p.name for p in d.iterdir()] == ["ab.onnx"]
     assert cli.main(["voice", "remove", "a"]) == 1
-    for bad in ("../ab", "..", "/etc/passwd", ".hidden"):
+    for bad in ("../ab", "..", "/etc/passwd", ".hidden", ""):
         assert cli.main(["voice", "remove", bad]) == 2
     assert (d / "ab.onnx").exists()
     assert cli.main(["voice", "install", "kokoro"]) == 0 and conf.jobs == [("kokoro",)]
 
 
-def test_restart_stops_what_runs_and_starts(monkeypatch):
-    did = []
-    up = [True]
-    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: "hearth/9" if up[0] else None)
-    monkeypatch.setattr(cli, "cmd_stop", lambda a: did.append("stop") or 0)
-    monkeypatch.setattr(cli, "cmd_start", lambda a: did.append("start") or 0)
-    assert cli.main(["restart"]) == 0 and did == ["stop", "start"]
-    up[0] = False
-    did.clear()
-    assert cli.main(["restart"]) == 0 and did == ["start"]
-    up[0] = True
-    did.clear()
-    monkeypatch.setattr(cli, "cmd_stop", lambda a: 1)
-    assert cli.main(["restart"]) == 1 and did == []  # not a second one beside it
+@pytest.fixture
+def engine(monkeypatch):
+    """No real process or service: what would be done to them."""
+    did, unit, pid = [], {"exists": False, "state": "inactive"}, [None]
+    monkeypatch.setattr(cli, "_has_service", lambda: unit["exists"])
+    monkeypatch.setattr(cli, "_unit_is", lambda state: unit["state"] == state)
+    monkeypatch.setattr(cli, "_systemctl", lambda *a: did.append(a[0]) or 0)
+    monkeypatch.setattr(cli, "_engine_pid", lambda: (pid[0], "pidfile"))
+    monkeypatch.setattr(cli, "_gateway_identity", lambda cfg: None)
+    from hearth import background
+
+    def start(cfg, argv, service=None):
+        if service is not None:
+            service.start()
+        else:
+            did.append(argv[argv.index("hearth") + 1:])
+        return True, "running"
+
+    monkeypatch.setattr(background, "start", start)
+    monkeypatch.setattr(cli, "_ask_to_stop", lambda cfg, p: did.append(f"end {p}") or True)
+    monkeypatch.setattr(cli.procs, "alive", lambda p: False)
+    return type("E", (), {"did": did, "unit": unit, "pid": pid})()
+
+
+def test_where_there_is_a_service_it_is_the_service(engine):
+    engine.unit.update(exists=True, state="active")
+    assert cli.main(["stop"]) == 0 and cli.main(["restart"]) == 0 and cli.main(["start"]) == 0
+    assert engine.did == ["stop", "restart", "start"]
+    engine.did.clear()
+    engine.unit["state"] = "activating"  # it ends and is started again, over and over
+    assert cli.main(["stop"]) == 0 and engine.did == ["stop"]
+    engine.did.clear()
+    engine.unit["state"], engine.pid[0] = "inactive", 7  # one was started beside it
+    assert cli.main(["restart"]) == 0 and engine.did == ["end 7", "restart"]
+
+
+def test_restart_without_a_service(engine, monkeypatch):
+    assert cli.main(["restart"]) == 0 and engine.did == [["serve"]]
+    engine.did.clear()
+    engine.pid[0] = 7  # answering or not
+    monkeypatch.setattr(cli.procs, "argv", lambda p: ["python", "-P", "-m", "hearth", "serve", "--bind", "127.0.0.1:5000", "--no-manage"])
+    assert cli.main(["restart"]) == 0 and engine.did == ["end 7", ["serve", "--bind", "127.0.0.1:5000", "--no-manage"]]
+    engine.did.clear()
+    monkeypatch.setattr(cli.procs, "argv", lambda p: ["hearth", "serve", "--unsafe-bind", "--api-key", "k"])
+    assert cli.main(["restart"]) == 2 and engine.did == []  # what cannot be started again is not stopped
+    monkeypatch.setattr(cli.procs, "alive", lambda p: True)
+    monkeypatch.setattr(cli.procs, "argv", lambda p: ["hearth", "serve"])
+    assert cli.main(["restart"]) == 1 and [d for d in engine.did if isinstance(d, list)] == []  # not a second one beside it
+
+
+def test_a_service_may_have_an_address_others_can_reach(engine, conf, monkeypatch, capsys):
+    cfg = conf.load()
+    cfg.bind_host = "0.0.0.0"
+    monkeypatch.setattr(cli.cfgmod, "load", lambda *a, **k: cfg)
+    assert cli.main(["start"]) == 2 and "unsafe-bind" in capsys.readouterr().err
+    engine.unit.update(exists=True, state="active")
+    assert cli.main(["start"]) == 0 and cli.main(["restart"]) == 0 and engine.did == ["start", "restart"]
+
+
+def test_the_services_log_also_when_it_failed(engine, monkeypatch):
+    ran = []
+    monkeypatch.setattr(cli.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(cli, "_sc_env", dict)
+    monkeypatch.setattr(cli.subprocess, "run", lambda a, **k: ran.append(a[0]) or type("R", (), {"returncode": 0})())
+    engine.unit.update(exists=True, state="failed")
+    assert cli.main(["logs"]) == 0 and ran == ["/usr/bin/journalctl"]
+    engine.unit["exists"] = False
+    assert cli.main(["logs"]) == 0 and len(ran) == 1
 
 
 def test_the_models_here_and_what_they_are_for(conf, monkeypatch, capsys):
@@ -340,3 +394,19 @@ def test_the_models_here_and_what_they_are_for(conf, monkeypatch, capsys):
     out = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines() if ln.strip()}
     assert "4.0 GB" in out["m:latest"] and "primary_chat" in out["m:latest"]
     assert out["spare:2b"].rstrip().endswith("—") and "not here" in out["gone:1b"] and "coding" in out["gone:1b"]
+
+
+def test_a_model_is_not_shown_as_here_because_one_of_its_name_is(conf, monkeypatch, capsys):
+    cfg = conf.load()
+    cfg.backends["groq"] = cli.cfgmod.Backend("groq", "openai", "https://g.example/v1", "", "K")
+    cfg.backends["vllm"] = cli.cfgmod.Backend("vllm", "openai", "http://127.0.0.1:8000/v1", "k", "")
+    for role, backend in (("primary_chat", "groq"), ("coding", "ollama"), ("vision", "vllm")):
+        cfg.roles[role] = cli.cfgmod.RoleBinding("m:1b", backend)
+    cli.cfgmod.save(cfg)
+    monkeypatch.setattr(cli, "_ensure_ollama", lambda c: c.backends["ollama"])
+    monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: httpx.Response(200, json={"models": [{"name": "m:1b", "size": 1}]}))
+    assert cli.main(["model", "list"]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("m:1b")]
+    assert ["GB" in ln and "coding" in ln and "primary_chat" not in ln for ln in lines] == [True, False, False]
+    assert any("⚠ groq" in ln and "primary_chat" in ln for ln in lines)
+    assert any("vllm" in ln and "⚠" not in ln and "vision" in ln for ln in lines)
