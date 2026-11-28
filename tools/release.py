@@ -71,7 +71,8 @@ def main() -> None:
         for kind, p in (("wheel", wheel), ("requirements", out / f"{name}-requirements.txt")):
             files[f"{name}-{kind}"] = {"name": p.name, "sha256": digest(p), "size": p.stat().st_size}
     pins = json.loads(args.pins.read_text(encoding="utf-8"))
-    manifest = {"schema": 1, "version": v, "python": PYTHON, "files": files, "ollama": pins["ollama"]}
+    manifest = {"schema": 1, "version": v, "python": PYTHON, "files": files, "ollama": pins["ollama"],
+                **({"searxng": pins["searxng"]} if "searxng" in pins else {})}
     m = out / "manifest.json"
     m.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8", newline="\n")
     fill = {"@VERSION@": v, "@MANIFEST_URL@": base + "manifest.json", "@MANIFEST_SHA256@": digest(m), "@BASE_URL@": base,
