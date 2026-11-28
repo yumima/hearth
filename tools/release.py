@@ -67,6 +67,10 @@ def searxng_wheel(pin: dict, out: Path) -> Path:
     with tempfile.TemporaryDirectory() as t:
         src, env = Path(t) / "src", Path(t) / "env"
         for cmd in (["git", "init", "-q", str(src)],
+                    # Only what setup.py reads: elsewhere (utils/templates) are file
+                    # names with ":", which Windows cannot check out.
+                    ["git", "-C", str(src), "sparse-checkout", "set", "--no-cone", "/searx/", "/setup.py",
+                     "/README.rst", "/LICENSE", "/AUTHORS.rst", "/requirements.txt", "/requirements-dev.txt"],
                     ["git", "-C", str(src), "fetch", "-q", "--depth", "1", pin["repo"], pin["commit"]],
                     ["git", "-C", str(src), "checkout", "-q", "FETCH_HEAD"]):
             subprocess.run(cmd, check=True)
