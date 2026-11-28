@@ -6,8 +6,9 @@ live data by asking ("web_search": true) without shipping its own scraper.
 
 Provider chain (config `search.provider: auto`), in order of preference:
 
-1. **SearXNG** — a self-hosted metasearch instance (`search.searxng_url`).
-   First because it is the only provider that reaches Google's index, and it
+1. **SearXNG** — a metasearch instance on this machine: `search.searxng_url`
+   if one is set, otherwise the one the installer puts in every installation
+   (searxng.py starts it on the first search). First because it is the only provider that reaches Google's index, and it
    does so without a key, an account, or a third party seeing the query: it
    runs on the user's own machine and aggregates the upstream engines itself.
    Google's own Custom Search JSON API is closed to new customers and retires
@@ -43,6 +44,8 @@ from html.parser import HTMLParser
 from urllib.parse import quote_plus, urlparse
 
 import httpx
+
+from . import searxng
 
 # A real browser UA. Brave's HTML endpoint serves a degraded/blocked page to an
 # obvious bot string; this is the difference between 58 results and zero.
@@ -197,7 +200,9 @@ async def _searxng(client: httpx.AsyncClient, query: str, count: int,
     out: list[Result] = []
     for item in (r.json().get("results") or []):
         url = item.get("url") or ""
-        if not url:
+        # Some engines hand back their own redirect path with no host
+        # (Brave's "http:///go/v1/…"): nothing a model could fetch.
+        if not urlparse(url).hostname:
             continue
         out.append(Result(
             title=_clean(item.get("title") or url, 200),
@@ -347,10 +352,16 @@ async def search(query: str, cfg, count: int = 0, freshness: str = "") -> list[R
                         continue
                     res = await _brave_api(client, query, count, key, freshness)
                 elif name == "searxng":
-                    if not cfg.searxng_url:
-                        errors.append("searxng: not configured (search.searxng_url)")
+                    base = cfg.searxng_url
+                    if not base and searxng.python() is not None:
+                        base = await searxng.ensure_up()
+                        if not base:
+                            errors.append("searxng: hearth's own did not start (see ~/.hearth/searxng.log)")
+                            continue
+                    if not base:
+                        errors.append("searxng: not installed (search.searxng_url, or reinstall hearth)")
                         continue
-                    res = await _searxng(client, query, count, cfg.searxng_url)
+                    res = await _searxng(client, query, count, base)
                 elif name == "brave_html":
                     res = await _brave_html(client, query, count)
                 elif name == "wikipedia":

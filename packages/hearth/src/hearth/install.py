@@ -38,7 +38,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from . import __version__, background, hardware, paths, procs, searxng, service
+from . import __version__, background, hardware, paths, procs, service
 from . import config as cfgmod
 from .provision import Problem, fetch
 
@@ -207,7 +207,7 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
     that is put back."""
     env = root() / "versions" / rel.version / name
     done, before = env / ".complete", env.with_name(name + ".before")
-    module = {"client": "hearth_client"}.get(name, name)
+    module = {"client": "hearth_client", "searxng": "searx"}.get(name, name)
     put_back(env, replacing)
     if done.is_file() and not again:
         return env
@@ -235,8 +235,10 @@ def build_env(rel: Release, name: str, say: Say, replacing: Callable[[], None] =
               "-r", str(files["requirements"])], f"Installing what {name} needs", env_vars)
         _run([uv, "pip", "install", "--quiet", "--python", str(env), "--no-deps", "--no-index", str(files["wheel"])],
              f"Installing {name}", env_vars)
-        _run([str(env_bin(env, "python")), "-I", "-c",
-              f"import {module}; assert {module}.__version__ == {rel.version!r}, {module}.__version__"], f"Starting {name}")
+        # SearXNG has its own version; that it imports is what is asked of it.
+        check = f"import {module}" if name == "searxng" else \
+            f"import {module}; assert {module}.__version__ == {rel.version!r}, {module}.__version__"
+        _run([str(env_bin(env, "python")), "-I", "-c", check], f"Starting {name}")
         done.write_text("")
     except BaseException:
         try:
@@ -396,52 +398,17 @@ def first_config() -> None:
     cfgmod.save(cfg)
 
 
-def ask(question: str) -> bool | None:
-    """Yes or no from the person at the terminal — None if nobody is there.
-    Under `curl … | sh` stdin is the script, so it is the terminal that is asked."""
+def add_searxng(rel: Release, say: Say, replacing: Callable[[], None]) -> bool:
+    """hearth's own SearXNG, the default search backend (searxng.py). Never
+    fatal: without it search falls back to Brave and Wikipedia."""
+    if "searxng-wheel" not in rel.data["files"]:
+        return False
     try:
-        if _WIN:
-            if not sys.stdin or not sys.stdin.isatty():
-                return None
-            answer = input(f"{question} [Y/n] ")
-        else:
-            with open("/dev/tty", "r+") as tty:
-                tty.write(f"{question} [Y/n] ")
-                tty.flush()
-                answer = tty.readline()
-    except (OSError, EOFError):
-        return None
-    return answer.strip().lower() in ("", "y", "yes")
-
-
-def offer_searxng(rel: Release, want: str, fresh: bool, say: Say) -> None:
-    """`want` is ask | yes | no. Asked on a fresh install only, and not when
-    search already has a SearXNG; --searxng sets it up on any run. Never fatal:
-    hearth works without it, with weaker search."""
-    cfg = cfgmod.load(create=False)
-    if want == "no" or (want == "ask" and (not fresh or cfg.search.searxng_url)):
-        return
-    if want == "ask":
-        try:
-            searxng.runtime()
-        except searxng.Unavailable:
-            say("Web search works best with SearXNG; with Podman or Docker here, "
-                "the installer can set it up (run it again with --searxng).")
-            return
-        yes = ask("Set up SearXNG for web search? It runs in a container on this machine, "
-                  "needs no account or key, and keeps queries off third-party APIs.")
-        if not yes:
-            if yes is None:
-                say("SearXNG was not set up (nobody to ask); run the installer with --searxng for it.")
-            return
-    try:
-        url = searxng.setup(rel.data.get("searxng", {}).get("image", ""), root() / "searxng", say)
-    except (searxng.Unavailable, *ERRORS) as e:
-        say(f"SearXNG was not set up: {e}. Search will use Brave and Wikipedia.")
-        return
-    cfg.search.searxng_url = url
-    cfgmod.save(cfg)
-    say(f"SearXNG is at {url}; hearth searches through it.")
+        build_env(rel, "searxng", say, replacing)
+        return True
+    except (Problem, httpx.HTTPError, *ERRORS) as e:
+        say(f"Web search will be weaker: SearXNG could not be installed ({str(e).splitlines()[0]}).")
+        return False
 
 
 def _own_processes() -> list:
@@ -515,8 +482,7 @@ def _serving(version: str) -> bool:
         return False
 
 
-def finish(rel: Release, client: bool, autostart: bool, start: bool, open_page: bool, say: Say,
-           want_searxng: str = "ask") -> None:
+def finish(rel: Release, client: bool, autostart: bool, start: bool, open_page: bool, say: Say) -> None:
     """The rest of an installation, run from its own new environment. Over an
     earlier one it is an update; over the same version, a repair. One that is
     running goes on until everything is here, and runs again afterwards."""
@@ -534,6 +500,7 @@ def finish(rel: Release, client: bool, autostart: bool, start: bool, open_page: 
         build_env(rel, "hearth", say, replacing)
         if client:
             build_env(rel, "client", say, replacing)
+        add_searxng(rel, say, replacing)
         ollama = get_ollama(rel, hardware.probe(), say, replacing)
         new = {"version": rel.version, "ollama": ollama, "client": client}
         first_config()
@@ -552,7 +519,6 @@ def finish(rel: Release, client: bool, autostart: bool, start: bool, open_page: 
             except (service.Foreign, *ERRORS) as e:
                 say(f"hearth will not start at login: {e}")
         _tidy()
-        offer_searxng(rel, want_searxng, not old, say)
         ok, message = _start(rel.version) if start or run else (True, "")
     except BaseException:
         if stopped and run:
@@ -745,6 +711,7 @@ def update(rel: Release, say: Say) -> None:
     build_env(rel, "hearth", say)          # beside the one in use: what fails here changes nothing
     if client:
         build_env(rel, "client", say)
+    add_searxng(rel, say, lambda: None)
     ollama = get_ollama(rel, hardware.probe(), say)
     run = _running()
     _switch({"version": rel.version, "ollama": ollama, "client": client}, old, run, say)
@@ -801,8 +768,6 @@ def uninstall(keep_models: bool, keep_settings: bool, say: Say) -> None:
     if base in (Path.home(), Path(base.anchor)) or len(base.parts) < 3:
         raise Problem(f"{base} cannot be hearth's folder; nothing was removed.")
     _stop_everything()
-    if searxng.remove():
-        say("hearth's SearXNG container is removed.")
     service.disable(remove=True)
     _menu("uninstall")
     for name in ("hearth",):
@@ -811,7 +776,7 @@ def uninstall(keep_models: bool, keep_settings: bool, say: Say) -> None:
             link.unlink()
     if not keep_settings:
         for f in ("config.yaml", "measured.json", "hearth.log", "hearth.log.1", "ollama.log", "ollama.log.1",
-                  "hearth.pid", "ollama.pid"):
+                  "hearth.pid", "ollama.pid", "searxng.log", "searxng.log.1"):
             (paths.home() / f).unlink(missing_ok=True)
         try:
             paths.home().rmdir()  # only if nothing else is in it
@@ -907,10 +872,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--no-autostart", action="store_true")
     s.add_argument("--no-start", action="store_true")
     s.add_argument("--no-open", action="store_true")
-    g = s.add_mutually_exclusive_group()
-    g.add_argument("--searxng", dest="searxng", action="store_const", const="yes", default="ask",
-                   help="set up SearXNG for web search without asking")
-    g.add_argument("--no-searxng", dest="searxng", action="store_const", const="no")
     a = p.parse_args(argv)
     ended_in_order()
     try:
@@ -921,7 +882,7 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         if a.cmd == "finish":
             finish(release(a.release, a.sha256), not a.no_client, not a.no_autostart, not a.no_start, not a.no_open,
-                   say, a.searxng)
+                   say)
         return 0
     except Problem as e:
         print(e, file=sys.stderr)

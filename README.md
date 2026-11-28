@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`af073d0`](https://github.com/yumima/hearth/commit/af073d0) installer: offer a SearXNG of hearth's own for web search
 - [`337f3af`](https://github.com/yumima/hearth/commit/337f3af) websearch: report HTTP failures as 'HTTP 429 …' so the whole chain fits the card
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)

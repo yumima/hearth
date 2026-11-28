@@ -4,7 +4,6 @@
 #
 #   curl -fsSL https://yumima.github.io/hearth/install.sh | sh
 #   … | sh -s -- --no-client --no-autostart
-#   … | sh -s -- --searxng      (or --no-searxng: don't ask about web search)
 #
 # Everything goes into one folder, and `hearth uninstall` removes it. An Ollama,
 # a hearth or a Python that is already here is not touched. This script fetches

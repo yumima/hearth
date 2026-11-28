@@ -1,42 +1,50 @@
-"""A SearXNG of hearth's own, in a container, for web search.
+"""hearth's own SearXNG, the default web-search backend.
 
-Without it — or a Brave key — search is down to Brave's HTML page, which now
+Without it — or a Brave key — search was down to Brave's HTML page, which now
 answers 429 on the first request, and Wikipedia. SearXNG is the one keyless
-route that holds up (see websearch.py), so the installer offers it.
+route that holds up (it reaches Google's index too; see websearch.py), so the
+installer puts one in every installation: versions/V/searxng, built from the
+release's pinned commit and hash-checked like the rest. No container, no
+account, no question.
 
-It runs in Podman or Docker, whichever is here and works without sudo; hearth
-does not install either. The image is the release's pin, by digest. The
-container listens on loopback only, is named and labelled as hearth's, and
-`hearth uninstall` removes it with the rest; its settings are in the install
-folder under searxng/.
+It runs on demand, like ComfyUI (comfy_supervisor.py): the first search starts
+it on a free loopback port, and it is stopped after an idle spell to give its
+memory back. A `search.searxng_url` someone set is theirs and is used instead —
+this one is only for when there is none.
 """
 
 from __future__ import annotations
 
+import asyncio
+import atexit
+import os
+import re
 import secrets
-import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import Callable
 
 import httpx
 
-NAME = "hearth-searxng"
-LABEL = "io.hearth.part=searxng"
+from . import __version__, paths, procs
+
 PORTS = range(8888, 8899)
+_START_WAIT = 45.0   # cold start, its engines loaded: ~5 s here
+_IDLE = 1800.0       # an agent session searches in bursts; half an hour covers one
+_RETRY = 600.0       # after a start that failed: not every search waits for another
 
-Say = Callable[[str], None]
-
-# use_default_settings keeps upstream's engines; this only changes what hearth
-# needs: the JSON API on (websearch._searxng reads it), and the bot limiter off,
-# since the only client is this machine and the limiter would want a Redis.
+# use_default_settings keeps upstream's engines; this changes only what hearth
+# needs: loopback, the JSON API (websearch._searxng reads it), and no bot
+# limiter — the only client is this machine, and the limiter wants a Valkey.
 SETTINGS = """\
-# Made by hearth's installer. `hearth uninstall` removes it.
+# Made by hearth for the SearXNG it runs; it is remade on each start.
 use_default_settings: true
 server:
   secret_key: "{secret}"
+  bind_address: "127.0.0.1"
+  port: {port}
   limiter: false
   image_proxy: false
 search:
@@ -45,27 +53,42 @@ search:
     - json
 """
 
-
-class Unavailable(Exception):
-    """No container runtime here that can be used."""
-
-
-def runtime() -> str:
-    """Podman first (rootless by design), then Docker — each only if it answers
-    for this user without sudo."""
-    for name in ("podman", "docker"):
-        exe = shutil.which(name)
-        if not exe:
-            continue
-        try:
-            if subprocess.run([exe, "info"], capture_output=True, timeout=30).returncode == 0:
-                return exe
-        except (OSError, subprocess.SubprocessError):
-            continue
-    raise Unavailable("SearXNG needs Podman or Docker, usable without sudo; neither is here")
+_proc: subprocess.Popen | None = None
+_url = ""
+_lock = asyncio.Lock()
+_last_use = 0.0
+_idle_task: asyncio.Task | None = None
+_failed_at = -_RETRY
 
 
-def _free_port() -> int:
+def env() -> Path:
+    return paths.data_dir() / "versions" / __version__ / "searxng"
+
+
+def python() -> Path | None:
+    """The installed environment's Python, if this installation has one."""
+    e = env()
+    if not (e / ".complete").is_file():
+        return None
+    p = e / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    return p if p.is_file() else None
+
+
+def folder() -> Path:
+    return paths.data_dir() / "searxng"
+
+
+def write_settings(where: Path, port: int) -> Path:
+    """settings.yml for this start; the secret of the last one is kept."""
+    where.mkdir(parents=True, exist_ok=True)
+    p = where / "settings.yml"
+    old = p.read_text(encoding="utf-8") if p.exists() else ""
+    m = re.search(r'secret_key: "([0-9a-f]{64})"', old)
+    p.write_text(SETTINGS.format(secret=m.group(1) if m else secrets.token_hex(32), port=port), encoding="utf-8")
+    return p
+
+
+def _free_port() -> int | None:
     for port in PORTS:
         with socket.socket() as s:
             try:
@@ -73,74 +96,102 @@ def _free_port() -> int:
                 return port
             except OSError:
                 continue
-    raise Unavailable(f"no free port in {PORTS.start}-{PORTS.stop - 1}")
+    return None
 
 
-def write_settings(folder: Path) -> Path:
-    """Its settings.yml; a secret already there is kept."""
-    folder.mkdir(parents=True, exist_ok=True)
-    p = folder / "settings.yml"
-    if not p.exists():
-        p.write_text(SETTINGS.format(secret=secrets.token_hex(32)), encoding="utf-8")
-    return p
-
-
-def _ours(rt: str) -> bool:
-    """A container by our name exists — and it is ours."""
-    r = subprocess.run([rt, "inspect", "--format", "{{index .Config.Labels \"io.hearth.part\"}}", NAME],
-                       capture_output=True, text=True, timeout=30)
-    if r.returncode != 0:
-        return False
-    if r.stdout.strip() != "searxng":
-        raise Unavailable(f"a container named {NAME} is here and is not hearth's; it was left alone")
-    return True
-
-
-def answers(url: str, timeout: float = 5.0) -> bool:
+async def _answers(url: str, timeout: float = 2.0) -> bool:
     try:
-        r = httpx.get(f"{url}/search", params={"q": "hearth", "format": "json"}, timeout=timeout)
-        return r.status_code == 200 and "results" in r.json()
-    except (httpx.HTTPError, ValueError):
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            return (await c.get(f"{url}/healthz")).status_code == 200
+    except httpx.HTTPError:
         return False
 
 
-def setup(image: str, folder: Path, say: Say, wait_s: float = 90.0) -> str:
-    """Pull and run it; return its URL once it answers JSON."""
-    if not image:
-        raise Unavailable("this release has no SearXNG image pinned")
-    rt = runtime()
-    settings = write_settings(folder)
-    say(f"Getting SearXNG ({Path(rt).name})…")
-    r = subprocess.run([rt, "pull", "--quiet", image], capture_output=True, text=True)
-    if r.returncode != 0:
-        raise Unavailable(f"the SearXNG image could not be pulled: {(r.stderr or r.stdout).strip()[:200]}")
-    if _ours(rt):
-        subprocess.run([rt, "rm", "-f", NAME], capture_output=True, timeout=60)
-    port = _free_port()
-    r = subprocess.run([
-        rt, "run", "-d", "--name", NAME, "--label", LABEL, "--restart", "unless-stopped",
-        "-p", f"127.0.0.1:{port}:8080",
-        # :Z relabels for SELinux (Fedora); elsewhere it is ignored.
-        "-v", f"{settings.parent}:/etc/searxng:Z",
-        image], capture_output=True, text=True, timeout=120)
-    if r.returncode != 0:
-        raise Unavailable(f"SearXNG did not start: {(r.stderr or r.stdout).strip()[:200]}")
-    url = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + wait_s
-    while time.monotonic() < deadline:
-        if answers(url):
-            return url
-        time.sleep(1.0)
-    raise Unavailable(f"SearXNG started but did not answer at {url}")
-
-
-def remove() -> bool:
-    """Take our container away, if there is one. Never someone else's."""
+def _open_log():
+    lp = paths.home() / "searxng.log"
     try:
-        rt = runtime()
-        if not _ours(rt):
-            return False
-        subprocess.run([rt, "rm", "-f", NAME], capture_output=True, timeout=60)
-        return True
-    except (Unavailable, OSError, subprocess.SubprocessError):
-        return False
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        if lp.exists() and lp.stat().st_size > 2_000_000:
+            lp.replace(lp.with_name(lp.name + ".1"))
+        return open(lp, "a", buffering=1, encoding="utf-8")
+    except OSError:
+        return None
+
+
+async def ensure_up() -> str:
+    """The URL of a running SearXNG of ours, started if need be; "" when this
+    installation has none or it would not start (search goes on without it)."""
+    global _proc, _url, _last_use, _failed_at
+    _last_use = time.monotonic()
+    if _proc is not None and _proc.poll() is None and await _answers(_url):
+        return _url
+    async with _lock:
+        if _proc is not None and _proc.poll() is None and await _answers(_url):
+            return _url
+        await _stop()
+        if time.monotonic() - _failed_at < _RETRY:
+            return ""
+        py, port = python(), _free_port()
+        if py is None or port is None:
+            return ""
+        _failed_at = time.monotonic()  # until it answers
+        where = folder()
+        settings = write_settings(where, port)
+        log = _open_log()
+        try:
+            _proc = subprocess.Popen(
+                [str(py), "-I", "-m", "searx.webapp"], cwd=str(where), **procs.own_group(),
+                env={**os.environ, "SEARXNG_SETTINGS_PATH": str(settings)},
+                stdin=subprocess.DEVNULL, stdout=log or subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        except OSError:
+            _proc = None
+            return ""
+        finally:
+            if log:
+                log.close()  # the child has it
+        _url = f"http://127.0.0.1:{port}"
+        deadline = time.monotonic() + _START_WAIT
+        while time.monotonic() < deadline:
+            if _proc.poll() is not None:
+                _proc = None
+                return ""
+            if await _answers(_url):
+                _failed_at = -_RETRY
+                _ensure_idle_watcher()
+                return _url
+            await asyncio.sleep(0.5)
+        await _stop()
+        return ""
+
+
+def _ensure_idle_watcher() -> None:
+    global _idle_task
+    if _idle_task is None or _idle_task.done():
+        _idle_task = asyncio.create_task(_idle_loop())
+
+
+async def _idle_loop() -> None:
+    while _proc is not None and _proc.poll() is None:
+        await asyncio.sleep(min(_IDLE, 60.0))
+        if time.monotonic() - _last_use >= _IDLE:
+            async with _lock:
+                if time.monotonic() - _last_use >= _IDLE:
+                    await _stop()
+                    return
+
+
+async def _stop() -> None:
+    global _proc
+    p, _proc = _proc, None
+    if p is not None and p.poll() is None:
+        await asyncio.to_thread(procs.end_tree, p.pid)
+
+
+def shutdown() -> None:
+    """Best-effort, for atexit: it does not outlive hearth."""
+    p = _proc
+    if p is not None and p.poll() is None:
+        procs.end_tree(p.pid, wait_s=3)
+
+
+atexit.register(shutdown)

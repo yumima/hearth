@@ -8,7 +8,7 @@ openai-SDK client works pointed at the base URL.
 See finterm's plans/local-ai-engine.md for the full design.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # Consumer-facing API contract version. Bump the MAJOR when a consumer
 # (finterm) would need code changes; the MINOR for additive, back-compatible

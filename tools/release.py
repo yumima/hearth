@@ -6,6 +6,13 @@
 Both wheels, what each needs (with hashes, from uv.lock), manifest.json naming
 every file and its hash, and the install scripts, which carry the manifest's hash:
 somebody who trusts the script trusts exactly these files.
+
+And SearXNG, hearth's search backend: a wheel built here from the commit pinned
+in installer/pins.json, with installer/searxng-requirements.txt (hashes, wheels
+only). After moving the pin, remake that file from the commit's requirements.txt:
+
+    uv pip compile requirements.txt --universal --python-version 3.12 \
+        --generate-hashes --no-build --no-header --no-annotate -o installer/searxng-requirements.txt
 """
 
 from __future__ import annotations
@@ -14,7 +21,9 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -50,12 +59,45 @@ def requirements(name: str) -> str:
     return text
 
 
+def searxng_wheel(pin: dict, out: Path) -> Path:
+    """Its wheel, built from the pinned commit. Its setup.py imports searx, so
+    the build runs in an environment that has what it needs — the same hashed
+    files the user's install gets."""
+    reqs = ROOT / "installer" / "searxng-requirements.txt"
+    with tempfile.TemporaryDirectory() as t:
+        src, env = Path(t) / "src", Path(t) / "env"
+        for cmd in (["git", "init", "-q", str(src)],
+                    ["git", "-C", str(src), "fetch", "-q", "--depth", "1", pin["repo"], pin["commit"]],
+                    ["git", "-C", str(src), "checkout", "-q", "FETCH_HEAD"]):
+            subprocess.run(cmd, check=True)
+        got = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+        assert got.stdout.strip() == pin["commit"], got.stdout
+        # Frozen, as upstream's own archives are: unfrozen, searx asks git for its
+        # version at import time — on a computer without git that is a crash. And
+        # a plain date keeps "+" (a local version) out of the asset's file name.
+        ymd = subprocess.run(["git", "-C", str(src), "show", "-s", "--format=%cs"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+        day = ".".join(str(int(x)) for x in ymd.split("-"))  # as upstream tags it: 2026.11.11
+        (src / "searx" / "version_frozen.py").write_text(
+            f'VERSION_STRING = "{day}-{pin["commit"][:9]}"\nVERSION_TAG = "{day}"\nDOCKER_TAG = "{day}-{pin["commit"][:9]}"\n'
+            f'GIT_URL = "{pin["repo"]}"\nGIT_BRANCH = "master"\n', encoding="utf-8")
+        sh("uv", "venv", "--quiet", "--python", PYTHON, str(env))
+        sh("uv", "pip", "install", "--quiet", "--python", str(env), "--require-hashes", "--only-binary", ":all:", "-r", str(reqs))
+        sh("uv", "pip", "install", "--quiet", "--python", str(env), "setuptools", "wheel")
+        before = set(out.glob("searxng-*.whl"))
+        subprocess.run(["uv", "build", "--quiet", "--wheel", "--no-build-isolation", "--python", str(env), "-o", str(out),
+                        str(src)], check=True, cwd=t)
+        new = sorted(set(out.glob("searxng-*.whl")) - before)
+        assert len(new) == 1, new
+        return new[0]
+
+
 def main() -> None:
     a = argparse.ArgumentParser()
     a.add_argument("out", type=Path)
     a.add_argument("--base-url", default="")
     a.add_argument("--pins", type=Path, default=ROOT / "installer/pins.json")
-    a.add_argument("--no-extras", action="store_true", help="without voices and the window: for tests")
+    a.add_argument("--no-extras", action="store_true", help="without voices, the window and SearXNG: for tests")
     args = a.parse_args()
     if args.no_extras:
         EXTRAS.update({k: [] for k in EXTRAS})
@@ -71,8 +113,12 @@ def main() -> None:
         for kind, p in (("wheel", wheel), ("requirements", out / f"{name}-requirements.txt")):
             files[f"{name}-{kind}"] = {"name": p.name, "sha256": digest(p), "size": p.stat().st_size}
     pins = json.loads(args.pins.read_text(encoding="utf-8"))
-    manifest = {"schema": 1, "version": v, "python": PYTHON, "files": files, "ollama": pins["ollama"],
-                **({"searxng": pins["searxng"]} if "searxng" in pins else {})}
+    if not args.no_extras:
+        wheel = searxng_wheel(pins["searxng"], out)
+        reqs = shutil.copy(ROOT / "installer" / "searxng-requirements.txt", out / "searxng-requirements.txt")
+        for kind, p in (("wheel", wheel), ("requirements", Path(reqs))):
+            files[f"searxng-{kind}"] = {"name": p.name, "sha256": digest(p), "size": p.stat().st_size}
+    manifest = {"schema": 1, "version": v, "python": PYTHON, "files": files, "ollama": pins["ollama"]}
     m = out / "manifest.json"
     m.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8", newline="\n")
     fill = {"@VERSION@": v, "@MANIFEST_URL@": base + "manifest.json", "@MANIFEST_SHA256@": digest(m), "@BASE_URL@": base,

@@ -6,4 +6,4 @@ the chat UI and proxies to the configured backend; that proxy is where the MCP
 host and the tool-call loop will live.
 """
 
-__version__ = "0.2.0"  # hearth's: they are released together
+__version__ = "0.2.1"  # hearth's: they are released together

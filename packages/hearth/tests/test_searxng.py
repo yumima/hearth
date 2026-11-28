@@ -1,110 +1,129 @@
-"""The installer's SearXNG offer, without a container runtime."""
+"""hearth's own SearXNG: installed with every release, used when none is set."""
 
 from __future__ import annotations
 
-import subprocess
+import asyncio
 
 import pytest
 
-from hearth import config as cfgmod
-from hearth import install, searxng
+from hearth import install, searxng, websearch
+from hearth.config import SearchConfig
+from hearth.provision import Problem
 
-REL = install.Release({"schema": 1, "version": "1", "searxng": {"image": "img@sha256:ab"}}, "https://x/")
-
-
-@pytest.fixture
-def cfg(monkeypatch, tmp_path):
-    c = cfgmod.Config(path=tmp_path / "config.yaml")
-    saved = []
-    monkeypatch.setattr(install.cfgmod, "load", lambda create=False: c)
-    monkeypatch.setattr(install.cfgmod, "save", lambda x: saved.append(x.search.searxng_url))
-    monkeypatch.setattr(install, "root", lambda: tmp_path)
-    c.saved = saved
-    return c
+FILES = {"searxng-wheel": {"name": "searxng.whl", "sha256": "ab"}, "searxng-requirements": {"name": "r.txt", "sha256": "cd"}}
 
 
-def _setup_ok(monkeypatch):
-    calls = []
-    monkeypatch.setattr(searxng, "runtime", lambda: "/usr/bin/podman")
-    monkeypatch.setattr(searxng, "setup", lambda image, folder, say: calls.append(image) or "http://127.0.0.1:8888")
-    return calls
+def test_installed_when_the_release_has_it(monkeypatch):
+    built = []
+    monkeypatch.setattr(install, "build_env", lambda rel, name, say, replacing: built.append(name))
+    rel = install.Release({"schema": 1, "version": "1", "files": FILES}, "https://x/")
+    assert install.add_searxng(rel, lambda t: None, lambda: None) and built == ["searxng"]
 
 
-def test_fresh_install_asks_and_saves_the_url(monkeypatch, cfg):
-    calls = _setup_ok(monkeypatch)
-    monkeypatch.setattr(install, "ask", lambda q: True)
-    install.offer_searxng(REL, "ask", True, lambda t: None)
-    assert calls == ["img@sha256:ab"] and cfg.saved == ["http://127.0.0.1:8888"]
+def test_an_older_release_without_it_is_fine(monkeypatch):
+    monkeypatch.setattr(install, "build_env", lambda *a: pytest.fail("built"))
+    rel = install.Release({"schema": 1, "version": "1", "files": {}}, "https://x/")
+    assert install.add_searxng(rel, lambda t: None, lambda: None) is False
 
 
-@pytest.mark.parametrize("want,fresh,url,answer", [
-    ("no", True, "", True),          # declined by flag
-    ("ask", False, "", True),        # an update: not asked again
-    ("ask", True, "http://s", True), # already has one
-    ("ask", True, "", False),        # said no
-    ("ask", True, "", None),         # nobody at the terminal
-])
-def test_not_set_up(monkeypatch, cfg, want, fresh, url, answer):
-    calls = _setup_ok(monkeypatch)
-    monkeypatch.setattr(install, "ask", lambda q: answer)
-    cfg.search.searxng_url = url
-    install.offer_searxng(REL, want, fresh, lambda t: None)
-    assert calls == [] and cfg.saved == []
-
-
-def test_flag_sets_it_up_on_an_update(monkeypatch, cfg):
-    calls = _setup_ok(monkeypatch)
-    monkeypatch.setattr(install, "ask", lambda q: pytest.fail("asked"))
-    install.offer_searxng(REL, "yes", False, lambda t: None)
-    assert calls and cfg.saved
-
-
-def test_no_runtime_is_said_not_asked(monkeypatch, cfg):
-    def none():
-        raise searxng.Unavailable("no")
-    monkeypatch.setattr(searxng, "runtime", none)
-    monkeypatch.setattr(install, "ask", lambda q: pytest.fail("asked"))
-    said = []
-    install.offer_searxng(REL, "ask", True, said.append)
-    assert "--searxng" in said[0] and cfg.saved == []
-
-
-def test_a_failed_setup_does_not_fail_the_install(monkeypatch, cfg):
-    monkeypatch.setattr(searxng, "runtime", lambda: "/usr/bin/docker")
+def test_a_failed_install_does_not_fail_hearths(monkeypatch):
     def boom(*a):
-        raise searxng.Unavailable("pull failed")
-    monkeypatch.setattr(searxng, "setup", boom)
+        raise Problem("Installing what searxng needs failed:\nno wheel for lxml")
+    monkeypatch.setattr(install, "build_env", boom)
     said = []
-    install.offer_searxng(REL, "yes", True, said.append)
-    assert "pull failed" in said[-1] and cfg.saved == []
+    rel = install.Release({"schema": 1, "version": "1", "files": FILES}, "https://x/")
+    assert install.add_searxng(rel, said.append, lambda: None) is False
+    assert "SearXNG could not be installed" in said[0] and "\n" not in said[0]
 
 
-def test_settings_enable_json_and_keep_their_secret(tmp_path):
-    p = searxng.write_settings(tmp_path)
-    first = p.read_text()
-    assert "- json" in first and "limiter: false" in first
-    assert searxng.write_settings(tmp_path).read_text() == first
+def test_settings_are_loopback_json_and_keep_their_secret(tmp_path):
+    first = searxng.write_settings(tmp_path, 8890).read_text()
+    assert 'bind_address: "127.0.0.1"' in first and "port: 8890" in first and "- json" in first
+    secret = first.split('secret_key: "')[1][:64]
+    again = searxng.write_settings(tmp_path, 8891).read_text()
+    assert secret in again and "port: 8891" in again
 
 
-def test_someone_elses_container_of_that_name_is_left_alone(monkeypatch):
-    monkeypatch.setattr(searxng.subprocess, "run",
-                        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="\n", stderr=""))
-    with pytest.raises(searxng.Unavailable):
-        searxng._ours("docker")
-    monkeypatch.setattr(searxng, "runtime", lambda: "docker")
-    assert searxng.remove() is False
+def test_no_environment_means_not_installed(monkeypatch, tmp_path):
+    monkeypatch.setattr(searxng.paths, "data_dir", lambda: tmp_path)
+    assert searxng.python() is None
+    e = searxng.env()
+    (e / "bin").mkdir(parents=True)
+    (e / "bin" / "python").write_text("")
+    assert searxng.python() is None  # not .complete
+    (e / ".complete").write_text("")
+    if not searxng.sys.platform == "win32":
+        assert searxng.python() == e / "bin" / "python"
 
 
-def test_runs_on_loopback_with_the_pinned_image(monkeypatch, tmp_path):
-    runs = []
-    def run(cmd, **k):
-        runs.append(cmd)
-        rc = 1 if cmd[1] == "inspect" else 0  # no container yet
-        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
-    monkeypatch.setattr(searxng, "runtime", lambda: "podman")
-    monkeypatch.setattr(searxng.subprocess, "run", run)
-    monkeypatch.setattr(searxng, "_free_port", lambda: 8890)
-    monkeypatch.setattr(searxng, "answers", lambda url: True)
-    assert searxng.setup("img@sha256:ab", tmp_path / "s", lambda t: None) == "http://127.0.0.1:8890"
-    started = next(c for c in runs if c[1] == "run")
-    assert "127.0.0.1:8890:8080" in started and started[-1] == "img@sha256:ab" and searxng.LABEL in started
+def _chain(monkeypatch, own: str, has_env: bool = True):
+    """Search with no providers but SearXNG, recording which URL it was asked."""
+    asked = []
+
+    async def fake(client, query, count, base):
+        asked.append(base)
+        return [websearch.Result("t", "https://example.com/", "s", "", "searxng")]
+
+    async def up():
+        return own
+
+    monkeypatch.setattr(websearch, "_searxng", fake)
+    monkeypatch.setattr(searxng, "python", lambda: "py" if has_env else None)
+    monkeypatch.setattr(searxng, "ensure_up", up)
+    websearch._cache.clear()
+    return asked
+
+
+def test_search_uses_hearths_own_when_none_is_set(monkeypatch):
+    asked = _chain(monkeypatch, "http://127.0.0.1:8890")
+    res = asyncio.run(websearch.search("q", SearchConfig(provider="searxng")))
+    assert asked == ["http://127.0.0.1:8890"] and res[0].source == "searxng"
+
+
+def test_a_set_url_wins(monkeypatch):
+    asked = _chain(monkeypatch, "http://127.0.0.1:8890")
+    asyncio.run(websearch.search("q", SearchConfig(provider="searxng", searxng_url="http://mine:1")))
+    assert asked == ["http://mine:1"]
+
+
+@pytest.mark.parametrize("own,has_env,said", [("", True, "did not start"), ("", False, "not installed")])
+def test_without_it_the_chain_says_why(monkeypatch, own, has_env, said):
+    _chain(monkeypatch, own, has_env)
+    with pytest.raises(websearch.SearchError, match=said):
+        asyncio.run(websearch.search("q", SearchConfig(provider="searxng")))
+
+
+def test_results_without_a_host_are_dropped():
+    import httpx
+
+    body = {"results": [{"url": "http:///go/v1/abc", "title": "brave redirect"},
+                        {"url": "https://kernel.org/", "title": "kernel"}]}
+
+    async def go():
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=body))
+        async with httpx.AsyncClient(transport=transport) as c:
+            return await websearch._searxng(c, "q", 5, "http://s")
+
+    assert [r.url for r in asyncio.run(go())] == ["https://kernel.org/"]
+
+
+def test_a_start_that_failed_is_not_tried_on_every_search(monkeypatch, tmp_path):
+    starts = []
+
+    class Dead:
+        pid, returncode = 1, 1
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(searxng, "python", lambda: tmp_path / "python")
+    monkeypatch.setattr(searxng, "folder", lambda: tmp_path)
+    monkeypatch.setattr(searxng.paths, "home", lambda: tmp_path)
+    monkeypatch.setattr(searxng.subprocess, "Popen", lambda *a, **k: starts.append(a) or Dead())
+    monkeypatch.setattr(searxng, "_proc", None)
+    monkeypatch.setattr(searxng, "_failed_at", -searxng._RETRY)
+    monkeypatch.setattr(searxng, "_lock", asyncio.Lock())
+
+    async def twice():
+        return await searxng.ensure_up(), await searxng.ensure_up()
+
+    assert asyncio.run(twice()) == ("", "") and len(starts) == 1

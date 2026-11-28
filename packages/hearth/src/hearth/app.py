@@ -16,6 +16,7 @@ from . import backends as backends_mod
 from . import config as cfgmod
 from . import tts
 from . import kokoro_tts
+from . import searxng
 from .middleware import SecurityMiddleware
 from .provision import Provisioner
 from .routes import admin, v1, webui
@@ -58,6 +59,7 @@ def create_app(
             app.state.provisioner.close()
             for f in app.state.at_shutdown:
                 f()
+            searxng.shutdown()
             await tts.pool.aclose()
             await kokoro_tts.engine.aclose()
             if owned:
