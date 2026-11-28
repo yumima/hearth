@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 from pathlib import Path
@@ -65,21 +67,23 @@ def searxng_wheel(pin: dict, out: Path) -> Path:
     files the user's install gets."""
     reqs = ROOT / "installer" / "searxng-requirements.txt"
     with tempfile.TemporaryDirectory() as t:
-        src, env = Path(t) / "src", Path(t) / "env"
-        for cmd in (["git", "init", "-q", str(src)],
-                    # Only what setup.py reads: elsewhere (utils/templates) are file
-                    # names with ":", which Windows cannot check out.
-                    ["git", "-C", str(src), "sparse-checkout", "set", "--no-cone", "/searx/", "/setup.py",
-                     "/README.rst", "/LICENSE", "/AUTHORS.rst", "/requirements.txt", "/requirements-dev.txt"],
-                    ["git", "-C", str(src), "fetch", "-q", "--depth", "1", pin["repo"], pin["commit"]],
-                    ["git", "-C", str(src), "checkout", "-q", "FETCH_HEAD"]):
-            subprocess.run(cmd, check=True)
-        got = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+        repo, src, env = Path(t) / "repo", Path(t) / "src", Path(t) / "env"
+        subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "fetch", "-q", "--depth", "1", pin["repo"], pin["commit"]], check=True)
+        got = subprocess.run(["git", "-C", str(repo), "rev-parse", "FETCH_HEAD"], check=True, capture_output=True, text=True)
         assert got.stdout.strip() == pin["commit"], got.stdout
+        # Only what setup.py reads, out of the commit itself: elsewhere
+        # (utils/templates) are file names with ":", which a Windows checkout
+        # refuses even when sparse. An archive never writes them.
+        tar = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", pin["commit"], "searx", "setup.py",
+                              "README.rst", "LICENSE", "AUTHORS.rst", "requirements.txt", "requirements-dev.txt"],
+                             check=True, capture_output=True).stdout
+        with tarfile.open(fileobj=io.BytesIO(tar)) as f:
+            f.extractall(src, filter="data")
         # Frozen, as upstream's own archives are: unfrozen, searx asks git for its
         # version at import time — on a computer without git that is a crash. And
         # a plain date keeps "+" (a local version) out of the asset's file name.
-        ymd = subprocess.run(["git", "-C", str(src), "show", "-s", "--format=%cs"],
+        ymd = subprocess.run(["git", "-C", str(repo), "show", "-s", "--format=%cs", pin["commit"]],
                              check=True, capture_output=True, text=True).stdout.strip()
         day = ".".join(str(int(x)) for x in ymd.split("-"))  # as upstream tags it: 2026.11.11
         (src / "searx" / "version_frozen.py").write_text(

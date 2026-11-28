@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`51012d0`](https://github.com/yumima/hearth/commit/51012d0) release: check out only what SearXNG's wheel is built from
 - [`0720a91`](https://github.com/yumima/hearth/commit/0720a91) hearth 0.2.1: SearXNG is the search backend, installed with every release
 - [`af073d0`](https://github.com/yumima/hearth/commit/af073d0) installer: offer a SearXNG of hearth's own for web search
 - [`337f3af`](https://github.com/yumima/hearth/commit/337f3af) websearch: report HTTP failures as 'HTTP 429 …' so the whole chain fits the card
