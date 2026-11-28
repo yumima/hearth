@@ -10,17 +10,10 @@ This repository is all of it: `packages/hearth` (the engine and the command) and
 installed together, that speak over HTTP. [finterm](https://github.com/yumima/finterm) is one of hearth's
 users; hearth knows nothing of finance.
 
-## Today's commits (2026-11-25)
+## Today's commits (2026-11-27)
 
 Latest first.
 
-- [`2ffb1e9`](https://github.com/yumima/hearth/commit/2ffb1e9) site: shorter lead; 194 clones, Nov 11-24
-- [`8069845`](https://github.com/yumima/hearth/commit/8069845) site: the lead, dry and technical
-- [`3a33359`](https://github.com/yumima/hearth/commit/3a33359) site: what hearth does, shorter
-- [`ddc5056`](https://github.com/yumima/hearth/commit/ddc5056) site: the counter is clones and downloads
-- [`65d5257`](https://github.com/yumima/hearth/commit/65d5257) site: the deploy is a job of its own and is tried again
-- [`1e25ea3`](https://github.com/yumima/hearth/commit/1e25ea3) site: a failed request for the count stops the deploy
-- [`40daa0f`](https://github.com/yumima/hearth/commit/40daa0f) site: the counter is downloads only; concise technical copy
 
 [See all commits →](https://github.com/yumima/hearth/commits/main)
 

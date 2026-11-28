@@ -11,6 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import httpx  # noqa: E402
+
 from hearth import websearch  # noqa: E402
 from hearth.config import SearchConfig  # noqa: E402
 
@@ -125,3 +127,11 @@ def test_brave_key_prefers_literal_then_env(monkeypatch):
 def test_first_line_trims_httpx_advice_footer():
     err = "Client error '429 Too Many Requests' for url 'https://x'\nFor more information check: https://mdn"
     assert websearch._first_line(err) == "Client error '429 Too Many Requests' for url 'https://x'"
+
+
+def test_first_line_compresses_http_status_errors():
+    req = httpx.Request("GET", "https://search.brave.com/search?q=x")
+    resp = httpx.Response(429, request=req)
+    err = httpx.HTTPStatusError("Client error '429 Too Many Requests' for url 'https://x'",
+                                request=req, response=resp)
+    assert websearch._first_line(err) == "HTTP 429 Too Many Requests"

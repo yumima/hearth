@@ -308,6 +308,11 @@ def _first_line(e: object) -> str:
     """Providers surface httpx errors that carry a trailing MDN advice line.
     Keep the first line: the rest is noise in a log and wasted tokens when the
     text is handed to a model."""
+    if isinstance(e, httpx.HTTPStatusError):
+        # "Client error '429 Too Many Requests' for url '…'" is ~150 chars of
+        # which the status is the only signal; the UI card truncates the
+        # joined chain at 160, so the long form hid every later provider.
+        return f"HTTP {e.response.status_code} {e.response.reason_phrase}".strip()
     return str(e).strip().splitlines()[0]
 
 
