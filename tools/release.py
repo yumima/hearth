@@ -74,8 +74,10 @@ def searxng_wheel(pin: dict, out: Path) -> Path:
         assert got.stdout.strip() == pin["commit"], got.stdout
         # Only what setup.py reads, out of the commit itself: elsewhere
         # (utils/templates) are file names with ":", which a Windows checkout
-        # refuses even when sparse. An archive never writes them.
-        tar = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", pin["commit"], "searx", "setup.py",
+        # refuses even when sparse; this archive leaves them out.
+        # (Git for Windows checks NTFS names whenever it reads a tree, so even an
+        # archive needs that check off — safe: it writes nothing to disk.)
+        tar = subprocess.run(["git", "-c", "core.protectNTFS=false", "-C", str(repo), "archive", "--format=tar", pin["commit"], "searx", "setup.py",
                               "README.rst", "LICENSE", "AUTHORS.rst", "requirements.txt", "requirements-dev.txt"],
                              check=True, stdout=subprocess.PIPE).stdout  # (its errors to the log)
         with tarfile.open(fileobj=io.BytesIO(tar)) as f:
