@@ -77,7 +77,7 @@ def searxng_wheel(pin: dict, out: Path) -> Path:
         # refuses even when sparse. An archive never writes them.
         tar = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", pin["commit"], "searx", "setup.py",
                               "README.rst", "LICENSE", "AUTHORS.rst", "requirements.txt", "requirements-dev.txt"],
-                             check=True, capture_output=True).stdout
+                             check=True, stdout=subprocess.PIPE).stdout  # (its errors to the log)
         with tarfile.open(fileobj=io.BytesIO(tar)) as f:
             f.extractall(src, filter="data")
         # Frozen, as upstream's own archives are: unfrozen, searx asks git for its
