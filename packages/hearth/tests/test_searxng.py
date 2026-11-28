@@ -10,6 +10,12 @@ from hearth import install, searxng, websearch
 from hearth.config import SearchConfig
 from hearth.provision import Problem
 
+@pytest.fixture(autouse=True)
+def _unix(monkeypatch):
+    """add_searxng skips Windows; every test but test_not_on_windows is of the rest."""
+    monkeypatch.setattr(install, "_WIN", False)
+
+
 FILES = {"searxng-wheel": {"name": "searxng.whl", "sha256": "ab"}, "searxng-requirements": {"name": "r.txt", "sha256": "cd"}}
 
 
@@ -127,3 +133,10 @@ def test_a_start_that_failed_is_not_tried_on_every_search(monkeypatch, tmp_path)
         return await searxng.ensure_up(), await searxng.ensure_up()
 
     assert asyncio.run(twice()) == ("", "") and len(starts) == 1
+
+
+def test_not_on_windows(monkeypatch):
+    monkeypatch.setattr(install, "_WIN", True)
+    monkeypatch.setattr(install, "build_env", lambda *a: pytest.fail("built"))
+    rel = install.Release({"schema": 1, "version": "1", "files": FILES}, "https://x/")
+    assert install.add_searxng(rel, lambda t: None, lambda: None) is False

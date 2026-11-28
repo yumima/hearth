@@ -14,6 +14,7 @@ users; hearth knows nothing of finance.
 
 Latest first.
 
+- [`0061d4d`](https://github.com/yumima/hearth/commit/0061d4d) release: git archive of SearXNG with Windows' NTFS name check off
 - [`5507eae`](https://github.com/yumima/hearth/commit/5507eae) release: let git archive's errors reach the log
 - [`d7ba3a5`](https://github.com/yumima/hearth/commit/d7ba3a5) release: build SearXNG from a git archive, not a checkout
 - [`51012d0`](https://github.com/yumima/hearth/commit/51012d0) release: check out only what SearXNG's wheel is built from

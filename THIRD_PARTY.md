@@ -13,7 +13,7 @@ by, not legal advice; each part's own licence text is what counts.)
 | Python packages in `uv.lock` | MIT, BSD, Apache-2.0, MPL-2.0, PSF — and the next two rows | always |
 | `phonemizer-fork`, and espeak-ng inside `espeakng-loader` (used by the natural voices) | **GPL-3.0** | always installed, used only for the voices |
 | FFmpeg inside PyAV's wheel (used by speech recognition) | LGPL/GPL, per its build | always installed, used only for speech recognition |
-| [SearXNG](https://github.com/searxng/searxng) (web search), at the commit in `installer/pins.json`; its source is that commit, and its Python packages are in `installer/searxng-requirements.txt` | **AGPL-3.0**; its packages MIT, BSD, Apache-2.0 | always, run only on loopback for hearth's search |
+| [SearXNG](https://github.com/searxng/searxng) (web search), at the commit in `installer/pins.json`; its source is that commit, and its Python packages are in `installer/searxng-requirements.txt` | **AGPL-3.0**; its packages MIT, BSD, Apache-2.0 | always on Linux and macOS (it does not run on Windows), run only on loopback for hearth's search |
 | Chat models in `catalog.json` (Qwen) | Apache-2.0 | when chosen |
 | nomic-embed-text | Apache-2.0 | with the first model |
 | Kokoro-82M voices | Apache-2.0 | when chosen |

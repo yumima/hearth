@@ -401,7 +401,8 @@ def first_config() -> None:
 def add_searxng(rel: Release, say: Say, replacing: Callable[[], None]) -> bool:
     """hearth's own SearXNG, the default search backend (searxng.py). Never
     fatal: without it search falls back to Brave and Wikipedia."""
-    if "searxng-wheel" not in rel.data["files"]:
+    # SearXNG is for Unix (searx.webapp imports pwd): Windows keeps the fallbacks.
+    if _WIN or "searxng-wheel" not in rel.data["files"]:
         return False
     try:
         build_env(rel, "searxng", say, replacing)

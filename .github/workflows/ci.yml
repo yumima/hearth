@@ -91,10 +91,13 @@ jobs:
           env-hearth/$PY -c "import io, wave; from faster_whisper.audio import decode_audio as d; b = io.BytesIO(); w = wave.open(b, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(bytes(32000)); w.close(); b.seek(0); assert len(d(b)) == 16000"
           env-client/$PY -c "import hearth_client.app, hearth_client.mcp_servers.rag, hearth_client.mcp_servers.web, hearth_client.mcp_servers.image"
           # hearth's search backend: installed as install.build_env does it, then run
-          uv venv -q env-searxng
-          uv pip install -q --python env-searxng --require-hashes --only-binary :all: -r out/searxng-requirements.txt
-          uv pip install -q --python env-searxng --no-deps --no-index out/searxng-*.whl
-          env-searxng/$PY tools/searxng_check.py
+          # (not on Windows, which SearXNG does not run on: install.add_searxng skips it)
+          if [ "$RUNNER_OS" != Windows ]; then
+            uv venv -q env-searxng
+            uv pip install -q --python env-searxng --require-hashes --only-binary :all: -r out/searxng-requirements.txt
+            uv pip install -q --python env-searxng --no-deps --no-index out/searxng-*.whl
+            env-searxng/$PY tools/searxng_check.py
+          fi
           rm -rf env-hearth env-client env-searxng out
       - name: Install, update, go back, remove
         run: |
